@@ -145,8 +145,13 @@ pub async fn ensure_daemon_with(
     })?;
 
     loop {
-        if let Some(readiness) = probe_readiness(paths).await? {
-            return Ok(readiness);
+        // The spawned daemon binds its socket before it can answer. On a
+        // loaded host one unanswered probe is not failure; START_TIMEOUT is.
+        match probe_readiness(paths).await {
+            Ok(Some(readiness)) => return Ok(readiness),
+            Ok(None) => {}
+            Err(error) if error.kind() == DomainErrorKind::DaemonStartTimeout => {}
+            Err(error) => return Err(error),
         }
         if let Some(status) = child.try_wait().map_err(|error| {
             DaemonError::new(

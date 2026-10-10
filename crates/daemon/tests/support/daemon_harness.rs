@@ -8,6 +8,9 @@ use zterm_platform::user_state::UserPaths;
 const CHILD_PREFIX: &str = "--zterm-test-daemon=";
 const FOREGROUND_CHILD_PREFIX: &str = "--zterm-test-foreground-daemon=";
 const TERMINAL_CHILD_PREFIX: &str = "--zterm-test-terminal-daemon=";
+const SLOW_SOCKET_CHILD_PREFIX: &str = "--zterm-test-slow-socket-daemon=";
+/// Longer than one readiness probe, well inside the launch budget.
+const SLOW_SOCKET_DELAY: std::time::Duration = std::time::Duration::from_millis(750);
 
 /// Encodes task-private paths into the one detached child harness argument.
 #[allow(dead_code)]
@@ -27,6 +30,13 @@ pub fn terminal_child_argument(paths: &UserPaths) -> String {
     format!("{TERMINAL_CHILD_PREFIX}{}", encode_paths(paths))
 }
 
+/// Detached child whose socket accepts connections but answers nothing for
+/// [`SLOW_SOCKET_DELAY`], as a loaded host can between bind and serve.
+#[allow(dead_code)]
+pub fn slow_socket_child_argument(paths: &UserPaths) -> String {
+    format!("{SLOW_SOCKET_CHILD_PREFIX}{}", encode_paths(paths))
+}
+
 /// Encodes task-private paths for another test-only child role.
 pub fn encode_paths(paths: &UserPaths) -> String {
     format!(
@@ -43,13 +53,15 @@ pub fn run_child_if_requested() -> bool {
     let Some(argument) = std::env::args().nth(1) else {
         return false;
     };
-    let (encoded, deterministic_terminal, foreground) =
+    let (encoded, deterministic_terminal, foreground, slow_socket) =
         if let Some(encoded) = argument.strip_prefix(CHILD_PREFIX) {
-            (encoded, false, false)
+            (encoded, false, false, false)
         } else if let Some(encoded) = argument.strip_prefix(FOREGROUND_CHILD_PREFIX) {
-            (encoded, false, true)
+            (encoded, false, true, false)
         } else if let Some(encoded) = argument.strip_prefix(TERMINAL_CHILD_PREFIX) {
-            (encoded, true, false)
+            (encoded, true, false, false)
+        } else if let Some(encoded) = argument.strip_prefix(SLOW_SOCKET_CHILD_PREFIX) {
+            (encoded, false, false, true)
         } else {
             return false;
         };
@@ -68,6 +80,21 @@ pub fn run_child_if_requested() -> bool {
     })
     .map_err(|error| error.to_string())
     .and_then(|()| {
+        // Never accepted: readiness connects into the backlog and waits.
+        // Unlinking, not closing, keeps those connections pending as a slow
+        // daemon's would, while the daemon below binds the path afresh.
+        let _unanswered = if slow_socket {
+            paths
+                .prepare_runtime_directory()
+                .map_err(|error| error.to_string())?;
+            let listener = std::os::unix::net::UnixListener::bind(paths.socket())
+                .map_err(|error| error.to_string())?;
+            std::thread::sleep(SLOW_SOCKET_DELAY);
+            std::fs::remove_file(paths.socket()).map_err(|error| error.to_string())?;
+            Some(listener)
+        } else {
+            None
+        };
         if deterministic_terminal {
             let sessions = terminal_fixture_sessions(&paths)?;
             zterm_daemon::lifecycle::run_local_only_daemon_with_sessions_for_test(&paths, sessions)
