@@ -10,9 +10,11 @@ on:
 permissions:
   contents: read
 
+# A newer PR head supersedes the older run; every main commit keeps its own
+# exact-SHA evidence and release candidate.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -53,6 +55,9 @@ jobs:
     name: Rust / ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
+    env:
+      # Without debuginfo the trimmed dependency cache fits its size bound.
+      CARGO_PROFILE_DEV_DEBUG: "0"
     strategy:
       fail-fast: false
       matrix:
@@ -79,7 +84,7 @@ jobs:
       - name: Install exact Rust toolchain
         run: >-
           rustup toolchain install 1.98.0 --profile minimal
-          --component clippy --component rust-src --component rustfmt
+          --component clippy --component rust-src
       - name: Restore dependency downloads
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
@@ -97,9 +102,9 @@ jobs:
             target/debug/deps
             target/debug/build
             target/debug/.fingerprint
-          key: ci-compiled-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          key: ci-compiled-v3-rust-1.98.0-nodebug-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ci-compiled-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
+            ci-compiled-v3-rust-1.98.0-nodebug-${{ runner.os }}-${{ runner.arch }}-
       - uses: ./.github/actions/setup-ci-tools
         with:
           profile: rust
@@ -277,7 +282,7 @@ jobs:
       - name: Install exact Rust toolchain
         run: >-
           rustup toolchain install 1.98.0 --profile minimal
-          --component clippy --component rustfmt
+          --component clippy
       - name: Restore dependency downloads
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:

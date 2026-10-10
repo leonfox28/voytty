@@ -302,10 +302,24 @@ for profile in 'just ci-policy' 'just ci-unix' \
 done
 [ "$(grep -Fc 'sh tests/workspace-version.sh' "$justfile")" -eq 1 ] \
     || fail "workspace version must have one canonical recipe owner"
-[ "$(grep -Fc 'cargo +1.98.0 fmt --all -- --check' "$justfile")" -eq 1 ] \
-    || fail "workspace formatting must have one canonical recipe owner"
-[ "$(grep -Fc 'cargo +1.98.0 doc --workspace --no-deps' "$justfile")" -eq 2 ] \
-    || fail "docs must appear only in local check and the one matrix profile"
+policy_recipe=$(sed -n '/^ci-policy:/,/^$/p' "$justfile")
+for policy_owner in 'cargo +1.98.0 fmt --all -- --check' \
+    'cargo +1.98.0 fmt --manifest-path vendor/iroh/Cargo.toml -- --check' \
+    'cargo +1.98.0 fmt --manifest-path tests/relay/handshake-probe/Cargo.toml -- --check' \
+    'sh tests/secret-scan.sh' 'sh tests/secret-scan-fixture.sh'; do
+    [ "$(grep -Fc "$policy_owner" "$justfile")" -eq 1 ] \
+        || fail "portable check must have one canonical recipe owner: $policy_owner"
+    printf '%s\n' "$policy_recipe" | grep -Fq "$policy_owner" \
+        || fail "portable check must run once in ci-policy: $policy_owner"
+done
+[ "$(grep -Fc 'cargo +1.98.0 doc --workspace --no-deps' "$justfile")" -eq 1 ] \
+    || fail "docs must have one owner, shared by local check and the matrix profile"
+check_recipe=$(sed -n '/^check:/,/^$/p' "$justfile")
+for hosted_profile in 'just ci-policy' 'just ci-unix true false' \
+    'just ci-dependencies' 'just relay-static'; do
+    printf '%s\n' "$check_recipe" | grep -Fxq "    $hosted_profile" \
+        || fail "local check must compose hosted profile: $hosted_profile"
+done
 [ "$(grep -Fc 'smoke: true' "$ci_workflow")" -eq 2 ] \
     || fail "CLI smoke must have exactly one Linux and one macOS owner"
 container_workflow=$ci_workflow

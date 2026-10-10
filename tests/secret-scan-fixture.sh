@@ -64,5 +64,30 @@ fi
 rm -f "$test_dir/vendor/protocol/key.rs"
 assert_secret_rejected unquoted-config \
     sh -c 'printf "%s%s\n" "pass" "word=fixture-credential"'
+assert_secret_rejected camel-case-config \
+    sh -c 'printf "%s%s\n" "userTok" "en=fixture-credential"'
+assert_secret_rejected bearer-token-shape \
+    sh -c 'printf "%s%s.%s.%s\n" "ey" "JfixtureHeader0" "fixturePayload0" "fixtureSignature"'
+
+# Only the exact tracked Penpot connection is exempt, and only from the generic
+# assignment and token-shape rules.
+rm -f "$test_dir/deploy/credential.txt"
+mkdir -p "$test_dir/.codex"
+approved="$test_dir/.codex/config.toml"
+printf '%s%s%s.%s.%s"\n' 'url = "https://example.invalid/mcp?userTok' 'en=ey' \
+    'JfixtureHeader0' 'fixturePayload0' 'fixtureSignature' >"$approved"
+SECRET_SCAN_ROOT="$test_dir" sh "$scanner" >/dev/null \
+    || fail "the approved Penpot connection was rejected"
+mkdir -p "$test_dir/other/.codex"
+cp "$approved" "$test_dir/other/.codex/config.toml"
+if SECRET_SCAN_ROOT="$test_dir" sh "$scanner" >/dev/null 2>&1; then
+    fail "the Penpot exemption matched a path other than the exact tracked file"
+fi
+rm -rf "$test_dir/other"
+printf 'ghp_%040d\n' 0 >>"$approved"
+if SECRET_SCAN_ROOT="$test_dir" sh "$scanner" >/dev/null 2>&1; then
+    fail "a recognizable key inside the approved connection was accepted"
+fi
+rm -f "$approved"
 
 echo "secret scan scope and credential fixtures verified"

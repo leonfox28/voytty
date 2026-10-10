@@ -127,9 +127,11 @@ just check
 ```
 
 `just check` is the authoritative pre-push gate on the current host. It
-includes portable policy, native Clippy/tests/docs, dependency policy and the
-locally reproducible relay contracts. `just check-fast` is the shorter edit
-loop. Neither command claims evidence from a different OS/CPU, the pinned
+composes the hosted profiles rather than repeating their commands:
+`ci-policy`, `ci-unix` with docs, `ci-dependencies`, and the Docker-free
+`relay-static` part of `ci-relay`, so a change to a hosted profile reaches the
+local gate too. `just check-fast` is the shorter edit loop: source policy,
+`ci-policy`, and native Clippy. Neither command claims evidence from a different OS/CPU, the pinned
 glibc builder, Docker/QEMU execution, a protected signing secret, final signed
 installers, GitHub attestation, or immutable publication; GitHub Actions owns
 those boundaries and the recipes print that distinction.
@@ -144,7 +146,8 @@ CI uses the same repository profiles:
 | Docker/QEMU relay bundle | `just ci-relay` on Docker-capable Linux |
 | Three main native candidates | `tools/release/build-native.sh <output-directory>` with explicit source identity on the native/pinned builder |
 
-Workspace version and format each run once, docs run on Linux x64, and the
+Workspace version, every format check (workspace, patched Iroh, relay probe)
+and the secret scan each run once in `ci-policy`, docs run on Linux x64, and the
 no-argument CLI smoke runs once per shipped OS family. Source checkout policy
 runs before compilation in every supported OS matrix entry. macOS Intel and
 Windows CI are paused until a future task explicitly restores them.
@@ -159,9 +162,13 @@ Cargo downloads use lockfile keys with an OS/architecture/toolchain fallback.
 The same download namespace is usable by main candidates and tag publication;
 no compiled PR output becomes a publication input.
 
-PRs only restore compiled dependency caches. Main strips workspace/test outputs
-before saving `target/debug/{deps,build,.fingerprint}` and skips entries larger
-than 1 GiB. Incremental compilation is disabled in CI. The whole `target` tree,
+PRs only restore compiled dependency caches. Main strips path-package
+(workspace and patched vendor) and test outputs before saving
+`target/debug/{deps,build,.fingerprint}` and skips entries larger than 2 GiB.
+Path packages are fingerprinted by source mtime, so a fresh checkout rebuilds
+them regardless. The Rust matrix builds without dev debuginfo
+(`CARGO_PROFILE_DEV_DEBUG=0`): with debuginfo the trimmed sets were 3.1–5.2 GiB
+and were never saved. Incremental compilation is disabled in CI. The whole `target` tree,
 large test fixtures and release outputs are not cached. Measure restore/save
 and test durations together before changing this policy.
 
@@ -177,7 +184,9 @@ gh pr create
 ```
 
 CI runs for the pull request, not a duplicate branch-push workflow. Updating
-the branch cancels the older PR-head run. Merge only after the stable `CI gate`
+the branch cancels the older PR-head run. Main runs are never cancelled: each
+merge commit keeps its own exact-SHA run and candidate even when another merge
+follows quickly. Merge only after the stable `CI gate`
 is green; the resulting `main` push runs the full integration graph plus all
 three exact-SHA native candidate builds, the Android APK job, and one unsigned assembly. Tag publication
 reuses that candidate instead of compiling the product again.
