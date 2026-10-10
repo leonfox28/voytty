@@ -83,7 +83,9 @@ operation replay windows, or pairing offers.
 There is one daemon per OS user and one installed executable. `lifecycle.lock`
 serializes setup/launch briefly; `daemon.lock` is held for the process lifetime.
 The daemon does not acquire the lifecycle lock, and there is no PID-file kill
-fallback.
+fallback. After spawning, the launcher polls readiness for up to five seconds:
+the child binds its socket before it can answer, so a single unanswered
+250 ms probe on a loaded host means "still starting", not failure.
 
 The launcher redirects stdin/stdout/stderr to null; the child installs the bounded
 structured recorder, uses the account home as cwd, and calls safe `setsid()` before Tokio

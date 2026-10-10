@@ -41,6 +41,32 @@ fn main() {
     runtime.block_on(singleflight_launch());
     runtime.block_on(foreground_login_launch());
     runtime.block_on(startup_waits_for_a_transient_lock_observation());
+    runtime.block_on(launch_waits_for_a_spawned_daemon_that_answers_slowly());
+}
+
+/// A freshly spawned daemon may hold its bound socket longer than one
+/// readiness probe before it answers; the launch budget, not one probe,
+/// decides failure.
+#[cfg(unix)]
+async fn launch_waits_for_a_spawned_daemon_that_answers_slowly() {
+    let state = TestState::new();
+    let config =
+        validate_setup_input("slow-socket", ValidatedInfrastructure::OfficialN0).expect("config");
+    let setup = bootstrap(&state.paths, &config).expect("setup");
+    let executable = std::env::current_exe().expect("harness");
+    let readiness = ensure_daemon_with(
+        &state.paths,
+        &executable,
+        &daemon_harness::slow_socket_child_argument(&state.paths),
+    )
+    .await
+    .expect("launch waits beyond one unanswered readiness probe");
+    let client = LocalClient::new(state.paths.socket());
+    let status = client.status().await.expect("running status");
+    assert_eq!(status.device_id, setup.device_id);
+    assert_eq!(client.readiness().await.expect("readiness"), readiness);
+    client.stop(false).await.expect("stop slow-socket daemon");
+    wait_for_stop(&state.paths).await;
 }
 
 #[cfg(unix)]
