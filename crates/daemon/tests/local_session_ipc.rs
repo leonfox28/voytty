@@ -643,11 +643,15 @@ async fn failed_bounded_stop_keeps_the_listener_available_until_session_ownershi
     }
 
     let service = Arc::new(DaemonService::with_sessions(setup, 44, sessions.clone()));
+    // This one deadline must make the first stop fail yet let status and the
+    // final stop succeed on a loaded runner. The HUP-ignoring child cannot be
+    // reaped before portable-pty's 4 x 50 ms SIGHUP grace ends, so 150 ms
+    // still fails the first stop deterministically; 40 ms starved the others.
     let server = tokio::spawn(serve_local_with_limits(
         listener,
         state.paths.uid(),
         Arc::clone(&service),
-        LocalIpcLimits::for_test(Duration::from_millis(40)),
+        LocalIpcLimits::for_test(Duration::from_millis(150)),
     ));
     let client = LocalClient::new(state.paths.socket());
     let failed_stop = client
