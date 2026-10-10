@@ -68,6 +68,7 @@ enum MessageKind {
   TERMINAL_CLIPBOARD_WRITE = 322;
   TERMINAL_BASE_COLORS = 324;
   TERMINAL_NOTIFICATION = 325;
+  TERMINAL_SURFACE_FRAMES_RECEIVED = 326;
   UPLOAD_BEGIN = 400;
   UPLOAD_READY = 401;
   UPLOAD_CHUNK = 402;
@@ -85,4 +86,8 @@ message WireFrame {
   bytes payload = 3;
   uint64 request_id = 4;
   uint32 deadline_ms = 5;
+  // 0: plain protobuf; 1: one zlib stream, terminal surface frames only.
+  // Sending 1 requires explicit TerminalAttachRequest opt-in. The expanded
+  // frame obeys the same size ceiling as an uncompressed frame.
+  uint32 payload_encoding = 6;
 }

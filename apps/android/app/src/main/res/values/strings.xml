@@ -31,6 +31,7 @@
     <string name="rename">Rename</string>
     <string name="delete">Delete</string>
     <string name="sessions">Sessions</string>
+    <string name="session_list_refresh_failed">Couldn’t refresh sessions</string>
     <string name="new_session">New session</string>
     <string name="name">Name</string>
     <string name="directory_optional">Directory (optional)</string>

@@ -1,7 +1,7 @@
 //! Injected semantic stream adapters and cancellation-safe attachment epochs.
 use crate::{error::ClientError, model::ResolvedSessionTarget, protocol::*};
 use std::{future::Future, pin::Pin};
-use zterm_proto::{DecodedFrame, v2};
+use zterm_proto::{DecodedFrame, WireKind, v2};
 
 /// Sendable, borrowed adapter operation.
 pub type TransportFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -99,13 +99,34 @@ impl AttachmentTransport {
             Self::Open(io) => io.read().await,
         }
     }
-    /// Finishes and retires this epoch under the standard control budget.
+    /// Finishes this epoch and waits for the host's end under the control budget.
     pub async fn shutdown(&mut self) -> Result<(), ClientError> {
         let mut epoch = std::mem::replace(self, Self::Closed);
         tokio::time::timeout_at(control_deadline(), async {
             match &mut epoch {
                 Self::Closed => Ok(()),
-                Self::Open(io) => io.shutdown().await,
+                Self::Open(io) => {
+                    io.shutdown().await?;
+                    // A local write-half finish only queues TerminalDetach.
+                    // Retain the read half until the host consumes it and ends
+                    // the stream, so a completed detach cannot race a normal
+                    // attach from another controller. Never replay input or
+                    // reconnect this retiring epoch while draining its output.
+                    loop {
+                        match io.read().await {
+                            Ok(AttachmentTransportItem::Session(frame))
+                                if frame.kind == WireKind::ServiceErrorResponse =>
+                            {
+                                return Err(service_error(&frame)?);
+                            }
+                            Ok(_) => {}
+                            Err(error) if is_attachment_stream_closed_without_event(&error) => {
+                                return Ok(());
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                }
             }
         })
         .await

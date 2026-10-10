@@ -21,6 +21,102 @@ use zterm_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
 const HOST: DeviceId = DeviceId::from_array([0x31; 32]);
 
 #[tokio::test]
+async fn accept_lost_responses_are_outcome_unknown_after_identical_retry() {
+    let (_directory, socket) = socket_path();
+    let listener = bind(&socket);
+    let server = tokio::spawn(async move {
+        let (mut first, _) = listener.accept().await.expect("first request");
+        let (first_bytes, mut first_frame) = read_request(&mut first).await;
+        assert_eq!(first_frame.kind, WireKind::LocalPairAcceptRequest);
+        first_frame.payload.zeroize();
+        drop(first);
+        let (mut second, _) = listener.accept().await.expect("same-operation retry");
+        let (second_bytes, mut second_frame) = read_request(&mut second).await;
+        second_frame.payload.zeroize();
+        assert_eq!(&*first_bytes, &*second_bytes);
+        drop(second);
+    });
+    let error = LocalPairingClient::new(&socket)
+        .accept(mint_ticket(), None)
+        .await
+        .expect_err("both replies lost after the request was delivered");
+    server.await.expect("pair server");
+    assert_eq!(
+        error.kind(),
+        zterm_core::DomainErrorKind::PairOutcomeUnknown
+    );
+}
+
+#[tokio::test]
+async fn accept_missing_daemon_before_any_write_is_not_ambiguous() {
+    let (_directory, socket) = socket_path();
+    let error = LocalPairingClient::new(&socket)
+        .accept(mint_ticket(), None)
+        .await
+        .expect_err("no request reached the absent daemon");
+    assert_eq!(error.kind(), zterm_core::DomainErrorKind::DaemonStopped);
+}
+
+#[tokio::test]
+async fn accept_failed_retry_connect_does_not_erase_first_delivery() {
+    let (_directory, socket) = socket_path();
+    let listener = bind(&socket);
+    let server_socket = socket.clone();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("delivered request");
+        let (_, mut frame) = read_request(&mut stream).await;
+        frame.payload.zeroize();
+        drop(listener);
+        std::fs::remove_file(server_socket).expect("remove stopped daemon socket");
+        drop(stream);
+    });
+    let error = LocalPairingClient::new(&socket)
+        .accept(mint_ticket(), None)
+        .await
+        .expect_err("reply lost and retry daemon unavailable");
+    server.await.expect("pair server");
+    assert_eq!(
+        error.kind(),
+        zterm_core::DomainErrorKind::PairOutcomeUnknown
+    );
+}
+
+#[tokio::test]
+async fn accept_authoritative_error_is_preserved_without_retry() {
+    let (_directory, socket) = socket_path();
+    let listener = bind(&socket);
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("pair request");
+        let (_, mut frame) = read_request(&mut stream).await;
+        frame.payload.zeroize();
+        let response = encode_message(
+            WireKind::ServiceErrorResponse,
+            frame.request_id,
+            0,
+            &v2::ServiceError {
+                code: "pair_ticket_expired".into(),
+                message: "expired fixture".into(),
+            },
+        )
+        .expect("typed error response");
+        stream.write_all(&response).await.expect("write rejection");
+        stream.shutdown().await.expect("finish rejection");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
+                .await
+                .is_err(),
+            "a definitive rejection must not be retried"
+        );
+    });
+    let error = LocalPairingClient::new(&socket)
+        .accept(mint_ticket(), None)
+        .await
+        .expect_err("authoritative rejection");
+    assert_eq!(error.kind(), zterm_core::DomainErrorKind::PairTicketExpired);
+    server.await.expect("pair server");
+}
+
+#[tokio::test]
 async fn create_uses_default_fingerprint_and_pair_deadline() {
     let (_directory, socket) = socket_path();
     let listener = bind(&socket);

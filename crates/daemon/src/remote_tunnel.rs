@@ -68,9 +68,14 @@ where
     };
     let capabilities = remote.remote_capabilities().bits();
     let observer = remote.candidate_observer();
+    let candidate = remote.candidate();
+    let mut traffic = TunnelTraffic::default();
     let result = pump_tunnel(
         local_stream,
-        BrokerTunnelStream { stream: remote },
+        BrokerTunnelStream {
+            stream: remote,
+            traffic: &mut traffic,
+        },
         first,
         limits,
         deadline,
@@ -78,6 +83,14 @@ where
         move || observer.selected_path_observation(),
     )
     .await;
+    // A frontend deadline drops the local socket, so the opaque pump can end
+    // successfully even though the remote stream never answered. Release the
+    // stream first, then retire only its still-selected, otherwise idle candidate.
+    // Any response bytes (including a service rejection) preserve the cache;
+    // this adapter never decodes Session outcomes or retries an operation.
+    if traffic.sent && !traffic.received {
+        demand.retire_idle_candidate(candidate);
+    }
     // Keep the broker demand alive for the whole admitted stream epoch.
     drop(demand);
     result
@@ -282,7 +295,11 @@ where
             }
             _ = path_tick.tick() => {
                 let observation = observe_path();
-                if observation != previous_path {
+                // A Unix read EOF cannot distinguish a valid write half-close
+                // from the frontend later disappearing altogether. Keep the
+                // response direction open, but use the existing path tick to
+                // detect that loss even when the remote and path stay silent.
+                if local_read_closed || observation != previous_path {
                     write_path(
                         &mut local_writer,
                         observation,
@@ -324,27 +341,43 @@ pub(crate) fn decode_tunnel_open(first: &FirstFrame) -> Result<DeviceId, DaemonE
         .map_err(protocol_error)
 }
 
-struct BrokerTunnelStream {
-    stream: AuthenticatedBiStream,
+#[derive(Default)]
+struct TunnelTraffic {
+    sent: bool,
+    received: bool,
 }
 
-impl AsyncRead for BrokerTunnelStream {
+struct BrokerTunnelStream<'a> {
+    stream: AuthenticatedBiStream,
+    traffic: &'a mut TunnelTraffic,
+}
+
+impl AsyncRead for BrokerTunnelStream<'_> {
     fn poll_read(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         context: &mut Context<'_>,
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.stream.recv).poll_read(context, buffer)
+        let this = self.get_mut();
+        let before = buffer.filled().len();
+        let result = Pin::new(&mut this.stream.recv).poll_read(context, buffer);
+        this.traffic.received |= buffer.filled().len() > before;
+        result
     }
 }
 
-impl AsyncWrite for BrokerTunnelStream {
+impl AsyncWrite for BrokerTunnelStream<'_> {
     fn poll_write(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         context: &mut Context<'_>,
         bytes: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        AsyncWrite::poll_write(Pin::new(&mut self.stream.send), context, bytes)
+        let this = self.get_mut();
+        let result = AsyncWrite::poll_write(Pin::new(&mut this.stream.send), context, bytes);
+        if let Poll::Ready(Ok(written)) = &result {
+            this.traffic.sent |= *written > 0;
+        }
+        result
     }
 
     fn poll_flush(
@@ -594,7 +627,7 @@ fn malformed(detail: impl Into<String>) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
     fn device(byte: u8) -> DeviceId {
         DeviceId::from_array([byte; DeviceId::LENGTH])
@@ -627,8 +660,8 @@ mod tests {
         }
     }
 
-    async fn next_frame(
-        stream: &mut DuplexStream,
+    async fn next_frame<R: AsyncRead + Unpin>(
+        stream: &mut R,
         decoder: &mut FrameDecoder,
         queued: &mut VecDeque<DecodedFrame>,
     ) -> DecodedFrame {
@@ -657,8 +690,8 @@ mod tests {
         .expect("tunnel envelope arrived before the test deadline")
     }
 
-    async fn expect_opened_and_reset(
-        stream: &mut DuplexStream,
+    async fn expect_opened_and_reset<R: AsyncRead + Unpin>(
+        stream: &mut R,
         decoder: &mut FrameDecoder,
         queued: &mut VecDeque<DecodedFrame>,
     ) {
@@ -675,6 +708,93 @@ mod tests {
             Ok(v2::TerminalConnectionPath::Unknown)
         );
         assert_eq!(path.rtt_ms, None);
+    }
+
+    #[tokio::test]
+    async fn half_closed_frontend_exit_releases_silent_tunnel() {
+        let first = first_with_queued(&envelope(
+            WireKind::LocalSessionTunnelHalfClose,
+            &v2::LocalSessionTunnelHalfClose {},
+        ));
+        let (local_daemon, mut frontend) = tokio::net::UnixStream::pair().expect("Unix pair");
+        let (remote_daemon, mut target) = duplex(4096);
+        let mut task = tokio::spawn(pump_tunnel(
+            local_daemon,
+            remote_daemon,
+            first,
+            SessionWireLimits::default(),
+            Instant::now() + Duration::from_secs(5),
+            None,
+            SelectedPathObservation::default,
+        ));
+        frontend.shutdown().await.expect("half-close Unix writer");
+        let mut decoder = FrameDecoder::new();
+        let mut queued = VecDeque::new();
+        expect_opened_and_reset(&mut frontend, &mut decoder, &mut queued).await;
+        assert_eq!(target.read(&mut [0_u8; 1]).await.expect("remote EOF"), 0);
+        // Full frontend loss follows the valid half-close. The remote direction
+        // stays open and silent, and there is no path change to wake the pump.
+        drop(frontend);
+        let joined = tokio::time::timeout(PATH_POLL_INTERVAL * 2, &mut task).await;
+        task.abort();
+        assert!(
+            joined.is_ok(),
+            "closed Unix frontend must release the silent remote stream"
+        );
+        joined
+            .expect("pump completed")
+            .expect("pump did not panic")
+            .expect_err("frontend write observes closed reader");
+    }
+
+    #[tokio::test]
+    async fn half_closed_frontend_can_receive_a_late_response() {
+        let first = first_with_queued(&envelope(
+            WireKind::LocalSessionTunnelHalfClose,
+            &v2::LocalSessionTunnelHalfClose {},
+        ));
+        let (local_daemon, mut frontend) = tokio::net::UnixStream::pair().expect("Unix pair");
+        let (remote_daemon, mut target) = duplex(4096);
+        let task = tokio::spawn(pump_tunnel(
+            local_daemon,
+            remote_daemon,
+            first,
+            SessionWireLimits::default(),
+            Instant::now() + Duration::from_secs(5),
+            None,
+            SelectedPathObservation::default,
+        ));
+        frontend.shutdown().await.expect("half-close Unix writer");
+        let mut decoder = FrameDecoder::new();
+        let mut queued = VecDeque::new();
+        expect_opened_and_reset(&mut frontend, &mut decoder, &mut queued).await;
+        assert_eq!(target.read(&mut [0_u8; 1]).await.expect("remote EOF"), 0);
+        tokio::time::sleep(PATH_POLL_INTERVAL * 2).await;
+        assert!(
+            !task.is_finished(),
+            "valid half-close retains the response direction"
+        );
+        target
+            .write_all(b"late response")
+            .await
+            .expect("late reply");
+        loop {
+            let frame = next_frame(&mut frontend, &mut decoder, &mut queued).await;
+            if frame.kind == WireKind::LocalSessionTunnelPath {
+                continue;
+            }
+            let data: v2::LocalSessionTunnelData = frame
+                .decode_message(WireKind::LocalSessionTunnelData)
+                .expect("opaque reply");
+            assert_eq!(data.bytes, b"late response");
+            break;
+        }
+        target.shutdown().await.expect("remote half-close");
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("pump finishes")
+            .expect("task")
+            .expect("clean pump");
     }
 
     #[tokio::test]

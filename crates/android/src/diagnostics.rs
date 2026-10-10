@@ -84,6 +84,8 @@ pub enum AppDiagnostic {
     InitializationFailed,
     /// User operation failed.
     OperationFailed,
+    /// An auxiliary Session list failed independently of terminal state.
+    SessionListFailed,
     /// Local storage failed.
     StorageFailed,
     /// Notification posting failed.
@@ -134,6 +136,9 @@ impl NativeDiagnostics {
                 .level(Level::Error)
                 .outcome(Outcome::Failed),
             AppDiagnostic::OperationFailed => Event::new(Kind::AppOperationFailed)
+                .level(Level::Warn)
+                .outcome(Outcome::Failed),
+            AppDiagnostic::SessionListFailed => Event::new(Kind::SessionListFailed)
                 .level(Level::Warn)
                 .outcome(Outcome::Failed),
             AppDiagnostic::StorageFailed => Event::new(Kind::StorageFailed)
@@ -200,6 +205,10 @@ impl NativeDiagnostics {
 pub fn install_diagnostics(sink: Box<dyn DiagnosticSink>) -> Arc<NativeDiagnostics> {
     let recorder = Recorder::new(Arc::new(AndroidSink(sink))).unwrap_or_default();
     if zterm_diagnostics::install(recorder.clone()) {
+        use tracing_subscriber::prelude::*;
+        let _ = tracing_subscriber::registry()
+            .with(zterm_diagnostics::transport_trace_layer(recorder.clone()))
+            .try_init();
         std::panic::set_hook(Box::new(|_| {
             zterm_diagnostics::record(Event::new(Kind::ProcessPanicked).level(Level::Error));
             let _ = zterm_diagnostics::flush(Duration::from_millis(250));

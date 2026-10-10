@@ -23,8 +23,6 @@ use zterm_core::{AttachmentId, DeviceId, ResourceLimits};
 use zterm_proto::{DecodedFrame, WireKind, v2};
 #[cfg(unix)]
 const DEFAULT_DEADLINE: Duration = Duration::from_secs(5);
-#[cfg(unix)]
-const DRAIN_GRACE: Duration = Duration::from_secs(30);
 
 // Existing low-level callers retain their entry points during the module move.
 #[cfg(unix)]
@@ -262,17 +260,18 @@ async fn serve_local_inner(
 
     drop(listener);
     drop(stop_sender);
-    if fatal_error.is_some() {
-        handlers.abort_all();
-        while handlers.join_next().await.is_some() {}
-    } else {
-        let drain = async {
-            while let Some(joined) = handlers.join_next().await {
-                observe_local_handler_completion(Some(joined));
-            }
-        };
-        if tokio::time::timeout(DRAIN_GRACE, drain).await.is_err() {
-            handlers.abort_all();
+    // An explicit stop arrives only after Session shutdown has succeeded and
+    // its acknowledgement has been flushed. Retire this listener's remaining
+    // connections now: an idle first frame or a remote controller tunnel has
+    // no completion that the stopping daemon should await. The lifecycle owner
+    // still joins Session/pairing/network effects before releasing its lock.
+    handlers.abort_all();
+    while let Some(joined) = handlers.join_next().await {
+        if !joined
+            .as_ref()
+            .is_err_and(tokio::task::JoinError::is_cancelled)
+        {
+            observe_local_handler_completion(Some(joined));
         }
     }
     fatal_error.map_or(Ok(()), Err)
@@ -551,6 +550,58 @@ mod tests {
     use crate::device_directory::ResolvedSessionTarget;
     use zterm_client::protocol::resolved_target_wire;
     use zterm_proto::{FrameDecoder, encode_message};
+
+    #[tokio::test]
+    async fn accepted_stop_does_not_wait_for_an_idle_ingress_handler() {
+        let temporary = tempfile::tempdir().expect("private stop fixture");
+        let socket = temporary.path().join("stop.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("fixture listener");
+        let setup = crate::bootstrap::BootstrapResult {
+            device_id: DeviceId::from_array([0x72; DeviceId::LENGTH]),
+            endpoint_id: "stop-fixture-endpoint".to_owned(),
+            config: crate::config::validate_setup_input(
+                "stop-fixture",
+                crate::config::ValidatedInfrastructure::OfficialN0,
+            )
+            .expect("fixture setup"),
+        };
+        let mut server = tokio::spawn(serve_local_inner(
+            listener,
+            nix::unistd::Uid::effective().as_raw(),
+            Arc::new(DaemonService::with_started_at(setup, 1)),
+            LocalIpcLimits::default(),
+            None,
+        ));
+        let mut idle = tokio::net::UnixStream::connect(&socket)
+            .await
+            .expect("idle connection");
+        idle.write_all(b"Z").await.expect("partial ingress frame");
+        // This subsequently accepted request proves the idle socket was
+        // already admitted; simply closing the listener cannot retire it.
+        let client = LocalClient::new(&socket);
+        client.readiness().await.expect("later request is served");
+        assert!(
+            client
+                .stop(false)
+                .await
+                .expect("flushed stop response")
+                .stopping
+        );
+        let stopped = tokio::time::timeout(Duration::from_millis(100), &mut server).await;
+        drop(idle);
+        if stopped.is_err() {
+            tokio::time::timeout(Duration::from_secs(1), server)
+                .await
+                .expect("fixture cleanup")
+                .expect("server task")
+                .expect("server result");
+        }
+        assert!(
+            stopped.is_ok(),
+            "accepted stop waited for an unrelated first-frame deadline"
+        );
+    }
+
     #[tokio::test]
     async fn completed_handlers_are_reaped_before_subsequent_connection_churn() {
         let temporary = tempfile::tempdir().expect("temporary handler-reap fixture");
@@ -649,6 +700,8 @@ mod tests {
             1,
             0,
             &v2::TerminalAttachRequest {
+                accept_zlib_frames: false,
+                acknowledge_surface_frames: false,
                 base_colors: Some(zterm_core::terminal::TerminalColorProfile::default().into()),
 
                 target: Some(target),

@@ -12,7 +12,7 @@ use crate::store::{KnownDevice, RouteCacheDiagnostic, StoreHandle};
 #[cfg(test)]
 use zterm_client::route::merge_relay_sources;
 pub use zterm_client::route::{RouteCandidate, RouteSource};
-use zterm_client::route::{build_relay_candidates, fresh_relay_hints};
+use zterm_client::route::{build_relay_candidates, resolve_relay_candidates};
 pub(crate) use zterm_client::route::{device_from_endpoint_id, endpoint_id_from_device};
 
 /// Resolves ordered fresh/cache/ticket relay candidates for the broker.
@@ -49,9 +49,9 @@ impl RouteResolver {
 
     /// Resolves relay-only candidates without inserting routes into the endpoint.
     ///
-    /// Fresh signed lookup runs for at most the configured two-second budget.
-    /// Its errors are intentionally non-terminal: an existing verified cache or
-    /// a caller-owned transient ticket route may still make the peer reachable.
+    /// Cold cached/ticket routes can dial immediately, with Iroh's concurrent
+    /// signed lookup. Previously used remotes explicitly refresh routes within
+    /// the configured budget because Iroh can retain a selected old path.
     pub async fn candidates(
         &self,
         endpoint: &Endpoint,
@@ -63,37 +63,26 @@ impl RouteResolver {
             return Err(deadline_exceeded("route resolution deadline elapsed"));
         }
         let endpoint_id = endpoint_id_from_device(remote)?;
-        let fresh = fresh_relay_hints(self.limits, endpoint, endpoint_id, deadline).await;
-
-        let known = if Instant::now() < deadline {
-            self.store
-                .run_blocking_until(deadline, move |store, deadline| {
-                    store.known_device(remote, deadline)
-                })
-                .await?
-        } else {
-            None
-        };
+        let known = self
+            .store
+            .run_blocking_until(deadline, move |store, deadline| {
+                store.known_device(remote, deadline)
+            })
+            .await?;
         let CachedRouteFallback {
             relay_hints: cache,
             diagnostic: _cache_diagnostic,
         } = cached_route_fallback(known);
 
-        let candidates = build_relay_candidates(
+        resolve_relay_candidates(
+            self.limits,
+            endpoint,
             endpoint_id,
-            fresh.unwrap_or_default(),
             cache,
             transient_ticket_routes.to_vec(),
-            self.limits.max_relay_hints,
-        )?;
-        if candidates.is_empty() {
-            Err(DaemonError::new(
-                DomainErrorKind::AddressUnavailable,
-                "no relay route is available for the target device",
-            ))
-        } else {
-            Ok(candidates)
-        }
+            deadline,
+        )
+        .await
     }
 }
 

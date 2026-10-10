@@ -12,8 +12,10 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.content.res.Configuration
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
 import android.os.LocaleList
+import android.os.Looper
 import android.provider.Settings
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -38,6 +40,7 @@ internal class BackgroundConnection(context: Context) {
     private val mutableFailure = MutableStateFlow(false)
     val failed = mutableFailure.asStateFlow()
     private var requested = false
+    private var intentionalStop = false
     private var visible = false
     private var attempted = false
 
@@ -47,10 +50,10 @@ internal class BackgroundConnection(context: Context) {
         mutable.value = next
         if (!next.wanted) {
             mutableFailure.value = false
-            if (requested) {
-                requested = false
-                context.stopService(Intent(context, TerminalConnectionService::class.java))
-            }
+            // A pending startForegroundService must first be promoted by its
+            // service callback. Cancelling it here with stopService can crash
+            // the process before onStartCommand gets a chance to run. The
+            // service observes this state and stops itself after promotion.
         } else if (appVisible && !requested && !attempted) {
             attempted = true
             try {
@@ -62,8 +65,22 @@ internal class BackgroundConnection(context: Context) {
         }
     }
 
-    fun startFailed() { requested = false; mutableFailure.value = true }
-    fun stopped() { requested = false }
+    fun startFailed() { requested = false; intentionalStop = false; mutableFailure.value = true }
+    fun stopping() { intentionalStop = true }
+    fun stopped() {
+        val restart = intentionalStop && mutable.value.wanted && visible && !mutableFailure.value
+        requested = false
+        intentionalStop = false
+        if (restart) Handler(Looper.getMainLooper()).post {
+            // Finish Android's onDestroy/serviceDoneExecuting callback before
+            // issuing the replacement foreground start. A newer user request
+            // may have arrived while our intentional stop was in flight.
+            if (mutable.value.wanted && visible && !mutableFailure.value) {
+                attempted = false
+                update(mutable.value, appVisible = true)
+            }
+        }
+    }
     fun visibleNotification(): Boolean =
         (Build.VERSION.SDK_INT < 33 || context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) &&
             manager.areNotificationsEnabled() && manager.getNotificationChannel(CHANNEL)?.importance != NotificationManager.IMPORTANCE_NONE
@@ -113,24 +130,17 @@ internal class BackgroundConnection(context: Context) {
 class TerminalConnectionService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val repository get() = (application as ZtermApplication).repository
+    private var observing = false
     override fun onBind(intent: Intent?): IBinder? = null
 
-    override fun onCreate() {
-        super.onCreate()
+    private fun observeConnection() {
+        if (observing) return
+        observing = true
         val owner = repository.backgroundConnection
-        try {
-            // Promote immediately, including when notification permission is denied.
-            val notification = owner.notification(owner.state.value)
-            if (Build.VERSION.SDK_INT >= 29) startForeground(BackgroundConnection.NOTIFICATION_ID, notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-            else startForeground(BackgroundConnection.NOTIFICATION_ID, notification)
-        } catch (_: RuntimeException) {
-            owner.startFailed(); stopSelf(); return
-        }
         scope.launch {
             owner.state.collect { snapshot ->
                 if (!snapshot.wanted) {
-                    stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
+                    stopForConnection()
                 } else {
                     try { getSystemService(NotificationManager::class.java).notify(BackgroundConnection.NOTIFICATION_ID, owner.notification(snapshot)) }
                     catch (_: RuntimeException) { /* Posting denial does not mean foreground promotion failed. */ }
@@ -139,15 +149,44 @@ class TerminalConnectionService : Service() {
         }
     }
 
+    private fun promoteForeground(): Boolean {
+        val owner = repository.backgroundConnection
+        try {
+            // Promote immediately, including when notification permission is denied.
+            val notification = owner.notification(owner.state.value)
+            if (Build.VERSION.SDK_INT >= 29) startForeground(BackgroundConnection.NOTIFICATION_ID, notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            else startForeground(BackgroundConnection.NOTIFICATION_ID, notification)
+        } catch (_: RuntimeException) {
+            owner.startFailed(); stopSelf(); return false
+        }
+        return true
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Discharge a pending foreground start before any stop, including a
+        // disconnect action delivered ahead of another queued start command.
+        if (!promoteForeground()) return START_NOT_STICKY
         if (intent?.action == BackgroundConnection.DISCONNECT) {
             repository.goHome()
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-        } else if (!repository.backgroundConnection.state.value.wanted) {
-            stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
+            stopForConnection()
+        } else {
+            // A new start can reach this existing instance after it was demoted
+            // but before onDestroy. Each foreground start needs promotion;
+            // onCreate alone cannot discharge the platform's start watchdog.
+            if (!repository.backgroundConnection.state.value.wanted) {
+                stopForConnection()
+            } else {
+                observeConnection()
+            }
         }
         return START_NOT_STICKY
+    }
+
+    private fun stopForConnection() {
+        repository.backgroundConnection.stopping()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     override fun onDestroy() {

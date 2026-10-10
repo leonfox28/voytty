@@ -28,6 +28,9 @@ use crate::session_wire::{FirstFrame, SessionWireLimits};
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+#[cfg(test)]
+mod cache_tests;
+
 /// Daemon composition for exact resolution and outbound Session unary calls.
 #[derive(Clone)]
 pub(crate) struct RemoteSessionService {
@@ -223,6 +226,15 @@ struct BrokerRemoteUnaryDemand {
 }
 
 impl RemoteUnaryDemand for BrokerRemoteUnaryDemand {
+    fn prepare(&mut self, deadline: Instant) -> BoxFuture<'_, Result<(), DaemonError>> {
+        Box::pin(async move {
+            self.demand
+                .confirm_authorization_with_progress(deadline, &self.progress)
+                .await?;
+            Ok(())
+        })
+    }
+
     fn exchange<'a>(
         &'a mut self,
         request: &'a [u8],
@@ -234,20 +246,32 @@ impl RemoteUnaryDemand for BrokerRemoteUnaryDemand {
                 .open_bi_with_progress(StreamPurpose::Service, deadline, &self.progress)
                 .await
                 .map_err(RemoteAttemptError::PreWrite)?;
-            timeout_until(deadline, stream.send.write_all(request))
-                .await
-                .map_err(RemoteAttemptError::PostWrite)?
-                .map_err(|_| {
+            let candidate = stream.candidate();
+            let result = async {
+                timeout_until(deadline, stream.send.write_all(request))
+                    .await
+                    .map_err(RemoteAttemptError::PostWrite)?
+                    .map_err(|_| {
+                        RemoteAttemptError::PostWrite(transport_unavailable(
+                            "remote Session request write failed",
+                        ))
+                    })?;
+                stream.send.finish().map_err(|_| {
                     RemoteAttemptError::PostWrite(transport_unavailable(
-                        "remote Session request write failed",
+                        "remote Session request finish failed",
                     ))
                 })?;
-            stream.send.finish().map_err(|_| {
-                RemoteAttemptError::PostWrite(transport_unavailable(
-                    "remote Session request finish failed",
-                ))
-            })?;
-            read_exact_response(&mut stream.recv, deadline).await
+                read_exact_response(&mut stream.recv, deadline).await
+            }
+            .await;
+            drop(stream);
+            if result
+                .as_ref()
+                .is_err_and(RemoteAttemptError::is_transport_failure_after_write)
+            {
+                self.demand.retire_idle_candidate(candidate);
+            }
+            result
         })
     }
 }

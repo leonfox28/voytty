@@ -20,6 +20,24 @@ import java.util.Locale
 class ConnectionStatusUiTest {
     @get:Rule val ui = createComposeRule()
 
+    @Test fun sessionListFailureHasItsOwnRetryAndPreservesConnectedStatus() {
+        var retries = 0
+        var enabled by mutableStateOf(true)
+        ui.setContent {
+            MaterialTheme {
+                androidx.compose.foundation.layout.Column {
+                    TerminalConnectionSubtitle("Fixture", connected(NativeConnectionPath.RELAY, 10u), false, null)
+                    SessionListError("deadline_exceeded", enabled) { retries++ }
+                }
+            }
+        }
+        ui.onNodeWithText(" · Relay · 10 ms").assertIsDisplayed()
+        ui.onNodeWithText("Couldn’t refresh sessions").assertIsDisplayed()
+        ui.onNodeWithText("Retry").performClick()
+        ui.runOnIdle { org.junit.Assert.assertEquals(1, retries); enabled = false }
+        ui.onNodeWithText("Retry").assertIsNotEnabled()
+    }
+
     @Test fun routesStayEnglishAndConnectionTransitionsRetireLatency() {
         var locale by mutableStateOf("en")
         var status by mutableStateOf<TerminalStatus?>(null)

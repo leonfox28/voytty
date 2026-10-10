@@ -1,6 +1,8 @@
 //! Application-owned native terminal reducer. UI observers only read complete frames.
 mod navigation;
 mod notifications;
+#[cfg(test)]
+mod sync_tests;
 pub use notifications::NativeNotification;
 use notifications::NotificationBridge;
 pub mod upload;

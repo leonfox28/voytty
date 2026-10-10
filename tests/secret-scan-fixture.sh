@@ -39,4 +39,30 @@ assert_secret_rejected github-token \
 assert_secret_rejected aws-access-key \
     sh -c 'printf "AKIA%016d\n" 0'
 
+# Runtime protocol values are not embedded credentials. Vendored source stays
+# in scope: both literal assignments and recognizable keys must be rejected.
+rm -f "$test_dir/deploy/credential.txt"
+mkdir -p "$test_dir/vendor/protocol"
+printf '%s%s\n' 'let tok' 'en = incoming.decode()?;' >"$test_dir/vendor/protocol/value.rs"
+printf '%s%s\n' 'tok' 'en = uuid.uuid4().hex' >"$test_dir/value.py"
+printf '%s%s\n' 'val tok' 'en = command.getString("id")' >"$test_dir/value.kt"
+SECRET_SCAN_ROOT="$test_dir" sh "$scanner" >/dev/null \
+    || fail "computed source values were treated as stored credentials"
+
+for extension in rs py kt kts; do
+    source_file="$test_dir/vendor/protocol/literal.$extension"
+    printf '%s%s\n' 'tok' 'en = "fixture-credential"' >"$source_file"
+    if SECRET_SCAN_ROOT="$test_dir" sh "$scanner" >/dev/null 2>&1; then
+        fail "$extension literal credential was accepted"
+    fi
+    rm -f "$source_file"
+done
+printf 'ghp_%040d\n' 0 >"$test_dir/vendor/protocol/key.rs"
+if SECRET_SCAN_ROOT="$test_dir" sh "$scanner" >/dev/null 2>&1; then
+    fail "recognizable credential in vendored source was accepted"
+fi
+rm -f "$test_dir/vendor/protocol/key.rs"
+assert_secret_rejected unquoted-config \
+    sh -c 'printf "%s%s\n" "pass" "word=fixture-credential"'
+
 echo "secret scan scope and credential fixtures verified"

@@ -11,6 +11,7 @@ message ConnectionHello {
   string initiator_display = 5;
   string initiator_build = 6;
   string initiator_platform = 7;
+  bytes incarnation = 8; // optional for old peers; otherwise 16 bytes, owner's live generation for this peer
 }
 
 // Responder half of the normal connection handshake.
@@ -21,6 +22,7 @@ message ConnectionWelcome {
   string responder_build = 4;
   string responder_platform = 5;
   uint64 accepted_authorization_generation = 6; // receiver-side accepted auth
+  bytes incarnation = 7; // optional for old peers; otherwise 16 bytes, owner's live generation for this peer
 }
 
 // Versioned relay-only route cache persisted for known devices.

@@ -6,7 +6,12 @@ use crate::{
     protocol::{malformed, protocol_error},
 };
 use prost::Message;
-use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use zeroize::Zeroize;
 use zterm_core::{DeviceId, DomainErrorKind, OperationLease};
@@ -75,6 +80,12 @@ impl RemoteUnaryClient {
             .demand_with_progress(target, deadline, progress)
             .await?;
 
+        // Establish authentication once before starting the operation budget.
+        // Both exact-byte attempts share this same deadline, even if the
+        // transport must reconnect after a failed write.
+        timeout_until(deadline, demand.prepare(deadline)).await??;
+        let deadline = deadline.min(Instant::now() + contract.operation_budget);
+
         let first = exchange_and_validate(&mut *demand, request, deadline, contract).await;
         match first {
             Ok(response) => Ok(response),
@@ -125,6 +136,7 @@ pub struct RequestContract {
     request_id: u64,
     response_kind: WireKind,
     retry_class: RetryClass,
+    operation_budget: Duration,
 }
 
 impl RequestContract {
@@ -204,6 +216,12 @@ impl RequestContract {
             request_id: frame.request_id,
             response_kind,
             retry_class,
+            operation_budget: if frame.deadline_ms == 0 {
+                crate::protocol::DEFAULT_DEADLINE
+            } else {
+                Duration::from_millis(u64::from(frame.deadline_ms))
+                    .min(crate::protocol::DEFAULT_DEADLINE)
+            },
         })
     }
 
@@ -358,6 +376,12 @@ pub trait RemoteUnaryTransport: Send + Sync {
 
 /// Connection demand retained across retries of the same immutable bytes.
 pub trait RemoteUnaryDemand: Send {
+    /// Completes initial authentication before the ordinary operation budget starts.
+    /// Adapters already prepared by `demand` need no additional work.
+    fn prepare(&mut self, _deadline: Instant) -> BoxFuture<'_, Result<(), DaemonError>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Exchanges one frame and classifies failure relative to the first write.
     fn exchange<'a>(
         &'a mut self,
@@ -372,6 +396,20 @@ pub enum RemoteAttemptError {
     PreWrite(DaemonError),
     /// A remote commit may have occurred, including partial writes.
     PostWrite(DaemonError),
+}
+
+impl RemoteAttemptError {
+    /// A submitted request failed to obtain a transport response. Adapters may
+    /// retire that exact connection if it is idle, without changing replay
+    /// classification or the original absolute deadline. A framed service
+    /// error is a response, so it never passes through this classification.
+    #[must_use]
+    pub fn is_transport_failure_after_write(&self) -> bool {
+        matches!(self, Self::PostWrite(error) if matches!(
+            error.kind(),
+            DomainErrorKind::DeadlineExceeded | DomainErrorKind::TransportUnavailable
+        ))
+    }
 }
 
 /// Reads exactly one complete response and EOF under the absolute deadline.

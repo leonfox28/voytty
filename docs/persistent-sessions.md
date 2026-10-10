@@ -54,6 +54,23 @@ inefficient delta causes `SyncRequired` followed by a replacement snapshot.
 There is no unbounded output log or per-revision queue: slow clients converge
 to the latest merged delta or resynchronize once.
 
+That convergence needs the host writer to notice a slow reader. A remote QUIC
+stream can accept far more bytes than a slow Relay path delivers, so the host
+alone would keep writing one delta per revision into that credit. Remote
+controllers therefore set `TerminalAttachRequest.acknowledge_surface_frames`.
+The host then numbers its live snapshots and deltas with a per-stream
+`frame_sequence` and withholds further revision-driven updates while 4 frames
+or 32 KiB are written but not reported in a cumulative
+`TerminalSurfaceFramesReceived` (one frame is always admitted). Withheld output
+is coalesced into the next merged update, so a requested viewport's snapshot
+waits behind at most that window. Responses, lifecycle, takeover and final
+updates are never withheld. The receipt reports transport delivery only, is
+never a snapshot ACK, and is never replayed on another stream; a receipt
+outside the written range, a skipped sequence, or a receipt on a stream that
+did not opt in is a protocol error. Hosts that ignore the field never number
+frames, and controllers acknowledge only numbered frames; local attachments do
+not opt in.
+
 An attachment checkpoint contains one fixed Zterm-owned projection of the
 latest active viewport. It retains `rows × columns` cells and no engine,
 inactive screen, or history. Main/alternate transitions resynchronize, while

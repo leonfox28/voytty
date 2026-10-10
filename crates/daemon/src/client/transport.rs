@@ -11,7 +11,7 @@ use zterm_client::{
     error::ClientError as DaemonError,
     framing::FirstFrame,
     model::ResolvedSessionTarget,
-    protocol::{DEFAULT_DEADLINE, attachment_cancelled, malformed, protocol_error, service_error},
+    protocol::{attachment_cancelled, malformed, protocol_error, service_error, startup_budget},
 };
 use zterm_core::DomainErrorKind;
 use zterm_core::connection_progress::ConnectionStage;
@@ -39,7 +39,7 @@ impl UnixAttachmentTransport {
         progress: &ProgressObserver,
     ) -> Result<Self, DaemonError> {
         tokio::time::timeout_at(
-            zterm_client::protocol::control_deadline(),
+            zterm_client::protocol::startup_deadline(target),
             Self::open_inner(socket, target, progress),
         )
         .await
@@ -69,7 +69,7 @@ impl UnixAttachmentTransport {
         let open = encode_message(
             WireKind::LocalSessionTunnelOpenRequest,
             request_id,
-            u32::try_from(DEFAULT_DEADLINE.as_millis()).unwrap_or(u32::MAX),
+            u32::try_from(startup_budget(target).as_millis()).unwrap_or(u32::MAX),
             &v2::LocalSessionTunnelOpenRequest {
                 report_progress: progress.is_active(),
                 protocol_version: zterm_proto::LOCAL_SESSION_TUNNEL_VERSION,
@@ -83,7 +83,7 @@ impl UnixAttachmentTransport {
             .map_err(|error| daemon_io("write local Session tunnel Open", error))?;
 
         let first = tokio::time::timeout(
-            DEFAULT_DEADLINE,
+            startup_budget(target),
             read_tunnel_first(&mut stream, progress.clone()),
         )
         .await

@@ -30,6 +30,8 @@ pub struct SessionUnaryRequest {
     pub payload: Vec<u8>,
     /// Control-operation budget.
     pub deadline: Duration,
+    /// Total budget including any initial remote connection setup.
+    pub startup_deadline: Duration,
     /// Stateful calls must preserve operation identity across uncertain delivery.
     pub mutation_or_lease_retry: bool,
 }
@@ -386,6 +388,7 @@ impl SessionUnaryClient {
                 response_kind,
                 payload: message.encode_to_vec(),
                 deadline,
+                startup_deadline: startup_budget(target),
                 mutation_or_lease_retry,
             })
             .await

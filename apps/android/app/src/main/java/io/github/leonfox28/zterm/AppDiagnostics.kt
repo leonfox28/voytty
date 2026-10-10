@@ -2,6 +2,7 @@ package io.github.leonfox28.zterm
 
 import android.content.Context
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
@@ -10,7 +11,6 @@ import io.github.leonfox28.zterm.nativebridge.*
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.io.OutputStream
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,10 +44,14 @@ internal class DiagnosticFiles private constructor(directory: () -> File, privat
         check(stat.st_mode and 0x3f == 0) // no group/other permissions
         check(if (directory) OsConstants.S_ISDIR(stat.st_mode) else OsConstants.S_ISREG(stat.st_mode))
     }
-    private fun open(file: File, write: Boolean): java.io.FileDescriptor {
+    private fun open(file: File, write: Boolean): ParcelFileDescriptor {
         if (exists(file)) validate(file)
         val flags = OsConstants.O_NOFOLLOW or if (write) OsConstants.O_WRONLY or OsConstants.O_APPEND or OsConstants.O_CREAT else OsConstants.O_RDONLY
-        return Os.open(file.path, flags, 0x180) // 0600
+        val descriptor = Os.open(file.path, flags, 0x180) // 0600
+        // Android's FileInput/OutputStream(FileDescriptor) borrows the handle:
+        // closing that stream does not close an Os.open descriptor. Give the
+        // auto-close streams an owned duplicate and always release the original.
+        return try { ParcelFileDescriptor.dup(descriptor) } finally { Os.close(descriptor) }
     }
     private fun atomicWrite(file: File, bytes: ByteArray) {
         listOf(file, File(file.path + ".new"), File(file.path + ".bak")).forEach { if (exists(it)) validate(it) }
@@ -61,7 +65,7 @@ internal class DiagnosticFiles private constructor(directory: () -> File, privat
     }
     private fun normalize(file: File) {
         if (!exists(file)) return
-        val tail = FileInputStream(open(file, false)).use { input ->
+        val tail = ParcelFileDescriptor.AutoCloseInputStream(open(file, false)).use { input ->
             val length = input.channel.size()
             if (length <= limit) return
             input.channel.position(length - limit)
@@ -90,7 +94,7 @@ internal class DiagnosticFiles private constructor(directory: () -> File, privat
                     check(current.renameTo(archive))
                 }
             }
-            FileOutputStream(open(current, true)).use { it.write(bytes) }
+            ParcelFileDescriptor.AutoCloseOutputStream(open(current, true)).use { it.write(bytes) }
         }.isSuccess
     }
     override fun control(): DiagnosticControl = synchronized(lock) {
@@ -101,7 +105,7 @@ internal class DiagnosticFiles private constructor(directory: () -> File, privat
             if (!exists(file)) return@synchronized DiagnosticControl(1u, 0, 0)
             validate(file)
             val bytes = ByteArray(1025)
-            val count = FileInputStream(open(file, false)).use { input ->
+            val count = ParcelFileDescriptor.AutoCloseInputStream(open(file, false)).use { input ->
                 var count = 0
                 while (count < bytes.size) { val read = input.read(bytes, count, bytes.size - count); if (read < 0) break; count += read }
                 count
@@ -122,7 +126,7 @@ internal class DiagnosticFiles private constructor(directory: () -> File, privat
         runCatching {
             if (exists(directory)) {
                 validate(directory, true)
-                names.forEach { name -> val file = File(directory, name); if (exists(file)) FileOutputStream(open(file, true)).use { it.fd.sync() } }
+                names.forEach { name -> val file = File(directory, name); if (exists(file)) ParcelFileDescriptor.AutoCloseOutputStream(open(file, true)).use { it.fd.sync() } }
             }
         }.isSuccess
     }
@@ -135,9 +139,11 @@ internal class DiagnosticFiles private constructor(directory: () -> File, privat
             names.take(if (includeDebug) 4 else 2).forEach { name ->
                 val file = File(directory, name)
                 if (exists(file)) {
-                    val input = FileInputStream(open(file, false))
-                    val length = input.channel.size()
-                    result.add(Snapshot(input, minOf(length, limit), maxOf(0, length - limit)))
+                    val input = ParcelFileDescriptor.AutoCloseInputStream(open(file, false))
+                    try {
+                        val length = input.channel.size()
+                        result.add(Snapshot(input, minOf(length, limit), maxOf(0, length - limit)))
+                    } catch (error: Exception) { input.close(); throw error }
                 }
             }
             result

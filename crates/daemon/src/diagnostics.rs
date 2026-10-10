@@ -38,7 +38,12 @@ pub fn install(paths: &UserPaths) -> Guard {
     });
     if zterm_diagnostics::install(recorder.clone()) {
         let _ = tracing_subscriber::registry()
-            .with(ApplicationEvents(recorder.clone()))
+            .with(ApplicationEvents(recorder.clone()).with_filter(
+                tracing_subscriber::filter::filter_fn(|metadata| {
+                    metadata.target().starts_with("zterm_daemon::")
+                }),
+            ))
+            .with(zterm_diagnostics::transport_trace_layer(recorder.clone()))
             .try_init();
     }
     Guard(recorder)

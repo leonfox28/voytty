@@ -657,8 +657,12 @@ impl LocalClient {
         let absolute_deadline = Instant::now() + deadline;
         let attempts = if retry_ambiguous { 2 } else { 1 };
         let mut last_error = None;
+        let mut request_write_started = false;
         for _ in 0..attempts {
-            match self.request_bytes_once(bytes, absolute_deadline).await {
+            match self
+                .request_bytes_once(bytes, absolute_deadline, &mut request_write_started)
+                .await
+            {
                 Ok(frame) => {
                     // Any complete response is definitive, including a typed
                     // OutcomeUnknown. Only transport ambiguity may consume the
@@ -680,6 +684,15 @@ impl LocalClient {
                 Err(error) => last_error = Some(error),
             }
         }
+        if response_kind == WireKind::LocalPairAcceptResponse && request_write_started {
+            // The byte-identical retry still observes one operation. Losing
+            // both replies (or its remaining budget) cannot establish that
+            // the daemon/remote host did not accept the proof.
+            return Err(DaemonError::new(
+                DomainErrorKind::PairOutcomeUnknown,
+                "local pairing response was lost after the request may have been delivered",
+            ));
+        }
         Err(last_error.unwrap_or_else(|| resource_error("local request had no attempt")))
     }
 
@@ -688,6 +701,7 @@ impl LocalClient {
         &self,
         bytes: &[u8],
         absolute_deadline: Instant,
+        request_write_started: &mut bool,
     ) -> Result<DecodedFrame, DaemonError> {
         let remaining = absolute_deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -696,21 +710,31 @@ impl LocalClient {
                 "local request deadline elapsed",
             ));
         }
-        tokio::time::timeout(remaining, self.request_bytes_once_inner(bytes))
-            .await
-            .map_err(|_| {
-                DaemonError::new(
-                    DomainErrorKind::DeadlineExceeded,
-                    "timed out waiting for local daemon response",
-                )
-            })?
+        tokio::time::timeout(
+            remaining,
+            self.request_bytes_once_inner(bytes, request_write_started),
+        )
+        .await
+        .map_err(|_| {
+            DaemonError::new(
+                DomainErrorKind::DeadlineExceeded,
+                "timed out waiting for local daemon response",
+            )
+        })?
     }
 
     #[cfg(unix)]
-    async fn request_bytes_once_inner(&self, bytes: &[u8]) -> Result<DecodedFrame, DaemonError> {
+    async fn request_bytes_once_inner(
+        &self,
+        bytes: &[u8],
+        request_write_started: &mut bool,
+    ) -> Result<DecodedFrame, DaemonError> {
         let mut stream = tokio::net::UnixStream::connect(&self.socket)
             .await
             .map_err(connect_error)?;
+        // A cancelled write_all may have delivered a complete request. Retain
+        // this fact across a retry whose connect can fail before writing.
+        *request_write_started = true;
         stream
             .write_all(bytes)
             .await
@@ -1181,6 +1205,7 @@ impl SessionUnaryTransport for LocalClient {
                 response_kind,
                 payload,
                 deadline,
+                startup_deadline,
                 mutation_or_lease_retry,
             } = request;
             let request_id = self
@@ -1212,7 +1237,7 @@ impl SessionUnaryTransport for LocalClient {
                         &bytes,
                         request_id,
                         response_kind,
-                        deadline,
+                        startup_deadline,
                         request_class,
                     )
                     .await
@@ -1226,6 +1251,52 @@ impl SessionUnaryTransport for LocalClient {
 mod tests {
     use super::*;
     use zterm_core::DaemonIncarnation;
+
+    #[tokio::test]
+    async fn startup_budget_remote_unary_envelope_allows_setup_but_keeps_inner_control_limit() {
+        let directory = tempfile::tempdir().expect("isolated socket");
+        let socket = directory.path().join("startup.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("listener");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("client");
+            let bytes = read_fake_unary(&mut stream).await;
+            let frame = FrameDecoder::new().feed(&bytes).expect("outer").remove(0);
+            assert_eq!(frame.deadline_ms, 15_000);
+            let request: v2::LocalSessionUnaryRequest = frame
+                .decode_message(WireKind::LocalSessionUnaryRequest)
+                .expect("forwarded request");
+            let inner = FrameDecoder::new()
+                .feed(&request.frame)
+                .expect("inner")
+                .remove(0);
+            assert_eq!(inner.deadline_ms, 5_000);
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            let bytes = encode_message(
+                WireKind::SessionListResponse,
+                frame.request_id,
+                0,
+                &v2::SessionListResponse {
+                    sessions: Vec::new(),
+                },
+            )
+            .expect("reply");
+            stream.write_all(&bytes).await.expect("reply write");
+            stream.shutdown().await.expect("EOF");
+        });
+        let client = LocalClient::new(socket);
+        let started = Instant::now();
+        let result = client
+            .list_sessions_at(ResolvedSessionTarget::device(DeviceId::from_array([3; 32])))
+            .await;
+        server.await.expect("fake daemon");
+        assert!(
+            result
+                .expect("startup can take more than five seconds")
+                .is_empty()
+        );
+        assert!(started.elapsed() >= Duration::from_secs(6));
+        assert!(started.elapsed() < zterm_client::protocol::REMOTE_STARTUP_DEADLINE);
+    }
     #[tokio::test]
     async fn unary_progress_accepts_fragmented_prefix_but_rejects_stages_after_final_reply() {
         use zterm_core::connection_progress::ConnectionStage;

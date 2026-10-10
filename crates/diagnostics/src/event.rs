@@ -54,6 +54,7 @@ kinds! {
     ProcessPanicked => ("process", "Process panicked"),
     DaemonReady => ("daemon", "Local daemon ready"),
     DaemonStopping => ("daemon", "Local daemon stopping"),
+    ShutdownStage => ("daemon", "Network shutdown stage"),
     ListenerFailed => ("daemon", "Listener failed"),
     ListenerRecovered => ("daemon", "Listener recovered"),
     CleanupFailed => ("daemon", "Owned resource cleanup failed"),
@@ -66,6 +67,9 @@ kinds! {
     ControllerTakenOver => ("session", "Controller taken over"),
     PrimaryEstablished => ("connection", "Primary connection established"),
     PrimaryClosed => ("connection", "Primary connection closed"),
+    TransportObserved => ("connection", "Transport state observed"),
+    StreamObserved => ("terminal", "Terminal stream progress observed"),
+    TransportTrace => ("connection", "Relay transport timing"),
     ConnectionStarted => ("connection", "Connection started"),
     ConnectionCompleted => ("connection", "Connection completed"),
     ConnectionFailed => ("connection", "Connection failed"),
@@ -98,6 +102,7 @@ kinds! {
     AppLifecycle => ("android", "Application lifecycle changed"),
     NativeInitialized => ("android", "Native runtime initialized"),
     AppOperationFailed => ("android", "Application operation failed"),
+    SessionListFailed => ("android", "Session list refresh failed"),
     StorageFailed => ("android", "Application storage failed"),
     NotificationFailed => ("android", "Notification delivery failed"),
     InputFenceChanged => ("terminal", "Input admission changed"),
@@ -148,6 +153,20 @@ codes!(
     Saving,
     Loading,
     Connecting,
+    ResolvingTransport,
+    HandshakingTransport,
+    ReceivingTransport,
+    AuthenticatingTransport,
+    TransportReady,
+    ReusingTransport,
+    RetiringTransport,
+    OpeningGreeting,
+    WritingGreeting,
+    ReadingGreeting,
+    WritingDetach,
+    AwaitingDetach,
+    QuiescingStreams,
+    ClosingEndpoint,
     Reconnecting,
     Active,
     Synchronizing,
@@ -164,6 +183,10 @@ codes!(
     InputReady,
     InputBlocked,
     Snapshot,
+    SnapshotSent,
+    SnapshotReceived,
+    SnapshotApplied,
+    SnapshotAcknowledged,
     DeltaGap,
     Resize,
     Export,
@@ -242,6 +265,134 @@ impl Operation {
     /// Logging-only ordinal, scoped by the process instance.
     pub fn id(&self) -> u64 {
         self.id
+    }
+}
+
+/// Closed phases from the locally maintained relay timing instrumentation.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportPhase {
+    /// Relay DNS/TCP/TLS/registration has begun.
+    RelayDialing,
+    /// Relay registration completed.
+    RelayConnected,
+    /// Relay dialing failed.
+    RelayDialFailed,
+    /// QUIC datagram admitted to the local bounded relay queue.
+    RelayEnqueued,
+    /// Datagram handed to the relay stream sink; flush is a separate event.
+    RelayWrite,
+    /// Encrypted datagram received from the relay stream.
+    RelayReceived,
+    /// Datagram passed from the relay queue to QUIC's receive buffers.
+    RelayDelivered,
+    /// Queued datagram exceeded its original three-second lifetime.
+    RelayExpired,
+    /// Relay explicitly reported rate limiting.
+    RelayRateLimited,
+    /// The relay sink finished flushing its batch; not proof of peer receipt.
+    RelayFlushed,
+    /// Registered relay connection lost before its first successful ping.
+    RelayUnconfirmedLost,
+    /// Previously confirmed relay connection was lost.
+    RelayDisconnected,
+    /// DNS yielded an address and a TCP attempt began.
+    RelayTcpConnecting,
+    /// The relay TCP connection completed.
+    RelayTcpReady,
+    /// The relay TLS handshake began.
+    RelayTlsStarted,
+    /// The relay TLS handshake completed.
+    RelayTlsReady,
+    /// HTTP WebSocket upgrade completed; relay authentication is pending.
+    RelayUpgradeReady,
+    /// Relay authentication completed.
+    RelayAuthReady,
+}
+impl TransportPhase {
+    pub(crate) fn from_code(code: u64) -> Option<Self> {
+        Some(match code {
+            1 => Self::RelayDialing,
+            2 => Self::RelayConnected,
+            3 => Self::RelayDialFailed,
+            4 => Self::RelayEnqueued,
+            5 => Self::RelayWrite,
+            6 => Self::RelayReceived,
+            7 => Self::RelayDelivered,
+            8 => Self::RelayExpired,
+            9 => Self::RelayRateLimited,
+            10 => Self::RelayFlushed,
+            11 => Self::RelayUnconfirmedLost,
+            12 => Self::RelayDisconnected,
+            _ => return None,
+        })
+    }
+}
+
+/// Closed relay failure categories; never error text, addresses or credentials.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportFailure {
+    /// The relay actor's whole connect deadline expired.
+    DialDeadline,
+    /// The underlying relay dial timed out.
+    DialTimeout,
+    /// The underlying TCP dial failed.
+    DialIo,
+    /// Relay address lookup failed.
+    Dns,
+    /// The configured proxy could not establish the tunnel.
+    Proxy,
+    /// The TLS connection failed.
+    Tls,
+    /// The WebSocket upgrade or stream setup failed.
+    Websocket,
+    /// Relay authentication failed.
+    Authentication,
+    /// Another closed setup error category.
+    ConnectOther,
+    /// A relay write did not finish before its deadline.
+    SendTimeout,
+    /// A relay ping did not receive a pong before its deadline.
+    PingTimeout,
+    /// The connection's local IP is no longer available.
+    LocalIpInvalid,
+    /// The connection has no local socket address.
+    LocalAddrMissing,
+    /// The relay receive stream reached EOF.
+    ServerClosed,
+    /// The relay receive stream failed.
+    StreamRead,
+    /// The relay send stream failed.
+    StreamWrite,
+    /// A relay message could not be decoded.
+    Protocol,
+    /// An empty or oversized datagram was rejected before sending.
+    InvalidDatagram,
+}
+impl TransportFailure {
+    pub(crate) fn from_code(code: u64) -> Option<Self> {
+        Some(match code {
+            1 => Self::DialDeadline,
+            2 => Self::DialTimeout,
+            3 => Self::DialIo,
+            4 => Self::Dns,
+            5 => Self::Proxy,
+            6 => Self::Tls,
+            7 => Self::Websocket,
+            8 => Self::Authentication,
+            9 => Self::ConnectOther,
+            10 => Self::SendTimeout,
+            11 => Self::PingTimeout,
+            12 => Self::LocalIpInvalid,
+            13 => Self::LocalAddrMissing,
+            14 => Self::ServerClosed,
+            15 => Self::StreamRead,
+            16 => Self::StreamWrite,
+            17 => Self::Protocol,
+            18 => Self::InvalidDatagram,
+            _ => return None,
+        })
     }
 }
 
@@ -377,6 +528,34 @@ impl Event {
         self.fields.connection_id = Some(value);
         self
     }
+    /// Content-free QUIC counters at a known operation boundary.
+    pub fn transport_counters(mut self, sent: u64, received: u64, lost: u64) -> Self {
+        self.fields.transport_sent_bytes = Some(sent);
+        self.fields.transport_received_bytes = Some(received);
+        self.fields.transport_lost_packets = Some(lost);
+        self
+    }
+    /// Ordered stream progress without bytes, frame contents or peer identifiers.
+    pub fn stream_progress(mut self, value: StreamProgress) -> Self {
+        self.fields.stream_progress = Some(value);
+        self
+    }
+    /// Selected path RTT at this boundary, without an address or payload.
+    pub fn transport_rtt(mut self, millis: u64) -> Self {
+        self.fields.transport_rtt_ms = Some(millis);
+        self
+    }
+    /// Number of open paths and their maximum RTT, without remote addresses.
+    pub fn transport_paths(mut self, count: u64, max_rtt_ms: Option<u64>) -> Self {
+        self.fields.transport_path_count = Some(count);
+        self.fields.transport_max_path_rtt_ms = max_rtt_ms;
+        self
+    }
+    /// Owner-observed number of active application streams.
+    pub fn transport_streams(mut self, count: u64) -> Self {
+        self.fields.transport_active_streams = Some(count);
+        self
+    }
     /// Durable commit is distinct from later cleanup success.
     pub fn committed(mut self, value: bool) -> Self {
         self.fields.committed = Some(value);
@@ -415,6 +594,25 @@ impl Event {
     }
 }
 
+/// Numeric progress of one ordered application stream on a local connection.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StreamProgress {
+    /// QUIC stream number, scoped by the record's process and connection ordinal.
+    pub stream_id: u64,
+    /// Ordered bytes consumed by this stream reader, including incomplete frames.
+    pub read_bytes: u64,
+    /// Complete application frames decoded over this stream's lifetime.
+    pub decoded_frames: u64,
+    /// Complete frames currently retained for the application owner.
+    pub queued_frames: u64,
+    /// Prefix and body bytes retained for the next incomplete application frame.
+    pub buffered_bytes: u64,
+    /// STREAM frames received over the whole QUIC connection, including repeats
+    /// and other streams; this is not an ordered-delivery or acknowledgment count.
+    pub connection_stream_frames: u64,
+}
+
 /// Only safe optional event data is admitted by the schema decoder.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -440,6 +638,54 @@ pub struct Fields {
     /// Process-local connection ordinal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connection_id: Option<u64>,
+    /// Bounded, numeric-only ordered stream progress.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_progress: Option<StreamProgress>,
+    /// QUIC bytes sent, without addresses or payloads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_sent_bytes: Option<u64>,
+    /// QUIC bytes received, without addresses or payloads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_received_bytes: Option<u64>,
+    /// QUIC packets declared lost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_lost_packets: Option<u64>,
+    /// Selected path RTT in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_rtt_ms: Option<u64>,
+    /// Number of open transport paths at this boundary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_path_count: Option<u64>,
+    /// Maximum RTT among open paths in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_max_path_rtt_ms: Option<u64>,
+    /// Owner-observed number of active application streams.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_active_streams: Option<u64>,
+    /// Closed relay transport timing stage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_phase: Option<TransportPhase>,
+    /// Closed relay failure category, without arbitrary dependency error text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_failure: Option<TransportFailure>,
+    /// Relay tag keyed with random process-local salt; never a URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_relay_tag: Option<u64>,
+    /// Peer tag keyed with random process-local salt; never a device ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_peer_tag: Option<u64>,
+    /// Truncated hash of an encrypted datagram, for diagnostic matching only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_packet_tag: Option<u64>,
+    /// Header type: 0 unknown, 1 short, 2 Initial, 3 zero RTT, 4 Handshake, 5 Retry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_packet_kind: Option<u64>,
+    /// Age in the local relay queue, in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_queue_ms: Option<u64>,
+    /// Monotonic milliseconds from the first local transport trace event.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport_elapsed_ms: Option<u64>,
     /// Canonical public Session identity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -553,6 +799,10 @@ impl Record {
         }
         let record: Self = serde_json::from_slice(bytes).ok()?;
         if record.schema != 1
+            || record
+                .fields
+                .transport_packet_kind
+                .is_some_and(|kind| kind > 5)
             || record.component != record.event.component()
             || record.message != record.event.message()
             || record.process_instance.len() > 64

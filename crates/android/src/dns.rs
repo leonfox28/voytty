@@ -92,6 +92,10 @@ impl SystemDns {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         // No with_system_defaults: Kotlin has already read the active network safely.
+        // The replacement NameserverConfig constructors accept only IpAddr and
+        // would discard Android's IPv6 interface scope. Keep the SocketAddr API
+        // until the replacement can preserve scoped link-local DNS servers.
+        #[allow(deprecated)]
         let current = DnsResolver::builder()
             .with_nameservers(values.into_iter().map(|value| (value, DnsProtocol::Udp)))
             .build();

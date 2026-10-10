@@ -111,6 +111,20 @@ first mutation. Only an ambiguous transport failure gets one byte-identical
 retry; a complete typed error is definitive and never silently moves the same
 mutation to another lease.
 
+Remote Session startup requests explicitly allow 15 seconds in total for
+discovery, connection authentication, and the first response. Once authenticated,
+unary operations have at most five seconds, shared across their allowed attempts
+and capped by the original startup deadline. Initial terminal attachments likewise
+allow at most five seconds for the first response after their channel opens.
+The CLI's outer forwarding envelope carries the startup budget; the inner Session
+request retains its five-second control budget. Local operations, connected
+terminal commands, and existing reconnect and shutdown deadlines are unchanged.
+Normal outbound transport setup and Hello/Welcome share the startup deadline;
+they do not restart separate ten-second transport or five-second authentication
+timers. The daemon's shared dial worker also bounds each normal setup attempt to
+15 seconds, while each requesting caller retains its own absolute deadline.
+Pairing attempt limits and inbound first-frame admission limits remain separate.
+
 A stop acknowledgement is produced only after bounded concurrent session
 cleanup succeeds, then flushed before the listener exits and removes its
 socket. Cleanup deadline or failed acknowledgement delivery leaves the daemon

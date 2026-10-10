@@ -1,6 +1,6 @@
 //! Per-peer Iroh connection singleflight, duplicate arbitration, and stream admission.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 #[cfg(unix)]
 use std::future::Future;
@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use zterm_client::progress::{ProgressEvent, ProgressHistory, ProgressObserver};
+use zterm_client::route::{combined_relay_address, selected_relay};
 use zterm_core::connection_progress::ConnectionStage;
 
 use futures_util::StreamExt;
@@ -23,8 +24,8 @@ use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedSemaphorePermit, Semaphore, 
 use tokio::task::{JoinHandle, JoinSet};
 use zterm_core::{
     AuthGeneration, AuthorizationSnapshot, AuthorizationStatus, ConnectionAttemptId,
-    ConnectionCandidateKey, ConnectionHello, ConnectionWelcome, DeviceId, DomainErrorKind,
-    RelayHint, TransportLimits, designated_primary,
+    ConnectionCandidateKey, ConnectionHello, ConnectionIncarnation, ConnectionWelcome, DeviceId,
+    DomainErrorKind, RelayHint, TransportLimits, designated_primary,
 };
 use zterm_proto::{DecodedFrame, WireKind, encode_message, v2};
 
@@ -49,7 +50,8 @@ const RETRY_CAP: Duration = Duration::from_secs(10);
 
 pub use zterm_client::handshake::ConnectionIdentity;
 use zterm_client::handshake::{
-    CLOSE_UNAUTHORIZED, controller_handshake, read_one_frame, write_handshake_message,
+    CLOSE_UNAUTHORIZED, connect_transport, controller_handshake, read_one_frame,
+    write_handshake_message,
 };
 
 /// Why the broker is intentionally closing a peer connection.
@@ -318,6 +320,49 @@ struct PeerState {
     remote_acceptance: Option<AuthGeneration>,
     dial_worker_running: bool,
     terminal_error: Option<DaemonError>,
+    incarnation: PeerIncarnation,
+    local_incarnation: Option<ConnectionIncarnation>,
+}
+
+#[derive(Default)]
+struct PeerIncarnation {
+    current: Option<ConnectionIncarnation>,
+    // A Hello/Welcome cannot remain pending beyond its handshake deadline.
+    // Retaining retired owners for that whole window fences delayed handshakes
+    // without accumulating generation IDs over the daemon's lifetime.
+    retired: VecDeque<(ConnectionIncarnation, Instant)>,
+}
+
+impl PeerIncarnation {
+    fn observe(
+        &mut self,
+        incarnation: ConnectionIncarnation,
+        now: Instant,
+        handshake_window: Duration,
+        maximum: usize,
+    ) -> Result<bool, DaemonError> {
+        self.retired.retain(|(_, deadline)| *deadline > now);
+        if self.current == Some(incarnation) {
+            return Ok(false);
+        }
+        if self
+            .retired
+            .iter()
+            .any(|(retired, _)| *retired == incarnation)
+        {
+            return Err(transport_unavailable(
+                "handshake belongs to a retired connection owner",
+            ));
+        }
+        if let Some(previous) = self.current {
+            if self.retired.len() >= maximum {
+                return Err(resource_exhausted("too many connection owner restarts"));
+            }
+            self.retired.push_back((previous, now + handshake_window));
+        }
+        self.current = Some(incarnation);
+        Ok(true)
+    }
 }
 
 struct CandidateRegistry<T> {
@@ -381,6 +426,7 @@ enum CandidateSide {
 struct Candidate {
     diagnostic: zterm_diagnostics::Operation,
     remote_capabilities: OnceLock<zterm_core::Capabilities>,
+    remote_incarnation: OnceLock<Option<ConnectionIncarnation>>,
     key: ConnectionCandidateKey,
     remote: DeviceId,
     connection: Connection,
@@ -1254,13 +1300,13 @@ impl ConnectionBroker {
             let result = timeout_or_pair_shutdown(
                 attempt_deadline,
                 self.inner.pairing.subscribe(),
-                endpoint.connect(route.address, ZTERM_PAIR_ALPN),
+                connect_transport(&endpoint, route.address, ZTERM_PAIR_ALPN, attempt_deadline),
             )
             .await;
             let connection = match result {
                 Ok(Ok(connection)) => connection,
-                Ok(Err(_)) => {
-                    last_error = Some(transport_unavailable("pairing connect attempt failed"));
+                Ok(Err(error)) => {
+                    last_error = Some(error);
                     continue;
                 }
                 Err(error) if should_try_next_pair_route(&error, deadline) => {
@@ -1273,11 +1319,12 @@ impl ConnectionBroker {
                 close_connection(&connection, CLOSE_INCOMPATIBLE, b"identity mismatch");
                 return Err(error);
             }
+            let verified_relay = selected_relay(&connection);
             return PairConnection::from_authenticated(
                 connection,
                 self.inner.identity.device_id(),
                 remote,
-                route.verified_relay,
+                verified_relay,
                 admission,
                 self.inner.pairing.subscribe(),
             );
@@ -1516,6 +1563,46 @@ impl ConnectionBroker {
 }
 
 impl ConnectionDemand {
+    /// Retires only this failed, still-selected transport when neither outbound
+    /// streams nor inbound handlers use it. Never wait past a request deadline.
+    pub(crate) fn retire_idle_candidate(&self, failed: ConnectionCandidateKey) {
+        let Ok(mut state) = self.slot.state.try_lock() else {
+            return;
+        };
+        if state.candidates.primary() != Some(failed) {
+            return;
+        }
+        let Some(candidate) = state.candidates.get(&failed).cloned() else {
+            return;
+        };
+        let limits = self.broker.inner.limits;
+        let (Ok(streams), Ok(handlers)) = (
+            u32::try_from(limits.max_bi_streams_per_connection),
+            u32::try_from(limits.max_stream_handlers_per_connection),
+        ) else {
+            return;
+        };
+        // Acquiring all permits makes the idle check atomic with admission in
+        // both directions. A busy terminal/upload must keep its connection.
+        let Ok(_streams) = Arc::clone(&candidate.admission.streams).try_acquire_many_owned(streams)
+        else {
+            return;
+        };
+        let Ok(_handlers) =
+            Arc::clone(&candidate.admission.handlers).try_acquire_many_owned(handlers)
+        else {
+            return;
+        };
+        state.candidates.remove(failed);
+        if state.candidates.is_empty() {
+            state.remote_acceptance = None;
+        }
+        drop(state);
+        candidate.set_primary(false, "retry");
+        candidate.cancel(ConnectionCloseReason::EndpointReset);
+        self.slot.changed.notify_waiters();
+    }
+
     fn ensure_active(&self) -> Result<(), DaemonError> {
         if self.released {
             Err(DaemonError::new(
@@ -1581,6 +1668,12 @@ impl ConnectionDemand {
             if let Some(selection) = selection {
                 if reusing {
                     progress.report(ConnectionStage::ReusingConnection);
+                    zterm_client::handshake::record_transport_observation(
+                        &selection.0.diagnostic,
+                        &selection.0.connection,
+                        zterm_diagnostics::Stage::ReusingTransport,
+                        Some(self.slot.active_streams.load(Ordering::Acquire) as u64),
+                    );
                 }
                 return Ok(selection);
             }
@@ -1598,8 +1691,18 @@ impl ConnectionDemand {
         &self,
         deadline: Instant,
     ) -> Result<AuthorizationConfirmation, DaemonError> {
+        self.confirm_authorization_with_progress(deadline, &ProgressObserver::default())
+            .await
+    }
+
+    /// Observes initial authentication without consuming a business-stream permit.
+    pub(crate) async fn confirm_authorization_with_progress(
+        &self,
+        deadline: Instant,
+        progress: &ProgressObserver,
+    ) -> Result<AuthorizationConfirmation, DaemonError> {
         let (candidate, generation) = self
-            .wait_for_confirmed_primary(deadline, &ProgressObserver::default(), &mut 0)
+            .wait_for_confirmed_primary(deadline, progress, &mut 0)
             .await?;
         Ok(AuthorizationConfirmation {
             remote: self.slot.remote,
@@ -1806,10 +1909,10 @@ impl ConnectionBroker {
         }
 
         let transient_routes = slot.demand.routes();
-        let deadline = Instant::now()
-            + self.inner.limits.address_lookup_budget
-            + self.inner.limits.connect_attempt_budget
-            + self.inner.limits.first_frame_deadline;
+        // A normal attempt shares one setup window across address lookup,
+        // transport authentication and Hello/Welcome. Each demand still has
+        // its own absolute request deadline and can stop waiting earlier.
+        let deadline = Instant::now() + zterm_client::protocol::REMOTE_STARTUP_DEADLINE;
         slot.report_progress(ConnectionStage::LookingUpAddress)
             .await;
         let routes = self
@@ -1826,25 +1929,18 @@ impl ConnectionBroker {
                     "outbound demand ended before dial",
                 ));
             }
-            let connect_deadline = Instant::now() + self.inner.limits.connect_attempt_budget;
             slot.report_progress(ConnectionStage::ConnectingSecurely)
                 .await;
-            let connection = match timeout_until(
-                connect_deadline,
-                endpoint.connect(route.address.clone(), ZTERM_ALPN),
-            )
-            .await
-            {
-                Ok(Ok(connection)) => connection,
-                Ok(Err(_)) => {
-                    last_error = Some(transport_unavailable("Iroh connect attempt failed"));
-                    continue;
-                }
-                Err(error) => {
-                    last_error = Some(error);
-                    continue;
-                }
-            };
+            let connection =
+                match connect_transport(&endpoint, route.address.clone(), ZTERM_ALPN, deadline)
+                    .await
+                {
+                    Ok(connection) => connection,
+                    Err(error) => {
+                        last_error = Some(error);
+                        continue;
+                    }
+                };
             configure_normal_connection_limits(&connection, self.inner.limits);
             if device_from_endpoint_id(connection.remote_id()) != slot.remote {
                 close_connection(&connection, CLOSE_INCOMPATIBLE, b"identity mismatch");
@@ -1869,13 +1965,17 @@ impl ConnectionBroker {
                 }
             };
 
+            // Cache the path that reached the authenticated peer, never the
+            // first supplied hint. A direct path has no relay to certify here.
+            let verified_relay = selected_relay(&connection);
             let result = self
                 .run_outbound_handshake(
                     Arc::clone(&slot),
                     connection,
                     key,
-                    route.verified_relay,
+                    verified_relay,
                     connection_permit,
+                    deadline,
                 )
                 .await;
             match result {
@@ -1912,23 +2012,16 @@ impl ConnectionBroker {
         deadline: Instant,
     ) -> Result<Vec<DialRoute>, DaemonError> {
         if let Some(address) = mutex_lock(&self.inner.test_routes).get(&remote).cloned() {
-            return Ok(vec![DialRoute {
-                address,
-                verified_relay: None,
-            }]);
+            return Ok(vec![DialRoute { address }]);
         }
         self.inner
             .resolver
             .candidates(endpoint, remote, transient, deadline)
             .await
-            .map(|candidates| {
-                candidates
-                    .into_iter()
-                    .map(|candidate| DialRoute {
-                        address: candidate.endpoint_addr().clone(),
-                        verified_relay: Some(candidate.relay_hint().clone()),
-                    })
-                    .collect()
+            .and_then(|candidates| {
+                Ok(vec![DialRoute {
+                    address: combined_relay_address(endpoint_id_from_device(remote)?, &candidates)?,
+                }])
             })
     }
 
@@ -1939,6 +2032,7 @@ impl ConnectionBroker {
         key: ConnectionCandidateKey,
         verified_relay: Option<RelayHint>,
         connection_permit: OwnedSemaphorePermit,
+        deadline: Instant,
     ) -> Result<(), DaemonError> {
         let candidate = Candidate::new(
             key,
@@ -1953,19 +2047,21 @@ impl ConnectionBroker {
         )?;
         self.register_candidate(&slot, Arc::clone(&candidate))
             .await?;
-        let deadline = Instant::now() + self.inner.limits.first_frame_deadline;
         let result = async {
             slot.report_progress(ConnectionStage::CheckingProtocolAndAccess)
                 .await;
+            let identity = self.connection_identity(&slot).await;
             let welcome = controller_handshake(
                 &candidate.connection,
-                &self.inner.identity,
+                &identity,
                 key.attempt,
                 self.inner.limits.max_pair_hello_frame_bytes,
                 deadline,
             )
             .await?;
             let _ = candidate.remote_capabilities.set(welcome.capabilities());
+            self.observe_incarnation(&slot, &candidate, welcome.incarnation())
+                .await?;
             {
                 let mut state = slot.state.lock().await;
                 state.remote_acceptance = Some(welcome.accepted_authorization_generation());
@@ -1987,7 +2083,7 @@ impl ConnectionBroker {
         self.persist_verified_handshake(&candidate);
         slot.report_progress(ConnectionStage::SelectingConnection)
             .await;
-        self.promote_candidate(slot, candidate).await
+        self.promote_candidate(slot, candidate, deadline).await
     }
 
     async fn run_inbound_handshake(
@@ -2066,6 +2162,16 @@ impl ConnectionBroker {
             }
         };
 
+        if let Err(error) = self
+            .observe_incarnation(&slot, &candidate, hello.incarnation())
+            .await
+        {
+            self.remove_candidate(&slot, key, ConnectionCloseReason::EndpointReset)
+                .await;
+            return Err(error);
+        }
+
+        let identity = self.connection_identity(&slot).await;
         let welcome = ConnectionWelcome::new(
             zterm_proto::WIRE_MAJOR,
             self.inner.identity.capabilities(),
@@ -2079,7 +2185,8 @@ impl ConnectionBroker {
                 DomainErrorKind::IdentityInvalid,
                 format!("local Welcome became invalid: {error}"),
             )
-        })?;
+        })?
+        .with_incarnation(Some(identity.incarnation()));
         if let Err(error) = write_handshake_message(
             &mut send,
             WireKind::ConnectionWelcome,
@@ -2097,17 +2204,101 @@ impl ConnectionBroker {
                 .await;
             return Err(transport_unavailable("unable to finish Welcome stream"));
         }
+        // finish only queues the FIN. Duplicate arbitration can immediately
+        // close this connection, discarding a Welcome that is still in flight.
+        // The reverse direction then has no authorization proof even though
+        // the original primary remains healthy. Drain the handshake within its
+        // existing deadline before allowing arbitration to retire its carrier.
+        let delivered =
+            timeout_until(deadline, send.stopped())
+                .await
+                .and_then(|result| match result {
+                    // Readers consume one complete framed Welcome and then
+                    // drop the stream, which may report STOP_SENDING(0)
+                    // before the FIN acknowledgement. Both mean this carrier
+                    // can be retired; a nonzero stop is an application error.
+                    Ok(None) => Ok(()),
+                    Ok(Some(code)) if code == VarInt::from_u32(0) => Ok(()),
+                    Ok(Some(_)) | Err(_) => {
+                        Err(transport_unavailable("Welcome stream was not delivered"))
+                    }
+                });
+        if let Err(error) = delivered {
+            self.remove_candidate(&slot, key, ConnectionCloseReason::EndpointReset)
+                .await;
+            return Err(error);
+        }
         self.persist_verified_handshake(&candidate);
-        self.promote_candidate(slot, candidate).await
+        self.promote_candidate(
+            slot,
+            candidate,
+            Instant::now() + self.inner.limits.connect_attempt_budget,
+        )
+        .await
     }
 }
 
 struct DialRoute {
     address: EndpointAddr,
-    verified_relay: Option<RelayHint>,
 }
 
 impl ConnectionBroker {
+    async fn connection_identity(&self, slot: &PeerSlot) -> ConnectionIdentity {
+        self.inner.identity.clone().with_incarnation(
+            slot.state
+                .lock()
+                .await
+                .local_incarnation
+                .expect("registered candidate has a local connection generation"),
+        )
+    }
+
+    async fn observe_incarnation(
+        &self,
+        slot: &Arc<PeerSlot>,
+        candidate: &Arc<Candidate>,
+        incarnation: Option<ConnectionIncarnation>,
+    ) -> Result<(), DaemonError> {
+        let _ = candidate.remote_incarnation.set(incarnation);
+        let Some(incarnation) = incarnation else {
+            return Ok(());
+        };
+        let retired = {
+            let mut state = slot.state.lock().await;
+            if !state.incarnation.observe(
+                incarnation,
+                Instant::now(),
+                self.inner.limits.first_frame_deadline + self.inner.limits.connect_attempt_budget,
+                self.inner.limits.max_remote_connections,
+            )? {
+                return Ok(());
+            }
+            state.remote_acceptance = None;
+            let keys: Vec<_> = state
+                .candidates
+                .entries
+                .iter()
+                .filter_map(|(key, entry)| {
+                    entry
+                        .value
+                        .remote_incarnation
+                        .get()
+                        .is_some_and(|remote| *remote != Some(incarnation))
+                        .then_some(*key)
+                })
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| state.candidates.remove(key))
+                .collect::<Vec<_>>()
+        };
+        for old in retired {
+            old.set_primary(false, "peer_restarted");
+            old.cancel(ConnectionCloseReason::EndpointReset);
+        }
+        slot.changed.notify_waiters();
+        Ok(())
+    }
+
     async fn register_candidate(
         &self,
         slot: &Arc<PeerSlot>,
@@ -2118,6 +2309,15 @@ impl ConnectionBroker {
             return Err(transport_unavailable("network transport is stopping"));
         }
         let mut state = slot.state.lock().await;
+        if state.candidates.is_empty() {
+            // Reconnect can also follow a one-sided QUIC timeout without a
+            // process restart. The remote must not retain a primary that this
+            // owner can no longer reuse. Concurrent/reverse candidates share
+            // this generation and still use deterministic duplicate arbitration.
+            state.local_incarnation = Some(ConnectionIncarnation::from_array(
+                random_attempt_id()?.to_bytes(),
+            ));
+        }
         if let Err(duplicate) = state.candidates.register(candidate.key, candidate) {
             duplicate.cancel(ConnectionCloseReason::Duplicate);
             return Err(transport_unavailable(
@@ -2133,8 +2333,8 @@ impl ConnectionBroker {
         &self,
         slot: Arc<PeerSlot>,
         candidate: Arc<Candidate>,
+        deadline: Instant,
     ) -> Result<(), DaemonError> {
-        let deadline = Instant::now() + self.inner.limits.connect_attempt_budget;
         loop {
             let outcome = {
                 let mut state = slot.state.lock().await;
@@ -2504,6 +2704,7 @@ impl Candidate {
         Ok(Arc::new(Self {
             diagnostic: zterm_diagnostics::Operation::default(),
             remote_capabilities: OnceLock::new(),
+            remote_incarnation: OnceLock::new(),
             key,
             remote,
             connection,
@@ -2534,6 +2735,12 @@ impl Candidate {
         } else {
             decrement_atomic(&self.metrics.primary);
             self.metrics.remove_path(self.remote);
+            zterm_client::handshake::record_transport_observation(
+                &self.diagnostic,
+                &self.connection,
+                zterm_diagnostics::Stage::RetiringTransport,
+                None,
+            );
         }
         self.metrics.publish();
         tracing::info!(
@@ -2753,14 +2960,6 @@ fn is_remote_service_kind(kind: WireKind) -> bool {
             | WireKind::TerminalSyncRequest
             | WireKind::TerminalHistoryWindowRequest
     )
-}
-
-fn selected_relay(connection: &Connection) -> Option<RelayHint> {
-    connection
-        .paths()
-        .iter()
-        .find(|path| path.is_selected())
-        .and_then(|path| classify_transport_addr(path.remote_addr()).1)
 }
 
 fn validate_pair_tls_connection(
@@ -3159,6 +3358,7 @@ fn protocol_error(error: zterm_proto::ProtocolError) -> DaemonError {
         | ProtocolError::InvalidIdentifier(_)
         | ProtocolError::InvalidTerminalSize { .. }
         | ProtocolError::InvalidTerminalSurface(_)
+        | ProtocolError::InvalidPayloadEncoding
         | ProtocolError::InvalidLocalConnectionStage
         | ProtocolError::InvalidTerminalSemanticField(_)
         | ProtocolError::InvalidUpload(_) => DomainErrorKind::MalformedFrame,
@@ -3337,6 +3537,41 @@ mod tests {
 
     fn relay(url: &str) -> RelayHint {
         RelayHint::new(url).expect("test relay is valid")
+    }
+
+    #[test]
+    fn retired_owner_handshakes_are_bounded_and_cannot_replace_the_current_owner() {
+        let first = ConnectionIncarnation::from_array([1; 16]);
+        let next = ConnectionIncarnation::from_array([2; 16]);
+        let third = ConnectionIncarnation::from_array([3; 16]);
+        let now = Instant::now();
+        let window = Duration::from_secs(15);
+        let mut owners = PeerIncarnation::default();
+        assert!(owners.observe(first, now, window, 1).expect("first"));
+        assert!(!owners.observe(first, now, window, 1).expect("same owner"));
+        assert!(owners.observe(next, now, window, 1).expect("restart"));
+        assert_eq!(
+            owners
+                .observe(first, now, window, 1)
+                .expect_err("late old Hello")
+                .kind(),
+            DomainErrorKind::TransportUnavailable
+        );
+        assert_eq!(owners.current, Some(next));
+        assert_eq!(
+            owners
+                .observe(third, now, window, 1)
+                .expect_err("bounded churn")
+                .kind(),
+            DomainErrorKind::ResourceExhausted
+        );
+        assert_eq!(owners.current, Some(next));
+        assert!(
+            owners
+                .observe(third, now + window, window, 1)
+                .expect("expired handshake window")
+        );
+        assert_eq!(owners.retired.len(), 1);
     }
 
     #[cfg(unix)]
@@ -3778,7 +4013,7 @@ mod tests {
             .expect("pair dial method end");
         let pair_body = &source[pair_start..pair_end];
         assert!(pair_body.contains("ZTERM_PAIR_ALPN"));
-        assert!(pair_body.contains("endpoint.connect"));
+        assert!(pair_body.contains("connect_transport("));
         for forbidden in [
             "peer_slot(",
             "register_candidate(",

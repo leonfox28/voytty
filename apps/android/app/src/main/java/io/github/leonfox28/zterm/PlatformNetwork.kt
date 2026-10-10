@@ -16,6 +16,7 @@ internal class PlatformNetwork(context: Context, private val onChanged: (List<Na
     }
     fun current(): List<NativeDnsServer> = servers(manager.activeNetwork?.let(manager::getLinkProperties))
     fun start() { manager.registerDefaultNetworkCallback(callback) }
+    fun stop() { manager.unregisterNetworkCallback(callback) }
     private fun servers(properties: LinkProperties?): List<NativeDnsServer> = properties?.dnsServers.orEmpty()
         .take(8).map { address -> NativeDnsServer(address.address, (address as? Inet6Address)?.scopeId?.toUInt() ?: 0u) }
 }

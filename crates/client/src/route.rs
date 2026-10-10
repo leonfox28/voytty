@@ -1,7 +1,7 @@
 //! Relay-only signed discovery and authenticated cache/ticket route ordering.
 use crate::error::ClientError as DaemonError;
 use futures_util::StreamExt;
-use iroh::{Endpoint, EndpointAddr, EndpointId, RelayUrl};
+use iroh::{Endpoint, EndpointAddr, EndpointId, RelayUrl, TransportAddr, endpoint::Connection};
 use std::{collections::BTreeSet, fmt, time::Instant};
 use zterm_core::{DeviceId, DomainErrorKind, RelayHint, TransportLimits};
 
@@ -81,7 +81,47 @@ impl RouteCandidate {
     }
 }
 
-/// Reads bounded fresh signed relay hints, before cache or ticket fallback.
+/// Resolves relay candidates without holding a cold cached/ticket route behind
+/// discovery. Iroh starts signed lookup concurrently with its first dial for a
+/// remote. A previously used remote can retain a selected path, which suppresses
+/// that lookup, so warm recovery still explicitly refreshes its routes.
+pub async fn resolve_relay_candidates(
+    limits: TransportLimits,
+    endpoint: &Endpoint,
+    remote: EndpointId,
+    cache: Vec<RelayHint>,
+    transient: Vec<RelayHint>,
+    deadline: Instant,
+) -> Result<Vec<RouteCandidate>, DaemonError> {
+    if Instant::now() >= deadline {
+        return Err(deadline_exceeded("route resolution deadline elapsed"));
+    }
+    let has_known_route = !cache.is_empty() || !transient.is_empty();
+    let cold = has_known_route
+        && tokio::time::timeout_at(deadline.into(), endpoint.remote_info(remote))
+            .await
+            .map_err(|_| deadline_exceeded("route resolution deadline elapsed"))?
+            .is_none();
+    let fresh = if cold {
+        Vec::new()
+    } else {
+        fresh_relay_hints(limits, endpoint, remote, deadline)
+            .await
+            .unwrap_or_default()
+    };
+    let candidates =
+        build_relay_candidates(remote, fresh, cache, transient, limits.max_relay_hints)?;
+    if candidates.is_empty() {
+        Err(DaemonError::new(
+            DomainErrorKind::AddressUnavailable,
+            "no relay route is available for the target device",
+        ))
+    } else {
+        Ok(candidates)
+    }
+}
+
+/// Reads the first usable bounded fresh signed hints, before cache/ticket fallback.
 pub async fn fresh_relay_hints(
     limits: TransportLimits,
     endpoint: &Endpoint,
@@ -101,10 +141,13 @@ pub async fn fresh_relay_hints(
         return Err(deadline_exceeded("route resolution deadline elapsed"));
     }
 
-    let resolved = tokio::time::timeout(budget, async move {
+    // Providers run concurrently. Use the first exact-peer result containing
+    // validated relays without waiting for a slow provider to finish. The
+    // original deadline still bounds discovery when no usable result arrives.
+    let mut hints = Vec::new();
+    let mut seen = BTreeSet::new();
+    let resolved = tokio::time::timeout(budget, async {
         let mut stream = Box::pin(services.resolve(remote));
-        let mut hints = Vec::new();
-        let mut seen = BTreeSet::new();
         while let Some(result) = stream.next().await {
             let Ok(Ok(item)) = result else {
                 continue;
@@ -119,21 +162,24 @@ pub async fn fresh_relay_hints(
                 {
                     hints.push(hint);
                     if hints.len() == limits.max_relay_hints {
-                        return hints;
+                        return;
                     }
                 }
             }
+            if !hints.is_empty() {
+                return;
+            }
         }
-        hints
     })
     .await;
 
-    match resolved {
-        Ok(hints) => Ok(hints),
-        Err(_) => Err(DaemonError::new(
+    if resolved.is_ok() || !hints.is_empty() {
+        Ok(hints)
+    } else {
+        Err(DaemonError::new(
             DomainErrorKind::AddressUnavailable,
             "fresh address lookup timed out",
-        )),
+        ))
     }
 }
 /// Adapts merged validated hints into independently dialable Iroh candidates.
@@ -148,6 +194,47 @@ pub fn build_relay_candidates(
         .into_iter()
         .map(|(source, hint)| RouteCandidate::relay(remote, source, hint))
         .collect()
+}
+
+/// Supplies all bounded, exact-peer relay candidates to one authenticated dial.
+/// Iroh probes these paths within that dial; a stale first hint must not consume
+/// the caller's entire deadline before a verified cache or ticket can be used.
+pub fn combined_relay_address(
+    remote: EndpointId,
+    candidates: &[RouteCandidate],
+) -> Result<EndpointAddr, DaemonError> {
+    if candidates.is_empty() {
+        return Err(DaemonError::new(
+            DomainErrorKind::AddressUnavailable,
+            "no relay route is available for the target device",
+        ));
+    }
+    let mut address = EndpointAddr::new(remote);
+    for candidate in candidates {
+        if candidate.endpoint_addr.id != remote {
+            return Err(DaemonError::new(
+                DomainErrorKind::IdentityInvalid,
+                "relay candidate does not belong to the exact target",
+            ));
+        }
+        for relay in candidate.endpoint_addr.relay_urls() {
+            address = address.with_relay_url(relay.clone());
+        }
+    }
+    Ok(address)
+}
+
+/// Only an actually selected relay path is eligible for the verified cache.
+/// A supplied hint alone is not evidence that the peer was reached through it.
+pub fn selected_relay(connection: &Connection) -> Option<RelayHint> {
+    connection
+        .paths()
+        .iter()
+        .find(|path| path.is_selected())
+        .and_then(|path| match path.remote_addr() {
+            TransportAddr::Relay(url) => RelayHint::new(url.to_string()).ok(),
+            _ => None,
+        })
 }
 
 /// Converts the product's fixed bytes into Iroh's authenticated endpoint ID.
@@ -203,6 +290,115 @@ fn deadline_exceeded(detail: &'static str) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::stream::{self, BoxStream};
+    use iroh::address_lookup::{AddressLookup, Error, Item};
+    use std::{net::Ipv4Addr, time::Duration};
+
+    #[derive(Debug)]
+    struct PartialLookup {
+        reported: Option<EndpointId>,
+    }
+
+    impl AddressLookup for PartialLookup {
+        fn resolve(&self, remote: EndpointId) -> Option<BoxStream<'static, Result<Item, Error>>> {
+            let reported = self.reported.unwrap_or(remote);
+            let item = Item::new(
+                EndpointAddr::new(reported)
+                    .with_relay_url("https://fresh.example".parse().expect("fixture relay"))
+                    .into(),
+                "partial-fixture",
+                None,
+            );
+            Some(
+                stream::once(async move { Ok(item) })
+                    .chain(stream::pending())
+                    .boxed(),
+            )
+        }
+    }
+
+    async fn lookup_fixture(reported: Option<EndpointId>) -> Endpoint {
+        Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .clear_ip_transports()
+            .bind_addr((Ipv4Addr::LOCALHOST, 0))
+            .expect("loopback fixture")
+            .address_lookup(PartialLookup { reported })
+            .bind()
+            .await
+            .expect("isolated lookup endpoint")
+    }
+
+    #[tokio::test]
+    async fn fresh_relay_lookup_preserves_results_when_another_source_never_finishes() {
+        let endpoint = lookup_fixture(None).await;
+        let remote = iroh::SecretKey::from_bytes(&[0x71; 32]).public();
+        let limits = TransportLimits {
+            address_lookup_budget: Duration::from_millis(30),
+            ..TransportLimits::default()
+        };
+        let result = fresh_relay_hints(
+            limits,
+            &endpoint,
+            remote,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .await;
+        endpoint.close().await;
+        assert_eq!(
+            result.expect("retain the valid result within the existing budget"),
+            vec![relay("https://fresh.example/")]
+        );
+    }
+
+    #[tokio::test]
+    async fn usable_route_does_not_wait_for_a_stalled_lookup_source() {
+        let endpoint = lookup_fixture(None).await;
+        let remote = iroh::SecretKey::from_bytes(&[0x71; 32]).public();
+        // Discovery has already produced an authenticated route. A second
+        // provider that never finishes must not consume the rest of startup.
+        let result = tokio::time::timeout(
+            Duration::from_millis(500),
+            fresh_relay_hints(
+                TransportLimits::default(),
+                &endpoint,
+                remote,
+                Instant::now() + Duration::from_secs(5),
+            ),
+        )
+        .await;
+        endpoint.close().await;
+        assert_eq!(
+            result
+                .expect("usable route must be returned before the unrelated lookup deadline")
+                .expect("valid exact-peer route"),
+            vec![relay("https://fresh.example/")],
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_relay_lookup_never_retains_a_different_peers_result_at_timeout() {
+        let endpoint =
+            lookup_fixture(Some(iroh::SecretKey::from_bytes(&[0x72; 32]).public())).await;
+        let remote = iroh::SecretKey::from_bytes(&[0x71; 32]).public();
+        let limits = TransportLimits {
+            address_lookup_budget: Duration::from_millis(30),
+            ..TransportLimits::default()
+        };
+        let result = fresh_relay_hints(
+            limits,
+            &endpoint,
+            remote,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .await;
+        endpoint.close().await;
+        assert_eq!(
+            result.expect_err("no valid route for this peer").kind(),
+            DomainErrorKind::AddressUnavailable
+        );
+    }
+
     fn relay(url: &str) -> RelayHint {
         RelayHint::new(url).expect("valid route fixture")
     }

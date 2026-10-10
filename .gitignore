@@ -1,7 +1,9 @@
 /target/
+/vendor/*/target/
 /tests/relay/handshake-probe/target/
 /.env
 .DS_Store
+__pycache__/
 
 # Private key and certificate material must never enter Git.
 *.key

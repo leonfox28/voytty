@@ -40,6 +40,64 @@ fn main() {
         .expect("test runtime");
     runtime.block_on(singleflight_launch());
     runtime.block_on(foreground_login_launch());
+    runtime.block_on(startup_waits_for_a_transient_lock_observation());
+}
+
+#[cfg(unix)]
+async fn startup_waits_for_a_transient_lock_observation() {
+    let state = TestState::new();
+    let config = validate_setup_input("observed-startup", ValidatedInfrastructure::OfficialN0)
+        .expect("config");
+    bootstrap(&state.paths, &config).expect("setup");
+    drop(DaemonLock::try_acquire(&state.paths).expect("create lifetime lock"));
+    // inspect_existing_lock briefly owns this exact file lock. Retain that
+    // observation across a controlled scheduler delay, without a daemon owner.
+    let observation = zterm_platform::user_state::FileLock::try_acquire_existing(
+        state.paths.daemon_lock(),
+        state.paths.uid(),
+    )
+    .expect("read-only lock observation")
+    .expect("no daemon owns the lock");
+    let starting = Arc::new(std::sync::Barrier::new(2));
+    let child_starting = Arc::clone(&starting);
+    let paths = state.paths.clone();
+    let child = std::thread::spawn(move || {
+        child_starting.wait();
+        zterm_daemon::lifecycle::run_local_only_daemon_for_test(&paths)
+    });
+    starting.wait();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let exited_during_observation = child.is_finished();
+    drop(observation);
+    if exited_during_observation {
+        child
+            .join()
+            .expect("startup worker")
+            .expect("a temporary observation must not be mistaken for another daemon");
+        panic!("daemon exited before it could serve");
+    }
+    let client = LocalClient::new(state.paths.socket());
+    let started = std::time::Instant::now();
+    loop {
+        if client.status().await.is_ok() {
+            break;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        client
+            .status()
+            .await
+            .expect("ready status")
+            .active_session_count,
+        0
+    );
+    client.stop(false).await.expect("stop fixture daemon");
+    child
+        .join()
+        .expect("startup worker")
+        .expect("clean shutdown");
 }
 
 #[cfg(unix)]
