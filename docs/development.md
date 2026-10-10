@@ -141,14 +141,15 @@ CI uses the same repository profiles:
 | Hosted owner | Reproduction entry |
 | --- | --- |
 | Policy and portable checks | `just ci-policy` |
-| Three Unix hosts | `just ci-unix <docs> <smoke>` on the matching host |
+| Three Unix hosts | `just ci-unix <docs>` on the matching host |
 | Dependency policy | `just ci-dependencies` |
 | Docker/QEMU relay bundle | `just ci-relay` on Docker-capable Linux |
-| Three main native candidates | `tools/release/build-native.sh <output-directory>` with explicit source identity on the native/pinned builder |
+| Three native candidates (every event; uploaded only by main) | `tools/release/build-native.sh <output-directory>` with explicit source identity on the native/pinned builder |
 
 Workspace version, every format check (workspace, patched Iroh, relay probe)
 and the secret scan each run once in `ci-policy`, docs run on Linux x64, and the
-no-argument CLI smoke runs once per shipped OS family. Source checkout policy
+no-argument CLI smoke runs against each of the three native release candidates
+instead of a separate debug rebuild. Source checkout policy
 runs before compilation in every supported OS matrix entry. macOS Intel and
 Windows CI are paused until a future task explicitly restores them.
 
@@ -169,7 +170,7 @@ PRs only restore compiled dependency caches. Main strips path-package
 rebuilds them regardless. The Rust matrix builds without dev debuginfo
 (`CARGO_PROFILE_DEV_DEBUG=0`): with debuginfo the trimmed sets were 3.1–5.2 GiB
 and were never saved; without it they measured 1.5–2.0 GiB on 2026-10-10, Linux
-x64 being largest because it also builds docs and the smoke binary. An
+x64 being largest because it also builds docs (and then still built the smoke binary). An
 oversized set raises a workflow warning and is not saved; restores keep using
 the last saved entry until the key version is bumped. Incremental compilation is disabled in CI. The whole `target` tree,
 large test fixtures and release outputs are not cached. Measure restore/save
@@ -199,8 +200,10 @@ CI runs for the pull request, not a duplicate branch-push workflow. Updating
 the branch cancels the older PR-head run. Main runs are never cancelled: each
 merge commit keeps its own exact-SHA run and candidate even when another merge
 follows quickly. Merge only after the stable `CI gate`
-is green; the resulting `main` push runs the full integration graph plus all
-three exact-SHA native candidate builds, the Android APK job, and one unsigned assembly. Tag publication
+is green. PR CI also builds and checks the three native candidates without
+uploading them; the `CI gate` requires them on every event. The resulting `main`
+push runs the full integration graph, uploads all three exact-SHA native
+candidates, and runs the Android APK job and one unsigned assembly. Tag publication
 reuses that candidate instead of compiling the product again.
 
 The deterministic two-file release-version commit is the narrow exception to

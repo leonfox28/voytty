@@ -65,15 +65,12 @@ jobs:
           - label: macOS arm64
             os: macos-latest
             docs: false
-            smoke: true
           - label: Linux x64
             os: ubuntu-24.04
             docs: true
-            smoke: true
           - label: Linux arm64
             os: ubuntu-24.04-arm
             docs: false
-            smoke: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -110,7 +107,7 @@ jobs:
           profile: rust
       - name: Run full Unix platform evidence
         shell: bash
-        run: just ci-unix "${{ matrix.docs }}" "${{ matrix.smoke }}"
+        run: just ci-unix "${{ matrix.docs }}"
       - name: Bound the main compiled dependency cache
         id: trim
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.compiled.outputs.cache-hit != 'true'
@@ -126,11 +123,13 @@ jobs:
           key: ${{ steps.compiled.outputs.cache-primary-key }}
       - name: Explain reproduction on failure
         if: failure()
-        run: echo 'Reproduce on the matching Unix host with just ci-unix ${{ matrix.docs }} ${{ matrix.smoke }}.' >> "$GITHUB_STEP_SUMMARY"
+        run: echo 'Reproduce on the matching Unix host with just ci-unix ${{ matrix.docs }}.' >> "$GITHUB_STEP_SUMMARY"
 
+  # Every event builds and floor-checks the shipped binaries. Only main uploads
+  # them: these builds embed a source commit, so they pass the official
+  # distribution check, and unreviewed PR binaries must not leave the runner.
   candidates-macos:
     name: Release candidate / ${{ matrix.target }}
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
@@ -164,7 +163,10 @@ jobs:
           SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
           export SOURCE_DATE_EPOCH
           sh tools/release/build-native.sh release-input
-      - name: Upload the native candidate and identity
+      - name: Run the candidate CLI without arguments
+        run: release-input/zterm-${{ matrix.target }}
+      - name: Upload the main native candidate and identity
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: native-${{ matrix.target }}
@@ -179,7 +181,6 @@ jobs:
 
   candidates-linux:
     name: Release candidate / ${{ matrix.target }} / glibc 2.28
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     container:
@@ -230,7 +231,10 @@ jobs:
           SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
           export SOURCE_DATE_EPOCH
           sh tools/release/build-native.sh release-input
-      - name: Upload the native candidate and identity
+      - name: Run the candidate CLI without arguments
+        run: release-input/zterm-${{ matrix.target }}
+      - name: Upload the main native candidate and identity
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: native-${{ matrix.target }}
@@ -550,6 +554,8 @@ jobs:
       - policy
       - android
       - rust
+      - candidates-macos
+      - candidates-linux
       - candidate
       - dependencies
       - relay
@@ -564,13 +570,16 @@ jobs:
           ANDROID_RESULT: ${{ needs.android.result }}
           POLICY_RESULT: ${{ needs.policy.result }}
           RUST_RESULT: ${{ needs.rust.result }}
+          NATIVE_MACOS_RESULT: ${{ needs.candidates-macos.result }}
+          NATIVE_LINUX_RESULT: ${{ needs.candidates-linux.result }}
           CANDIDATE_RESULT: ${{ needs.candidate.result }}
           DEPENDENCY_RESULT: ${{ needs.dependencies.result }}
           RELAY_RESULT: ${{ needs.relay.result }}
         run: |
           set -euo pipefail
           failed=false
-          for result in "$ANDROID_RESULT" "$POLICY_RESULT" "$RUST_RESULT" "$DEPENDENCY_RESULT" "$RELAY_RESULT"; do
+          for result in "$ANDROID_RESULT" "$POLICY_RESULT" "$RUST_RESULT" \
+            "$NATIVE_MACOS_RESULT" "$NATIVE_LINUX_RESULT" "$DEPENDENCY_RESULT" "$RELAY_RESULT"; do
             if [ "$result" != success ]; then failed=true; fi
           done
           if [ "$EVENT_NAME" = push ] && [ "$REF_NAME" = refs/heads/main ]; then
@@ -585,6 +594,7 @@ jobs:
             echo "- Rust matrix: $RUST_RESULT (just ci-unix)"
             echo "- dependencies: $DEPENDENCY_RESULT (just ci-dependencies)"
             echo "- relay: $RELAY_RESULT (just ci-relay)"
-            echo "- native and Android release candidate: $CANDIDATE_RESULT"
+            echo "- native builds: macOS $NATIVE_MACOS_RESULT, Linux glibc 2.28 $NATIVE_LINUX_RESULT (build-native.sh, floors, self-check, no-argument CLI)"
+            echo "- unsigned release candidate assembly (main only): $CANDIDATE_RESULT"
           } >> "$GITHUB_STEP_SUMMARY"
           [ "$failed" = false ] || exit 1

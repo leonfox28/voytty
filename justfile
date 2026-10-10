@@ -34,7 +34,7 @@ check-fast:
 check:
     sh tests/source-policy.sh
     just ci-policy
-    just ci-unix true false
+    just ci-unix true
     just ci-dependencies
     just relay-static
     if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then sh tests/relay/static.sh; else echo 'HOSTED-ONLY: relay Compose metadata requires Docker Compose'; fi
@@ -58,16 +58,15 @@ ci-policy:
     shellcheck -s sh install/install.sh tests/release/*.sh tests/secret-scan*.sh tests/terminal-dependency-policy.sh $(find tools/ci tools/release -type f -name '*.sh' -print)
     sh tools/ci/check-python-syntax.sh tests/e2e/*.py tests/release/https_fixture.py tests/release/https_fixture_bind_test.py tools/android/*.py tools/release/recover-draft.py tests/release/android_test.py tests/release/recover_draft_test.py
 
-# Full Unix runtime evidence; CI assigns docs/smoke to their canonical hosts.
-ci-unix docs='false' smoke='false':
+# Full Unix runtime evidence; CI assigns docs to its canonical host. The
+# no-argument CLI smoke runs against each native release candidate instead.
+ci-unix docs='false':
     case {{ quote(docs) }} in true|false) ;; *) echo 'docs must be true or false' >&2; exit 64;; esac
-    case {{ quote(smoke) }} in true|false) ;; *) echo 'smoke must be true or false' >&2; exit 64;; esac
     cargo +1.98.0 clippy --workspace --all-targets --all-features -- -D warnings
     cargo +1.98.0 test --workspace --all-features
     just ci-noq
     just ci-iroh
     if [ {{ quote(docs) }} = true ]; then cargo +1.98.0 doc --workspace --no-deps; fi
-    if [ {{ quote(smoke) }} = true ]; then cargo +1.98.0 run --quiet --package zterm-cli; fi
 
 # Keep the patched transport's upstream suite and offline-path regression in CI.
 ci-noq:

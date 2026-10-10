@@ -199,6 +199,16 @@ for native_job in "$macos_build_job" "$linux_build_job"; do
         || fail "main candidates bypass the shared shipped-binary owner"
     printf '%s\n' "$native_job" | grep -Fq "ZTERM_SOURCE_COMMIT=\"\$GITHUB_SHA\"" \
         || fail "main candidates must embed the exact source commit"
+    printf '%s\n' "$native_job" \
+        | grep -Fq "run: release-input/zterm-\${{ matrix.target }}" \
+        || fail "every native candidate must run its CLI without arguments"
+    # Source-committed binaries pass the official distribution check; only
+    # reviewed main may upload them.
+    printf '%s\n' "$native_job" | grep -A1 -F -- '- name: Upload the main native candidate' \
+        | grep -Fxq "        if: github.event_name == 'push' && github.ref == 'refs/heads/main'" \
+        || fail "only main may upload source-committed native candidates"
+    [ "$(printf '%s\n' "$native_job" | grep -Fc 'uses: actions/upload-artifact@')" -eq 1 ] \
+        || fail "native candidate jobs must have exactly one gated upload"
     if printf '%s\n' "$native_job" | grep -Fq 'zterm-release-tool'; then
         fail "native jobs must not build the private release tool"
     fi
@@ -235,8 +245,12 @@ done
 main_release_gates=$(grep -Fxc \
     "    if: github.event_name == 'push' && github.ref == 'refs/heads/main'" \
     "$ci_workflow" || true)
-[ "$main_release_gates" -eq 3 ] \
-    || fail "CI must have two main native builders and one main-only candidate assembly"
+[ "$main_release_gates" -eq 1 ] \
+    || fail "native builders run on every event; only candidate assembly is main-only"
+for native_result in 'needs.candidates-macos.result' 'needs.candidates-linux.result'; do
+    grep -Fq "$native_result" "$ci_workflow" \
+        || fail "the CI gate must require every native build: $native_result"
+done
 rust_job=$(sed -n '/^  rust:/,/^  candidates-macos:/p' "$ci_workflow")
 [ "$(printf '%s\n' "$rust_job" | grep -Ec '^[[:space:]]{10}- label:')" -eq 3 ] \
     || fail "Rust matrix must retain three hosted OS entries"
@@ -315,13 +329,14 @@ done
 [ "$(grep -Fc 'cargo +1.98.0 doc --workspace --no-deps' "$justfile")" -eq 1 ] \
     || fail "docs must have one owner, shared by local check and the matrix profile"
 check_recipe=$(sed -n '/^check:/,/^$/p' "$justfile")
-for hosted_profile in 'just ci-policy' 'just ci-unix true false' \
+for hosted_profile in 'just ci-policy' 'just ci-unix true' \
     'just ci-dependencies' 'just relay-static'; do
     printf '%s\n' "$check_recipe" | grep -Fxq "    $hosted_profile" \
         || fail "local check must compose hosted profile: $hosted_profile"
 done
-[ "$(grep -Fc 'smoke: true' "$ci_workflow")" -eq 2 ] \
-    || fail "CLI smoke must have exactly one Linux and one macOS owner"
+if grep -Fq 'cargo +1.98.0 run' "$justfile" || grep -Fq 'smoke' "$ci_workflow"; then
+    fail "CLI smoke must run against the native release candidates, not a debug rebuild"
+fi
 container_workflow=$ci_workflow
 {
     [ "$(grep -Fc 'sh tools/release/setup-glibc-builder.sh' "$container_workflow")" -eq 1 ] \
