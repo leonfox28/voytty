@@ -87,8 +87,12 @@ source; remote tags and Release assets are never replaced.
 
 Main CI runs the normal test/policy graph and builds the three shipped
 native binaries plus the unsigned Android release APK. Linux uses the pinned glibc 2.28 builder; macOS declares the
-13.0 deployment floor. The candidate jobs explicitly embed the exact source SHA.
-Ordinary PR and development builds retain their development identity.
+13.0 deployment floor. The candidate jobs explicitly embed the exact source SHA,
+self-check, and run the CLI without arguments. PR CI runs the same three native
+jobs so floor or build breakage fails before merge, but never uploads them:
+a source-committed binary passes the official distribution check that guards
+`update` and `uninstall`. Other PR and development builds retain their
+development identity.
 
 One Ubuntu job creates deterministic archives, the manifest, installer and Rust/Android SBOM,
 verifies the unsigned inventory, and ShellChecks the generated installer. The
