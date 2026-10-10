@@ -175,6 +175,15 @@ the last saved entry until the key version is bumped. Incremental compilation is
 large test fixtures and release outputs are not cached. Measure restore/save
 and test durations together before changing this policy.
 
+The Android job caches pinned cargo-ndk and Gradle's `modules-2` dependency
+downloads, and restores the Cargo download cache shared with the Rust jobs.
+Its compiled Rust cache covers the host bindgen build plus the arm64 release
+dependencies (`target/{debug,release,aarch64-linux-android/release}`). Only PRs
+restore it; main builds the APK candidate cold, then trims and saves for later
+PRs when the lockfile key is new. A local cold/restored comparison on
+2026-10-10 compiled 630 versus 19 crates and produced a byte-identical
+`libzterm_android.so`.
+
 ## Branch and pull-request flow
 
 Normal substantive work uses a branch and pull request:

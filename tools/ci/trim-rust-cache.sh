@@ -6,21 +6,35 @@ set -eu
 # Path packages (workspace members and patched vendor crates) are fingerprinted
 # by source mtime, so a fresh checkout rebuilds them whether or not they are
 # cached.
+#
+# Arguments name cached layouts under target/: a profile directory such as
+# debug or release, or TRIPLE/release for a cross-compiled release.
+[ "$#" -gt 0 ] || set -- debug
 packages=$(cargo +1.98.0 metadata --locked --format-version 1 \
     | jq -r '.packages[] | select(.source == null) | "\(.name)@\(.version)"')
-for package in $packages; do
-    cargo +1.98.0 clean --package "$package"
-done
-if [ -d target/debug/deps ]; then
-    find target/debug/deps -type f -perm -u+x \
-        ! -name '*.so' ! -name '*.dylib' -delete
-fi
 maximum_kib=2621440
 size=0
-for directory in target/debug/deps target/debug/build target/debug/.fingerprint; do
-    if [ -d "$directory" ]; then
-        size=$((size + $(du -sk "$directory" | awk '{print $1}')))
+for layout in "$@"; do
+    case "$layout" in
+        debug) clean_flags= ;;
+        release) clean_flags=--release ;;
+        */release) clean_flags="--target ${layout%/release} --release" ;;
+        *) echo "unsupported cache layout: $layout" >&2; exit 64 ;;
+    esac
+    for package in $packages; do
+        # Word splitting yields the fixed flags chosen above.
+        # shellcheck disable=SC2086
+        cargo +1.98.0 clean --package "$package" $clean_flags
+    done
+    if [ -d "target/$layout/deps" ]; then
+        find "target/$layout/deps" -type f -perm -u+x \
+            ! -name '*.so' ! -name '*.dylib' -delete
     fi
+    for directory in "target/$layout/deps" "target/$layout/build" "target/$layout/.fingerprint"; do
+        if [ -d "$directory" ]; then
+            size=$((size + $(du -sk "$directory" | awk '{print $1}')))
+        fi
+    done
 done
 echo "Compiled dependency cache: $size KiB (maximum $maximum_kib KiB)"
 if [ -n "${GITHUB_OUTPUT:-}" ]; then

@@ -309,19 +309,65 @@ jobs:
     name: Android arm64 APK and lint
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      # The host build only feeds uniffi-bindgen; its Kotlin output is identical
+      # without debuginfo. The shipped library uses the release profile.
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Check source checkout policy
         run: sh tests/source-policy.sh
+      - name: Restore dependency downloads
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore pinned cargo-ndk
+        id: cargo-ndk
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.cargo/bin/cargo-ndk*
+          key: ci-tools-v2-${{ runner.os }}-${{ runner.arch }}-android-rust-1.98.0-cargo-ndk-4.1.2
+      - name: Restore Gradle dependency downloads
+        id: gradle
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.gradle/caches/modules-2
+          key: gradle-modules-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/android/gradle/wrapper/gradle-wrapper.properties', 'apps/android/gradle/libs.versions.toml', 'apps/android/**/*.lockfile', 'apps/android/**/*.gradle.kts') }}
+          restore-keys: |
+            gradle-modules-v1-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore compiled Android dependencies for pull requests
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            target/debug/deps
+            target/debug/build
+            target/debug/.fingerprint
+            target/release/deps
+            target/release/build
+            target/release/.fingerprint
+            target/aarch64-linux-android/release/deps
+            target/aarch64-linux-android/release/build
+            target/aarch64-linux-android/release/.fingerprint
+          key: ci-compiled-android-v1-rust-1.98.0-nodebug-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ci-compiled-android-v1-rust-1.98.0-nodebug-${{ runner.os }}-${{ runner.arch }}-
       - name: Select pinned build tools
         shell: bash
         run: |
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
           rustup toolchain install 1.98.0 --profile minimal
           rustup target add --toolchain 1.98.0 aarch64-linux-android
-          cargo +1.98.0 install cargo-ndk --version 4.1.2 --locked
+          command -v cargo-ndk >/dev/null 2>&1 \
+            || cargo +1.98.0 install cargo-ndk --version 4.1.2 --locked
+          test "$(cargo +1.98.0 ndk --version)" = 'cargo-ndk 4.1.2'
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
       - name: Build and check the Android candidate
         env:
@@ -357,6 +403,59 @@ jobs:
           retention-days: 7
       - name: Evidence boundary
         run: echo 'Build, lint, JVM policy tests and packaging checks only. Native runtime, lifecycle and touch acceptance are recorded separately in docs/verification/session-continuity.md; emulator results do not replace phone, physical-network or signed-upgrade acceptance.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Save main pinned cargo-ndk
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-ndk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.cargo/bin/cargo-ndk*
+          key: ${{ steps.cargo-ndk.outputs.cache-primary-key }}
+      - name: Stop Gradle before saving its dependency downloads
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.gradle.outputs.cache-hit != 'true'
+        run: apps/android/gradlew -p apps/android --stop
+      - name: Save main Gradle dependency downloads
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.gradle.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.gradle/caches/modules-2
+          key: ${{ steps.gradle.outputs.cache-primary-key }}
+      # Main builds its APK candidate without compiled caches, then saves the
+      # trimmed third-party outputs for later pull requests.
+      - name: Look up main compiled Android dependencies
+        id: compiled
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          lookup-only: true
+          path: |
+            target/debug/deps
+            target/debug/build
+            target/debug/.fingerprint
+            target/release/deps
+            target/release/build
+            target/release/.fingerprint
+            target/aarch64-linux-android/release/deps
+            target/aarch64-linux-android/release/build
+            target/aarch64-linux-android/release/.fingerprint
+          key: ci-compiled-android-v1-rust-1.98.0-nodebug-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+      - name: Bound the main compiled Android dependency cache
+        id: trim
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.compiled.outputs.cache-hit != 'true'
+        run: sh tools/ci/trim-rust-cache.sh debug release aarch64-linux-android/release
+      - name: Save main compiled Android dependencies
+        if: steps.trim.outputs.cacheable == 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            target/debug/deps
+            target/debug/build
+            target/debug/.fingerprint
+            target/release/deps
+            target/release/build
+            target/release/.fingerprint
+            target/aarch64-linux-android/release/deps
+            target/aarch64-linux-android/release/build
+            target/aarch64-linux-android/release/.fingerprint
+          key: ${{ steps.compiled.outputs.cache-primary-key }}
 
   candidate:
     name: Assemble the exact release candidate
