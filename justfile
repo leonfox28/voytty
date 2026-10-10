@@ -24,34 +24,31 @@ android-install serial:
 doctor:
     sh tools/ci/doctor.sh
 
-# Fast edit-loop checks: portable policy, native Clippy, and secret-scan scope.
+# Fast edit-loop checks: source and portable policy plus native Clippy.
 check-fast:
     sh tests/source-policy.sh
     just ci-policy
     cargo +1.98.0 clippy --workspace --all-targets --all-features -- -D warnings
-    sh tests/secret-scan.sh
-    sh tests/secret-scan-fixture.sh
 
-# Authoritative pre-push gate on the current host.
+# Authoritative pre-push gate: every hosted profile that runs on the current host.
 check:
-    just check-fast
-    cargo +1.98.0 test --workspace --all-features
-    just ci-noq
-    just ci-iroh
-    cargo +1.98.0 doc --workspace --no-deps
+    sh tests/source-policy.sh
+    just ci-policy
+    just ci-unix true false
     just ci-dependencies
-    cargo +1.98.0 fmt --manifest-path tests/relay/handshake-probe/Cargo.toml -- --check
-    cargo +1.98.0 clippy --locked --manifest-path tests/relay/handshake-probe/Cargo.toml -- -D warnings
-    sh -n deploy/relay/*.sh tests/relay/*.sh
-    sh tests/relay/verify-upstream.sh
+    just relay-static
     if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then sh tests/relay/static.sh; else echo 'HOSTED-ONLY: relay Compose metadata requires Docker Compose'; fi
     @echo 'HOSTED-ONLY: other supported macOS/Linux hosts, glibc 2.28, Docker/QEMU relay tests, protected signing, final installers, attestation, and immutable publication run in GitHub Actions.'
 
-# Canonical portable CI owner: version, format, workflow/release policy, shell, and Python syntax.
+# Canonical portable CI owner: version, every format check, workflow/release policy, secret scan, shell, and Python syntax.
 ci-policy:
     sh tests/workspace-version.sh
     sh tests/terminal-dependency-policy.sh
     cargo +1.98.0 fmt --all -- --check
+    cargo +1.98.0 fmt --manifest-path vendor/iroh/Cargo.toml -- --check
+    cargo +1.98.0 fmt --manifest-path tests/relay/handshake-probe/Cargo.toml -- --check
+    sh tests/secret-scan.sh
+    sh tests/secret-scan-fixture.sh
     actionlint
     sh tests/release/static.sh
     sh tests/release/operator-fixture.sh
@@ -78,7 +75,6 @@ ci-noq:
 
 # Endpoint lifecycle and socket-free cold-relay queue expiry regressions.
 ci-iroh:
-    cargo +1.98.0 fmt --manifest-path vendor/iroh/Cargo.toml -- --check
     cargo +1.98.0 test --locked --manifest-path vendor/iroh/Cargo.toml --target-dir target/iroh-tests --no-default-features --features tls-ring,unstable-custom-transports --lib zterm_
 
 # Workspace and isolated relay-probe dependency policy.
@@ -86,17 +82,18 @@ ci-dependencies:
     cargo +1.98.0 deny check
     cargo +1.98.0 deny --manifest-path tests/relay/handshake-probe/Cargo.toml --config tests/relay/handshake-probe/deny.toml check
 
-# Docker-capable Ubuntu owner for the complete optional relay bundle.
-ci-relay:
-    cargo +1.98.0 fmt --manifest-path tests/relay/handshake-probe/Cargo.toml -- --check
+# Docker-free relay contracts: probe Clippy, shell syntax, and pinned upstream artifacts.
+relay-static:
     cargo +1.98.0 clippy --locked --manifest-path tests/relay/handshake-probe/Cargo.toml -- -D warnings
     sh -n deploy/relay/*.sh tests/relay/*.sh
-    sh tests/relay/static.sh
     sh tests/relay/verify-upstream.sh
+
+# Docker-capable Ubuntu owner for the complete optional relay bundle.
+ci-relay:
+    just relay-static
+    sh tests/relay/static.sh
     sh tests/relay/build-platforms.sh
     sh tests/relay/smoke.sh
-    sh tests/secret-scan.sh
-    sh tests/secret-scan-fixture.sh
 
 # Prepare the version in the current feature PR, or open a standalone release PR from main.
 release-prepare version:
