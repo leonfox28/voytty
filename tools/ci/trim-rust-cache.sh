@@ -15,7 +15,7 @@ if [ -d target/debug/deps ]; then
     find target/debug/deps -type f -perm -u+x \
         ! -name '*.so' ! -name '*.dylib' -delete
 fi
-maximum_kib=2097152
+maximum_kib=2621440
 size=0
 for directory in target/debug/deps target/debug/build target/debug/.fingerprint; do
     if [ -d "$directory" ]; then
@@ -27,6 +27,8 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     if [ "$size" -le "$maximum_kib" ]; then
         echo 'cacheable=true' >>"$GITHUB_OUTPUT"
     else
+        # Restores keep using the last saved entry; bump the key version to reset it.
+        echo "::warning::Compiled dependency cache is $size KiB, above $maximum_kib KiB; not saved"
         echo 'cacheable=false' >>"$GITHUB_OUTPUT"
     fi
 fi

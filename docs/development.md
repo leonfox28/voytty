@@ -164,11 +164,14 @@ no compiled PR output becomes a publication input.
 
 PRs only restore compiled dependency caches. Main strips path-package
 (workspace and patched vendor) and test outputs before saving
-`target/debug/{deps,build,.fingerprint}` and skips entries larger than 2 GiB.
-Path packages are fingerprinted by source mtime, so a fresh checkout rebuilds
-them regardless. The Rust matrix builds without dev debuginfo
+`target/debug/{deps,build,.fingerprint}` and skips entries larger than
+2.5 GiB. Path packages are fingerprinted by source mtime, so a fresh checkout
+rebuilds them regardless. The Rust matrix builds without dev debuginfo
 (`CARGO_PROFILE_DEV_DEBUG=0`): with debuginfo the trimmed sets were 3.1–5.2 GiB
-and were never saved. Incremental compilation is disabled in CI. The whole `target` tree,
+and were never saved; without it they measured 1.5–2.0 GiB on 2026-10-10, Linux
+x64 being largest because it also builds docs and the smoke binary. An
+oversized set raises a workflow warning and is not saved; restores keep using
+the last saved entry until the key version is bumped. Incremental compilation is disabled in CI. The whole `target` tree,
 large test fixtures and release outputs are not cached. Measure restore/save
 and test durations together before changing this policy.
 
