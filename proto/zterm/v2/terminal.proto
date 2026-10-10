@@ -15,6 +15,15 @@ message TerminalAttachRequest {
   optional uint64 known_revision = 8;
   reserved 9;
   TerminalColorProfile base_colors = 10;
+  // Applies to this attachment, including resume, resize and history frames.
+  // Missing/false retains the original encoding for older controllers.
+  bool accept_zlib_frames = 11;
+  // Opt-in bound on undelivered live surface frames. A supporting host then
+  // numbers its live snapshots/deltas with frame_sequence, and the controller
+  // returns TerminalSurfaceFramesReceived for each numbered frame it reads.
+  // Older hosts ignore this field and never number frames, so a controller
+  // must acknowledge only frames that carry a sequence.
+  bool acknowledge_surface_frames = 12;
 }
 
 enum TerminalActiveScreen {
@@ -240,6 +249,9 @@ message TerminalSemanticSnapshot {
   AttachmentId attachment_id = 2;
   uint64 revision = 3;
   TerminalSurface surface = 4;
+  // 0: not counted. Otherwise consecutive per attachment stream, only after
+  // TerminalAttachRequest.acknowledge_surface_frames.
+  uint64 frame_sequence = 5;
 }
 
 message TerminalSemanticRowPatch {
@@ -261,6 +273,16 @@ message TerminalSemanticDelta {
   TerminalCursor cursor = 8;
   TerminalModes modes = 9;
   TerminalScrollMetrics scroll_metrics = 10;
+  // Same contract as TerminalSemanticSnapshot.frame_sequence.
+  uint64 frame_sequence = 14;
+}
+
+// Controller-to-host cumulative receipt of numbered surface frames on this
+// stream. It reports transport delivery only; it is never a snapshot ACK and
+// is never replayed on another stream.
+message TerminalSurfaceFramesReceived {
+  AttachmentId attachment_id = 1;
+  uint64 frame_sequence = 2;
 }
 
 message TerminalSemanticHistoryWindowFrame {

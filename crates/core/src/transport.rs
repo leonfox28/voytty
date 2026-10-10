@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use crate::{
-    AuthGeneration, Capabilities, ConnectionAttemptId, DeviceDisplayName, DeviceDisplayNameError,
-    DeviceId, IdLengthError,
+    AuthGeneration, Capabilities, ConnectionAttemptId, ConnectionIncarnation, DeviceDisplayName,
+    DeviceDisplayNameError, DeviceId, IdLengthError,
 };
 
 /// Deterministic identity of one connection dial attempt.
@@ -94,7 +94,8 @@ pub struct TransportLimits {
     pub pairing_total_deadline: Duration,
     /// Budget for one fresh signed address lookup.
     pub address_lookup_budget: Duration,
-    /// Budget for one connect attempt.
+    /// Budget for one pairing connect attempt and inbound candidate arbitration.
+    /// Normal outbound setup instead shares the caller's startup policy budget.
     pub connect_attempt_budget: Duration,
 }
 
@@ -286,6 +287,7 @@ pub struct ConnectionHello {
     initiator_display: DeviceDisplayName,
     initiator_build: String,
     initiator_platform: String,
+    incarnation: Option<ConnectionIncarnation>,
 }
 
 impl ConnectionHello {
@@ -320,6 +322,7 @@ impl ConnectionHello {
             initiator_display,
             initiator_build,
             initiator_platform,
+            incarnation: None,
         })
     }
 
@@ -364,6 +367,19 @@ impl ConnectionHello {
     pub fn initiator_platform(&self) -> &str {
         &self.initiator_platform
     }
+
+    /// Identifies the peer connection generation, absent for older peers.
+    #[must_use]
+    pub const fn incarnation(&self) -> Option<ConnectionIncarnation> {
+        self.incarnation
+    }
+
+    /// Adds the owner's transient peer connection generation to this handshake.
+    #[must_use]
+    pub const fn with_incarnation(mut self, incarnation: Option<ConnectionIncarnation>) -> Self {
+        self.incarnation = incarnation;
+        self
+    }
 }
 
 /// Validated responder half of the normal connection handshake.
@@ -375,6 +391,7 @@ pub struct ConnectionWelcome {
     responder_build: String,
     responder_platform: String,
     accepted_authorization_generation: AuthGeneration,
+    incarnation: Option<ConnectionIncarnation>,
 }
 
 impl ConnectionWelcome {
@@ -407,6 +424,7 @@ impl ConnectionWelcome {
             responder_build,
             responder_platform,
             accepted_authorization_generation,
+            incarnation: None,
         })
     }
 
@@ -444,6 +462,19 @@ impl ConnectionWelcome {
     #[must_use]
     pub const fn accepted_authorization_generation(&self) -> AuthGeneration {
         self.accepted_authorization_generation
+    }
+
+    /// Identifies the responder's peer connection generation, absent for older peers.
+    #[must_use]
+    pub const fn incarnation(&self) -> Option<ConnectionIncarnation> {
+        self.incarnation
+    }
+
+    /// Adds the owner's transient peer connection generation to this handshake.
+    #[must_use]
+    pub const fn with_incarnation(mut self, incarnation: Option<ConnectionIncarnation>) -> Self {
+        self.incarnation = incarnation;
+        self
     }
 }
 

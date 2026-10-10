@@ -658,15 +658,19 @@ impl DaemonService {
             std::mem::take(&mut *ticket),
             explicit_alias,
         );
-        let accepted = await_service_until(
-            deadline,
-            pairing.accept_until(input, deadline),
-            "accepting pairing ticket",
-        )
-        .await??;
+        // Pairing owns this same absolute deadline and preserves whether an
+        // admitted operation can already have committed remotely. A second
+        // timeout here could replace that result with a generic deadline.
+        let accepted = pairing.accept_until(input, deadline).await?;
         let device = self
             .device_summary(devices, accepted.device_id(), deadline)
-            .await?;
+            .await
+            .map_err(|_| {
+                DaemonError::new(
+                    DomainErrorKind::PairOutcomeUnknown,
+                    "pair acceptance committed but its local device summary was unavailable",
+                )
+            })?;
         ServiceReply::message(
             WireKind::LocalPairAcceptResponse,
             request_id,

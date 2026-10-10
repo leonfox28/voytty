@@ -2608,6 +2608,7 @@ struct ActorAttachment {
     terminal: TerminalAttachment,
     ever_active: bool,
     prepared_snapshot_applied: bool,
+    applied_snapshot_revision: Option<Revision>,
     sync: AttachmentSync,
     lifecycle: watch::Sender<AttachmentLifecycle>,
     detached: Arc<AtomicBool>,
@@ -3391,6 +3392,16 @@ fn dispatch_command(
                 .get(&attachment_id)
                 .is_some_and(|attachment| attachment.ever_active);
             let result = snapshot_applied(runtime, attachment_id, revision);
+            if result.is_ok() && zterm_diagnostics::detail_enabled() {
+                zterm_diagnostics::record(
+                    zterm_diagnostics::Event::new(zterm_diagnostics::Kind::SyncChanged)
+                        .level(zterm_diagnostics::Level::Debug)
+                        .session(actor.id)
+                        .attachment(attachment_id)
+                        .stage(zterm_diagnostics::Stage::SnapshotAcknowledged)
+                        .epoch(revision.get()),
+                );
+            }
             if result.is_ok()
                 && !was_active
                 && runtime
@@ -3595,6 +3606,26 @@ fn prepare_attach(
     let resume_view_id = resume.map(|request| request.view_id);
     let resumed_terminal = take_resume_terminal(actor, runtime, principal, resume);
     if runtime.controller.is_some() && !takeover {
+        #[cfg(unix)]
+        if let Some(request) = resume
+            && let Some(controller) = runtime.controller
+            && runtime
+                .attachments
+                .get(&controller.attachment_id)
+                .is_some_and(|attachment| {
+                    attachment.principal == principal
+                        && attachment.resume_view_id == Some(request.view_id)
+                })
+        {
+            // The same view may detect a one-sided transport loss before its
+            // old stream releases the lease. Only this exact owner may wait;
+            // a different controller is a definitive occupied result and must
+            // not leave the retired view silently reclaiming a later vacancy.
+            return Err(DaemonError::new(
+                DomainErrorKind::TransportUnavailable,
+                "the previous transport for this remote view has not released control",
+            ));
+        }
         return Err(DaemonError::new(
             DomainErrorKind::SessionOccupied,
             "session already has a controller; use explicit takeover",
@@ -3687,6 +3718,7 @@ fn prepare_attach(
             terminal,
             ever_active: false,
             prepared_snapshot_applied: false,
+            applied_snapshot_revision: None,
             sync: AttachmentSync::Awaiting {
                 revision: initial_revision,
                 target,
@@ -3802,14 +3834,24 @@ fn snapshot_applied(
         .attachments
         .get_mut(&attachment_id)
         .ok_or_else(lease_lost)?;
-    attachment.pending_color_snapshot = None;
     let AttachmentSync::Awaiting {
         revision: expected,
         target,
     } = attachment.sync
     else {
+        // Two snapshots can cross an ACK in the opposite stream direction.
+        // A stale ACK may request a replacement at a revision already on the
+        // wire, so both delivered snapshots legitimately receive the same ACK.
+        if attachment.applied_snapshot_revision == Some(revision) {
+            return Ok(None);
+        }
         return Err(not_synchronized("attachment is not awaiting a snapshot"));
     };
+    if revision != expected && attachment.applied_snapshot_revision == Some(revision) {
+        // A repeated old ACK cannot release or replace a newer sync fence.
+        return Ok(None);
+    }
+    attachment.pending_color_snapshot = None;
     if revision != expected {
         attachment.terminal.discard_checkpoint();
         let snapshot = full_sync(&mut attachment.terminal)?;
@@ -3825,6 +3867,7 @@ fn snapshot_applied(
         reconcile_effect_target(runtime)?;
         return Ok(Some(snapshot));
     }
+    attachment.applied_snapshot_revision = Some(revision);
     let lifecycle = match target {
         SyncTarget::Active { generation } => {
             attachment.ever_active = true;
@@ -3996,6 +4039,17 @@ fn resize(
     runtime.viewport = size;
     runtime.last_revision = revision;
     actor.update_cached(runtime, false);
+    if zterm_diagnostics::detail_enabled() {
+        zterm_diagnostics::record(
+            zterm_diagnostics::Event::new(zterm_diagnostics::Kind::ViewportChanged)
+                .level(zterm_diagnostics::Level::Debug)
+                .session(actor.id)
+                .attachment(attachment_id)
+                .stage(zterm_diagnostics::Stage::Resize)
+                .epoch(revision.get())
+                .viewport(size.columns, size.rows),
+        );
+    }
     Ok(revision)
 }
 
@@ -5047,7 +5101,18 @@ mod tests {
             Ok(_) => panic!("a live view cannot be resumed before transport EOF"),
             Err(error) => error,
         };
-        assert_eq!(overlap_error.kind(), DomainErrorKind::SessionOccupied);
+        assert_eq!(overlap_error.kind(), DomainErrorKind::TransportUnavailable);
+        let mut different_view = request(Some(baseline));
+        different_view.resume.view_id = ResumeViewId::from_array([0x84; 16]);
+        let occupied = service
+            .prepare_remote_attach_until(
+                remote,
+                different_view,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .err()
+            .expect("another view cannot wait to reclaim control");
+        assert_eq!(occupied.kind(), DomainErrorKind::SessionOccupied);
         first
             .attachment
             .write_input(b"")
@@ -5400,6 +5465,126 @@ mod tests {
         service
             .shutdown()
             .expect("takeover-effect fixture shuts down");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn overlapping_snapshot_replies_accept_the_same_applied_revision_once() {
+        let temporary = tempfile::tempdir().expect("overlapping snapshot fixture");
+        let service = unix_fixture_service(
+            DeviceId::from_array([0x92; 32]),
+            temporary.path().to_path_buf(),
+            "exec /bin/cat",
+        );
+        let principal = service.local_principal(AttachmentId::from_array([0x92; 16]));
+        let prepared = service
+            .prepare_attach(principal, None, true, false, None)
+            .expect("initial attachment");
+        let attachment = &prepared.attachment;
+        attachment
+            .resize(TerminalSize::new(31, 97))
+            .expect("viewport observation may cross the first snapshot");
+        let newer = attachment
+            .sync_latest(prepared.snapshot.revision)
+            .expect("newer snapshot is already on the wire");
+        assert_ne!(newer.revision, prepared.snapshot.revision);
+        let repeated = attachment
+            .snapshot_applied(prepared.snapshot.revision)
+            .expect("old ACK requests a replacement")
+            .expect("old ACK does not activate the newer snapshot");
+        assert_eq!(repeated.revision, newer.revision);
+        assert_eq!(
+            attachment
+                .write_input(b"blocked")
+                .expect_err("initial synchronization still fences input")
+                .kind(),
+            DomainErrorKind::NotSynchronized
+        );
+        assert!(
+            attachment
+                .snapshot_applied(newer.revision)
+                .expect("apply newer snapshot")
+                .is_none()
+        );
+        assert!(
+            attachment
+                .snapshot_applied(repeated.revision)
+                .expect("the replacement reply needs the same harmless ACK")
+                .is_none()
+        );
+        attachment
+            .write_input(b"")
+            .expect("controller remains active");
+        assert_eq!(
+            attachment
+                .snapshot_applied(Revision::new(newer.revision.get() + 1))
+                .expect_err("an unissued ACK is still invalid")
+                .kind(),
+            DomainErrorKind::NotSynchronized
+        );
+        attachment
+            .resize(TerminalSize::new(32, 98))
+            .expect("another viewport");
+        let newest = attachment
+            .sync_latest(newer.revision)
+            .expect("new synchronization fence");
+        assert_ne!(newest.revision, newer.revision);
+        assert!(
+            attachment
+                .snapshot_applied(newer.revision)
+                .expect("ignore a repeated old ACK during newer synchronization")
+                .is_none()
+        );
+        assert!(matches!(
+            attachment
+                .lifecycle_watch()
+                .expect("attachment lifecycle")
+                .borrow()
+                .clone(),
+            AttachmentLifecycle::AwaitingSnapshot { revision } if revision == newest.revision
+        ));
+        assert!(
+            attachment
+                .snapshot_applied(newest.revision)
+                .expect("apply newest snapshot")
+                .is_none()
+        );
+
+        let successor = service.local_principal(AttachmentId::from_array([0x93; 16]));
+        let replacement = service
+            .prepare_attach(
+                successor,
+                Some(SessionSelector::Id(attachment.session_id())),
+                false,
+                true,
+                None,
+            )
+            .expect("successor prepares");
+        replacement
+            .attachment
+            .snapshot_applied(replacement.snapshot.revision)
+            .expect("successor applies its own snapshot");
+        service
+            .takeover(
+                successor,
+                OperationId {
+                    lease: service
+                        .issue_operation_lease(successor)
+                        .expect("successor operation lease"),
+                    sequence: 1,
+                },
+                &replacement.attachment,
+            )
+            .expect("explicit successor takeover");
+        assert_eq!(
+            attachment
+                .snapshot_applied(newest.revision)
+                .expect_err("a retired attachment cannot acknowledge anything")
+                .kind(),
+            DomainErrorKind::LeaseLost
+        );
+        attachment.detach();
+        service.shutdown().expect("fixture shutdown");
     }
 
     #[cfg(unix)]

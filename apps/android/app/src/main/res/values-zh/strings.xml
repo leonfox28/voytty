@@ -31,6 +31,7 @@
     <string name="rename">重命名</string>
     <string name="delete">删除</string>
     <string name="sessions">会话</string>
+    <string name="session_list_refresh_failed">无法刷新会话列表</string>
     <string name="new_session">新建会话</string>
     <string name="name">名称</string>
     <string name="directory_optional">目录（可选）</string>

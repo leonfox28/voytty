@@ -18,6 +18,8 @@ zterm-proto.workspace = true
 zterm-core.workspace = true
 
 [dev-dependencies]
+iroh = { workspace = true, features = ["test-utils", "unstable-custom-transports"] }
+iroh-relay.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 

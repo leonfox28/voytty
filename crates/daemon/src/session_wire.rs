@@ -24,6 +24,8 @@ use tokio::sync::{mpsc, oneshot};
 #[cfg(unix)]
 use tokio::task::{JoinHandle, JoinSet};
 #[cfg(unix)]
+use tokio_util::task::AbortOnDropHandle;
+#[cfg(unix)]
 use zeroize::Zeroizing;
 #[cfg(unix)]
 use zterm_core::terminal::{
@@ -333,6 +335,7 @@ struct AttachmentOutbound {
     bytes: Zeroizing<Vec<u8>>,
     flushed: Option<oneshot::Sender<()>>,
     deadline: Instant,
+    synchronize_before_reply: bool,
 }
 
 #[cfg(unix)]
@@ -342,6 +345,14 @@ impl AttachmentOutbound {
             bytes: Zeroizing::new(bytes),
             flushed: None,
             deadline,
+            synchronize_before_reply: false,
+        }
+    }
+
+    fn takeover_reply(bytes: Vec<u8>, deadline: Instant) -> Self {
+        Self {
+            synchronize_before_reply: true,
+            ..Self::queued(bytes, deadline)
         }
     }
 }
@@ -600,16 +611,29 @@ impl SessionWireServer {
             }
         };
         let attachment = prepared.attachment;
+        let request: v2::TerminalAttachRequest = first
+            .frame
+            .decode_message(WireKind::TerminalAttachRequest)
+            .map_err(protocol_error)?;
+        let encoding = AttachmentEncoding(request.accept_zlib_frames);
+        let (surface_receipts, frames) = if request.acknowledge_surface_frames {
+            let (receipts, frames) = SurfaceFrameReceipts::pair();
+            (Some(receipts), frames)
+        } else {
+            (None, SurfaceFrameWindow::default())
+        };
         let initial = if let Some(delta) = prepared.initial_delta {
-            encode_delta(first.frame.request_id, attachment.attachment_id(), delta)?
+            encode_delta(first.frame.request_id, attachment.attachment_id(), delta, 0)?
         } else {
             encode_snapshot(
                 first.frame.request_id,
                 attachment.session_id(),
                 attachment.attachment_id(),
                 prepared.snapshot,
+                0,
             )?
         };
+        let initial = encoding.encode(initial)?;
         write_attachment_bytes_until(
             &mut stream,
             &initial,
@@ -635,6 +659,7 @@ impl SessionWireServer {
                     request_context: reader_context,
                     outbound: outbound_sender,
                     limits,
+                    surface_receipts,
                 },
             )
             .await
@@ -650,6 +675,7 @@ impl SessionWireServer {
                 writer_context,
                 outbound_receiver,
                 limits.operation_timeout,
+                SurfaceOutput { encoding, frames },
             )
             .await
         });
@@ -899,6 +925,156 @@ impl SessionWireServer {
 }
 
 #[cfg(unix)]
+#[derive(Clone, Copy, Default)]
+struct AttachmentEncoding(bool);
+
+/// Numbered live surface frames written but not yet reported received.
+///
+/// QUIC flow-control credit lets a slow Relay path hold far more terminal
+/// output than it can deliver. Without this bound every PTY revision became a
+/// queued delta and a requested viewport's snapshot waited behind all of them.
+#[cfg(unix)]
+const MAX_UNRECEIVED_SURFACE_FRAMES: usize = 4;
+
+/// Encoded bytes of numbered live surface frames not yet reported received.
+#[cfg(unix)]
+const MAX_UNRECEIVED_SURFACE_BYTES: usize = 32 * 1024;
+
+/// Reader-owned validation of controller receipts for one attachment stream.
+#[cfg(unix)]
+struct SurfaceFrameReceipts {
+    received: tokio::sync::watch::Sender<u64>,
+    highest_sent: Arc<std::sync::atomic::AtomicU64>,
+}
+
+#[cfg(unix)]
+impl SurfaceFrameReceipts {
+    /// Creates the reader validator and the matching writer window.
+    fn pair() -> (Self, SurfaceFrameWindow) {
+        let (received, receiver) = tokio::sync::watch::channel(0);
+        let highest_sent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        (
+            Self {
+                received,
+                highest_sent: Arc::clone(&highest_sent),
+            },
+            SurfaceFrameWindow {
+                receipts: Some(SurfaceFrameReceiptWatch {
+                    received: receiver,
+                    highest_sent,
+                }),
+                in_flight: VecDeque::new(),
+                in_flight_bytes: 0,
+            },
+        )
+    }
+
+    /// Accepts one cumulative receipt within the exact written range.
+    fn accept(&self, frame_sequence: u64) -> Result<(), DaemonError> {
+        let current = *self.received.borrow();
+        let highest_sent = self.highest_sent.load(std::sync::atomic::Ordering::SeqCst);
+        if frame_sequence == 0 || frame_sequence < current || frame_sequence > highest_sent {
+            return Err(malformed(
+                "terminal surface frame receipt is outside the written range",
+            ));
+        }
+        if frame_sequence > current {
+            self.received.send_replace(frame_sequence);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+struct SurfaceFrameReceiptWatch {
+    received: tokio::sync::watch::Receiver<u64>,
+    highest_sent: Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// Writer-owned bound on live surface frames; disabled unless negotiated.
+#[cfg(unix)]
+#[derive(Default)]
+struct SurfaceFrameWindow {
+    receipts: Option<SurfaceFrameReceiptWatch>,
+    in_flight: VecDeque<(u64, usize)>,
+    in_flight_bytes: usize,
+}
+
+#[cfg(unix)]
+impl SurfaceFrameWindow {
+    /// Sequence for the next written frame; zero means not numbered.
+    fn next_sequence(&self) -> u64 {
+        self.receipts.as_ref().map_or(0, |receipts| {
+            receipts
+                .highest_sent
+                .load(std::sync::atomic::Ordering::SeqCst)
+                + 1
+        })
+    }
+
+    /// Accounts one frame before its bytes are written, so a receipt can never
+    /// precede the accounting that validates it.
+    fn record(&mut self, frame_sequence: u64, bytes: usize) {
+        if let Some(receipts) = &self.receipts {
+            receipts
+                .highest_sent
+                .store(frame_sequence, std::sync::atomic::Ordering::SeqCst);
+            self.in_flight.push_back((frame_sequence, bytes));
+            self.in_flight_bytes += bytes;
+        }
+    }
+
+    /// Whether one more optional live update may be written now. One frame is
+    /// always admitted, so a large snapshot or delta cannot deadlock the bound.
+    fn has_room(&mut self) -> bool {
+        let Some(receipts) = &mut self.receipts else {
+            return true;
+        };
+        let received = *receipts.received.borrow_and_update();
+        while let Some(&(frame_sequence, bytes)) = self.in_flight.front() {
+            if frame_sequence > received {
+                break;
+            }
+            self.in_flight.pop_front();
+            self.in_flight_bytes -= bytes;
+        }
+        self.in_flight.is_empty()
+            || (self.in_flight.len() < MAX_UNRECEIVED_SURFACE_FRAMES
+                && self.in_flight_bytes < MAX_UNRECEIVED_SURFACE_BYTES)
+    }
+
+    /// Waits for a newer receipt. A closed reader never wakes this writer; the
+    /// attachment owner retires both halves.
+    async fn receipt(&mut self) {
+        if let Some(receipts) = &mut self.receipts
+            && receipts.received.changed().await.is_ok()
+        {
+            return;
+        }
+        std::future::pending::<()>().await;
+    }
+}
+
+/// Encoding and optional receipt window owned by one attachment writer.
+#[cfg(unix)]
+#[derive(Default)]
+struct SurfaceOutput {
+    encoding: AttachmentEncoding,
+    frames: SurfaceFrameWindow,
+}
+
+#[cfg(unix)]
+impl AttachmentEncoding {
+    fn encode(self, bytes: Vec<u8>) -> Result<Vec<u8>, DaemonError> {
+        if self.0 {
+            zterm_proto::compress_terminal_frames(bytes).map_err(protocol_error)
+        } else {
+            Ok(bytes)
+        }
+    }
+}
+
+#[cfg(unix)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AttachmentTaskEnd {
     Explicit,
@@ -909,14 +1085,20 @@ enum AttachmentTaskEnd {
 
 #[cfg(unix)]
 async fn finish_attachment_tasks(
-    mut reader_task: JoinHandle<Result<AttachmentTaskEnd, DaemonError>>,
-    mut writer_task: JoinHandle<Result<AttachmentTaskEnd, DaemonError>>,
+    reader_task: JoinHandle<Result<AttachmentTaskEnd, DaemonError>>,
+    writer_task: JoinHandle<Result<AttachmentTaskEnd, DaemonError>>,
     operation_timeout: Duration,
 ) -> Result<AttachmentTaskEnd, DaemonError> {
+    // Broker quiesce or local IPC shutdown can cancel this owner while both
+    // halves are pending. Dropping a plain JoinHandle would detach its task,
+    // retaining the stream and attachment after its service owner is gone.
+    let mut reader_task = AbortOnDropHandle::new(reader_task);
+    let mut writer_task = AbortOnDropHandle::new(writer_task);
     tokio::select! {
         biased;
         result = &mut reader_task => {
             writer_task.abort();
+            let _ = writer_task.await;
             flatten_attachment_task(result)
         }
         result = &mut writer_task => {
@@ -934,11 +1116,13 @@ async fn finish_attachment_tasks(
                     Ok(result) => flatten_attachment_task(result),
                     Err(_) => {
                         reader_task.abort();
+                        let _ = reader_task.await;
                         if reader_closed { Err(attachment_cancelled()) } else { writer_result }
                     }
                 }
             } else {
                 reader_task.abort();
+                let _ = reader_task.await;
                 writer_result
             }
         }
@@ -1064,6 +1248,25 @@ struct AttachmentReaderContext {
     request_context: SessionRequestContext,
     outbound: mpsc::Sender<AttachmentOutbound>,
     limits: SessionWireLimits,
+    /// Present only after the controller opted into surface frame receipts.
+    surface_receipts: Option<SurfaceFrameReceipts>,
+}
+
+/// Validates one stream-local transport receipt; it is not a Session effect.
+#[cfg(unix)]
+fn accept_surface_frames_received(
+    frame: &DecodedFrame,
+    context: &AttachmentReaderContext,
+) -> Result<(), DaemonError> {
+    let receipts = context
+        .surface_receipts
+        .as_ref()
+        .ok_or_else(|| malformed("terminal surface frame receipts were not negotiated"))?;
+    let receipt: v2::TerminalSurfaceFramesReceived = frame
+        .decode_message(WireKind::TerminalSurfaceFramesReceived)
+        .map_err(protocol_error)?;
+    require_attachment_id(receipt.attachment_id, &context.attachment)?;
+    receipts.accept(receipt.frame_sequence)
 }
 
 #[cfg(unix)]
@@ -1083,17 +1286,21 @@ where
             finish_history_task(result)?;
         }
         if let Some(frame) = queued.pop_front() {
-            match process_attachment_frame(
-                frame.clone(),
-                &context.server,
-                &context.attachment,
-                &context.request_context,
-                &context.outbound,
-                context.limits,
-                &mut history_tasks,
-            )
-            .await
-            {
+            let result = if frame.kind == WireKind::TerminalSurfaceFramesReceived {
+                accept_surface_frames_received(&frame, &context).map(|()| false)
+            } else {
+                process_attachment_frame(
+                    frame.clone(),
+                    &context.server,
+                    &context.attachment,
+                    &context.request_context,
+                    &context.outbound,
+                    context.limits,
+                    &mut history_tasks,
+                )
+                .await
+            };
+            match result {
                 Ok(false) => continue,
                 Ok(true) => return Ok(AttachmentTaskEnd::Explicit),
                 Err(error) => {
@@ -1176,6 +1383,7 @@ async fn flush_attachment_error(
                 bytes: ServiceReply::error(request_id, error).bytes,
                 flushed: Some(flushed),
                 deadline,
+                synchronize_before_reply: false,
             },
             deadline,
         )
@@ -1425,7 +1633,7 @@ async fn process_attachment_frame(
             };
             send_attachment_outbound_until(
                 outbound,
-                AttachmentOutbound::queued(
+                AttachmentOutbound::takeover_reply(
                     encode_message(
                         WireKind::SessionMutateResponse,
                         frame.request_id,
@@ -1455,6 +1663,7 @@ async fn attachment_writer<Writer>(
     request_context: SessionRequestContext,
     mut outbound: mpsc::Receiver<AttachmentOutbound>,
     operation_timeout: Duration,
+    mut output: SurfaceOutput,
 ) -> Result<AttachmentTaskEnd, DaemonError>
 where
     Writer: AsyncWrite + Unpin,
@@ -1472,21 +1681,42 @@ where
         &request_context,
         initial_lifecycle,
         Instant::now() + operation_timeout,
+        &mut output,
     )
     .await?
     {
         return Ok(AttachmentTaskEnd::Terminal);
     }
     loop {
+        // Optional revision-driven updates wait for receipts; responses,
+        // lifecycle, effects, takeover and final updates are never withheld.
+        // A withheld revision stays marked changed in its watch, and the next
+        // capture is latest-only, so delayed output is coalesced, not lost.
+        let surface_room = output.frames.has_room();
         tokio::select! {
             biased;
             message = outbound.recv() => {
-                let Some(message) = message else {
+                let Some(mut message) = message else {
                     return Ok(AttachmentTaskEnd::ReaderClosed);
                 };
+                if message.synchronize_before_reply
+                    && let Some(update) = attachment_next_update(
+                        &server,
+                        Arc::clone(&attachment),
+                        &request_context,
+                        message.deadline,
+                    ).await?
+                {
+                    // Takeover can replace controller colors and require a
+                    // fresh snapshot ACK. This sole writer must emit that
+                    // snapshot before the success response enables commands;
+                    // the biased response queue must not overtake lifecycle.
+                    write_terminal_update(&mut writer, &attachment, update, message.deadline, &mut output).await?;
+                }
+                let bytes = Zeroizing::new(output.encoding.encode(std::mem::take(&mut *message.bytes))?);
                 write_attachment_bytes_until(
                     &mut writer,
-                    &message.bytes,
+                    &bytes,
                     message.deadline,
                     "terminal response exceeded its absolute deadline",
                     "write terminal response",
@@ -1505,6 +1735,7 @@ where
                     &request_context,
                     event,
                     Instant::now() + operation_timeout,
+                    &mut output,
                 ).await? {
                     return Ok(AttachmentTaskEnd::Terminal);
                 }
@@ -1514,7 +1745,7 @@ where
                     Instant::now() + operation_timeout).await?;
                 yield_after_effect = true;
             }
-            changed = revisions.changed(), if revisions_open => {
+            changed = revisions.changed(), if revisions_open && surface_room => {
                 yield_after_effect = false;
                 if changed.is_err() {
                     // Driver finalization closes its revision watch before the actor publishes
@@ -1536,6 +1767,7 @@ where
                                 &attachment,
                                 update,
                                 deadline,
+                                &mut output,
                             ).await?;
                         }
                         Ok(None) => {}
@@ -1549,6 +1781,7 @@ where
                     }
                 }
             }
+            () = output.frames.receipt(), if revisions_open && !surface_room => {}
             () = std::future::ready(()), if yield_after_effect => {
                 // A flood cannot monopolize visual/lifecycle work; an idle screen
                 // does not require another revision to drain the notification FIFO.
@@ -1618,6 +1851,7 @@ async fn write_lifecycle_event<Writer>(
     request_context: &SessionRequestContext,
     event: AttachmentLifecycle,
     deadline: Instant,
+    output: &mut SurfaceOutput,
 ) -> Result<bool, DaemonError>
 where
     Writer: AsyncWrite + Unpin,
@@ -1630,7 +1864,7 @@ where
                 attachment_next_update(server, Arc::clone(attachment), request_context, deadline)
                     .await?
             {
-                write_terminal_update(writer, attachment, update, deadline).await?;
+                write_terminal_update(writer, attachment, update, deadline, output).await?;
             }
             Ok(false)
         }
@@ -1659,7 +1893,7 @@ where
                 })
                 .await
             {
-                write_terminal_update(writer, attachment, update, deadline).await?;
+                write_terminal_update(writer, attachment, update, deadline, output).await?;
             }
             let message = session_ended_message(attachment, reason);
             let bytes = encode_message(WireKind::TerminalSessionEnded, 0, 0, &message)
@@ -1704,13 +1938,35 @@ async fn write_terminal_update<Writer>(
     attachment: &SessionAttachment,
     update: AttachmentUpdate,
     deadline: Instant,
+    output: &mut SurfaceOutput,
 ) -> Result<(), DaemonError>
 where
     Writer: AsyncWrite + Unpin,
 {
+    let synchronization = match &update {
+        AttachmentUpdate::Snapshot(snapshot) => Some((snapshot.revision, snapshot.surface.size)),
+        AttachmentUpdate::Delta(_) => None,
+    };
+    let record_snapshot = |stage| {
+        if zterm_diagnostics::detail_enabled()
+            && let Some((revision, size)) = synchronization
+        {
+            zterm_diagnostics::record(
+                zterm_diagnostics::Event::new(zterm_diagnostics::Kind::SyncChanged)
+                    .level(zterm_diagnostics::Level::Debug)
+                    .session(attachment.session_id())
+                    .attachment(attachment.attachment_id())
+                    .stage(stage)
+                    .epoch(revision.get())
+                    .viewport(size.columns, size.rows),
+            );
+        }
+    };
+    record_snapshot(zterm_diagnostics::Stage::Snapshot);
+    let frame_sequence = output.frames.next_sequence();
     let (bytes, operation) = match update {
         AttachmentUpdate::Delta(delta) => {
-            let bytes = encode_delta(0, attachment.attachment_id(), delta)?;
+            let bytes = encode_delta(0, attachment.attachment_id(), delta, frame_sequence)?;
             (bytes, "write terminal delta")
         }
         AttachmentUpdate::Snapshot(snapshot) => {
@@ -1725,11 +1981,14 @@ where
                 attachment.session_id(),
                 attachment.attachment_id(),
                 snapshot,
+                frame_sequence,
             )?;
             bytes.extend_from_slice(&snapshot);
             (bytes, "write terminal resync update")
         }
     };
+    let bytes = output.encoding.encode(bytes)?;
+    output.frames.record(frame_sequence, bytes.len());
     write_attachment_bytes_until(
         writer,
         &bytes,
@@ -1737,7 +1996,10 @@ where
         "terminal update exceeded its absolute deadline",
         operation,
     )
-    .await
+    .await?;
+    // This observes stream flushing, not remote snapshot application.
+    record_snapshot(zterm_diagnostics::Stage::SnapshotSent);
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -1759,6 +2021,9 @@ async fn send_resync(
         attachment.session_id(),
         attachment.attachment_id(),
         snapshot,
+        // Request-correlated replacements are not optional live output and
+        // are never counted by the receipt window.
+        0,
     )?);
     send_attachment_outbound_until(
         outbound,
@@ -1774,9 +2039,11 @@ fn encode_snapshot(
     session_id: SessionId,
     attachment_id: AttachmentId,
     snapshot: TerminalSurfaceSnapshot,
+    frame_sequence: u64,
 ) -> Result<Vec<u8>, DaemonError> {
-    let message =
+    let mut message =
         zterm_proto::terminal_surface_snapshot_message(session_id, attachment_id, snapshot);
+    message.frame_sequence = frame_sequence;
     encode_message(WireKind::TerminalSemanticSnapshot, request_id, 0, &message)
         .map_err(protocol_error)
 }
@@ -1786,8 +2053,10 @@ fn encode_delta(
     request_id: u64,
     attachment_id: AttachmentId,
     delta: TerminalSurfaceDelta,
+    frame_sequence: u64,
 ) -> Result<Vec<u8>, DaemonError> {
-    let message = zterm_proto::terminal_surface_delta_message(attachment_id, delta);
+    let mut message = zterm_proto::terminal_surface_delta_message(attachment_id, delta);
+    message.frame_sequence = frame_sequence;
     encode_message(WireKind::TerminalSemanticDelta, request_id, 0, &message).map_err(protocol_error)
 }
 
@@ -2066,6 +2335,73 @@ mod tests {
 
     fn device(byte: u8) -> DeviceId {
         DeviceId::from_array([byte; 32])
+    }
+
+    #[tokio::test]
+    async fn cancelling_attachment_owner_reclaims_both_stream_tasks() {
+        let (reader_alive, reader_dropped) = oneshot::channel::<()>();
+        let (writer_alive, writer_dropped) = oneshot::channel::<()>();
+        let (reader_ready, ready_reader) = oneshot::channel();
+        let (writer_ready, ready_writer) = oneshot::channel();
+        let reader = tokio::spawn(async move {
+            let _lifetime = reader_alive;
+            let _ = reader_ready.send(());
+            std::future::pending::<Result<AttachmentTaskEnd, DaemonError>>().await
+        });
+        let writer = tokio::spawn(async move {
+            let _lifetime = writer_alive;
+            let _ = writer_ready.send(());
+            std::future::pending::<Result<AttachmentTaskEnd, DaemonError>>().await
+        });
+        ready_reader.await.expect("reader started");
+        ready_writer.await.expect("writer started");
+        let cleanup = (reader.abort_handle(), writer.abort_handle());
+        let mut owner = Box::pin(finish_attachment_tasks(
+            reader,
+            writer,
+            Duration::from_secs(5),
+        ));
+        assert!(futures_util::poll!(&mut owner).is_pending());
+        // A cancelled broker/local service drops this future. Its streams and
+        // attachment ownership must not survive in detached Tokio tasks.
+        drop(owner);
+        let released = tokio::time::timeout(Duration::from_millis(100), async {
+            let (reader, writer) = tokio::join!(reader_dropped, writer_dropped);
+            assert!(reader.is_err() && writer.is_err());
+        })
+        .await;
+        cleanup.0.abort();
+        cleanup.1.abort();
+        assert!(
+            released.is_ok(),
+            "cancelled attachment leaked its reader/writer owners"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_detach_completion_joins_the_retired_writer() {
+        let (writer_alive, mut writer_dropped) = oneshot::channel::<()>();
+        let (writer_ready, ready_writer) = oneshot::channel();
+        let writer = tokio::spawn(async move {
+            let _lifetime = writer_alive;
+            let _ = writer_ready.send(());
+            std::future::pending::<Result<AttachmentTaskEnd, DaemonError>>().await
+        });
+        ready_writer.await.expect("writer started");
+        let reader = tokio::spawn(async { Ok(AttachmentTaskEnd::Explicit) });
+        assert_eq!(
+            finish_attachment_tasks(reader, writer, Duration::from_secs(5))
+                .await
+                .expect("explicit detach"),
+            AttachmentTaskEnd::Explicit
+        );
+        assert!(
+            matches!(
+                writer_dropped.try_recv(),
+                Err(oneshot::error::TryRecvError::Closed)
+            ),
+            "detach returned before its stream writer was retired"
+        );
     }
 
     fn generation(value: u64) -> AuthGeneration {
@@ -2493,6 +2829,35 @@ mod tests {
             .await
             .expect("remote duplex fixture frame deadline")
         }
+
+        /// Returns the next frame within `wait`, or None if none arrived.
+        async fn try_next(&mut self, wait: Duration) -> Option<DecodedFrame> {
+            if let Some(frame) = self.queued.pop_front() {
+                return Some(frame);
+            }
+            tokio::time::timeout(wait, async {
+                let mut buffer = [0_u8; 16 * 1024];
+                loop {
+                    // Cancel-safe: an unfinished read consumed no bytes.
+                    let read = self
+                        .stream
+                        .read(&mut buffer)
+                        .await
+                        .expect("read remote duplex fixture frame");
+                    assert_ne!(read, 0, "remote duplex stream closed before its frame");
+                    self.queued.extend(
+                        self.decoder
+                            .feed(&buffer[..read])
+                            .expect("decode remote duplex fixture frame"),
+                    );
+                    if let Some(frame) = self.queued.pop_front() {
+                        return frame;
+                    }
+                }
+            })
+            .await
+            .ok()
+        }
     }
 
     async fn start_remote_attachment(
@@ -2527,6 +2892,8 @@ mod tests {
         known_revision: Option<Revision>,
     ) -> v2::TerminalAttachRequest {
         v2::TerminalAttachRequest {
+            accept_zlib_frames: false,
+            acknowledge_surface_frames: false,
             base_colors: Some(zterm_core::terminal::TerminalColorProfile::default().into()),
 
             target: Some(remote_target(own)),
@@ -3083,6 +3450,192 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delayed_snapshot_ack_and_coalesced_resize_publish_latest_viewport() {
+        let temporary = tempfile::tempdir().expect("resize fixture");
+        let sessions = unix_wire_service(device(0xca), temporary.path().to_path_buf());
+        let view = AttachmentId::from_array([0xcb; 16]);
+        let prepared = sessions
+            .prepare_attach(sessions.local_principal(view), None, true, false, None)
+            .expect("controller");
+        activate_attachment(&prepared);
+        let attachment = &prepared.attachment;
+        let (_outbound, receiver) = mpsc::channel(8);
+        // A snapshot exceeds this pipe: the writer genuinely stalls while the
+        // Session actor continues committing output and newer resize intent.
+        let (peer, stream) = tokio::io::duplex(256);
+        let writer = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(attachment_writer(
+            stream,
+            SessionWireServer::new(sessions.clone()),
+            Arc::clone(attachment),
+            SessionRequestContext::local(view),
+            receiver,
+            Duration::from_secs(2),
+            SurfaceOutput::default(),
+        )));
+        let mut peer = TestRemotePeer::new(peer);
+        for columns in 90..98 {
+            let first_size = zterm_core::terminal::TerminalSize::new(31, columns);
+            let latest_size = zterm_core::terminal::TerminalSize::new(32, columns + 10);
+            attachment.resize(first_size).expect("first resize");
+            // Any old output delta is allowed before the ordered sync marker.
+            while peer.next().await.kind != WireKind::TerminalSyncRequired {}
+            attachment
+                .write_input(b"output while snapshot is blocked\n")
+                .expect("healthy controller input during resize");
+            attachment.resize(latest_size).expect("coalesced resize");
+            let frame = peer.next().await;
+            let message = frame
+                .decode_message::<v2::TerminalSemanticSnapshot>(WireKind::TerminalSemanticSnapshot)
+                .expect("snapshot after sync marker");
+            let (session, id, first) = zterm_proto::terminal_surface_snapshot_from_message(message)
+                .expect("first valid snapshot");
+            assert_eq!(session, attachment.session_id());
+            assert_eq!(id, attachment.attachment_id());
+            assert_eq!(first.surface.size, first_size);
+            attachment
+                .snapshot_applied(first.revision)
+                .expect("delayed ACK");
+            assert_eq!(peer.next().await.kind, WireKind::TerminalSyncRequired);
+            let frame = peer.next().await;
+            let message = frame
+                .decode_message::<v2::TerminalSemanticSnapshot>(WireKind::TerminalSemanticSnapshot)
+                .expect("latest viewport snapshot");
+            let (_, _, latest) = zterm_proto::terminal_surface_snapshot_from_message(message)
+                .expect("latest valid snapshot");
+            assert_eq!(latest.surface.size, latest_size);
+            assert!(latest.revision > first.revision);
+            // A repeated old ACK must not release the new synchronization fence.
+            attachment
+                .snapshot_applied(first.revision)
+                .expect("duplicate ACK");
+            assert!(
+                attachment
+                    .next_update()
+                    .expect("new fence retained")
+                    .is_none()
+            );
+            attachment
+                .snapshot_applied(latest.revision)
+                .expect("latest ACK");
+            attachment
+                .write_input(b"after resize\n")
+                .expect("same controller remains usable");
+        }
+        writer.abort();
+        let _ = writer.await;
+        attachment.detach();
+        sessions.shutdown().expect("stop resize fixture");
+    }
+
+    #[tokio::test]
+    async fn takeover_reply_cannot_overtake_its_required_color_snapshot() {
+        use zterm_core::terminal::{COLOR_BACKGROUND, TerminalColorProfile, TerminalColorValue};
+
+        let temporary = tempfile::tempdir().expect("takeover fixture");
+        let sessions = unix_wire_service(device(0xc7), temporary.path().to_path_buf());
+        let old_view = AttachmentId::from_array([0xc8; 16]);
+        let old = sessions
+            .prepare_attach(sessions.local_principal(old_view), None, true, false, None)
+            .expect("old controller");
+        activate_attachment(&old);
+        let view = AttachmentId::from_array([0xc9; 16]);
+        let principal = sessions.local_principal(view);
+        let mut colors = TerminalColorProfile::default();
+        colors.values[COLOR_BACKGROUND] = TerminalColorValue::Rgb(12, 34, 56);
+        let prepared = sessions
+            .prepare_attach_with_colors_until(
+                principal,
+                Some(SessionSelector::Id(old.attachment.session_id())),
+                false,
+                true,
+                crate::session::InitialTerminal {
+                    viewport: None,
+                    colors: colors.clone(),
+                },
+                Instant::now() + Duration::from_secs(2),
+            )
+            .expect("prepare different controller colors");
+        activate_attachment(&prepared);
+        let (outbound, receiver) = mpsc::channel(8);
+        let (peer, stream) = tokio::io::duplex(1024 * 1024);
+        let writer = tokio::spawn(attachment_writer(
+            stream,
+            SessionWireServer::new(sessions.clone()),
+            Arc::clone(&prepared.attachment),
+            SessionRequestContext::local(view),
+            receiver,
+            Duration::from_secs(2),
+            SurfaceOutput::default(),
+        ));
+        // Observe the real writer after its initial lifecycle pass. The
+        // following synchronous commit and queue insertion make both branches
+        // ready together; a biased response queue used to win this race.
+        let (flushed, ready) = oneshot::channel();
+        outbound
+            .try_send(AttachmentOutbound {
+                flushed: Some(flushed),
+                ..AttachmentOutbound::queued(Vec::new(), Instant::now() + Duration::from_secs(2))
+            })
+            .expect("writer readiness barrier");
+        ready.await.expect("writer reached response queue");
+        let lease = sessions
+            .issue_operation_lease(principal)
+            .expect("operation lease");
+        let summary = sessions
+            .takeover(
+                principal,
+                OperationId { lease, sequence: 1 },
+                &prepared.attachment,
+            )
+            .expect("commit takeover");
+        let reply = mutate_reply(77, summary).expect("takeover response");
+        outbound
+            .try_send(AttachmentOutbound::takeover_reply(
+                reply.bytes.to_vec(),
+                Instant::now() + Duration::from_secs(2),
+            ))
+            .expect("queue successful takeover");
+        let mut peer = TestRemotePeer::new(peer);
+        assert_eq!(peer.next().await.kind, WireKind::TerminalSyncRequired);
+        let frame = peer.next().await;
+        let snapshot = frame
+            .decode_message::<v2::TerminalSemanticSnapshot>(WireKind::TerminalSemanticSnapshot)
+            .expect("required color snapshot precedes success");
+        let (_, _, snapshot) = zterm_proto::terminal_surface_snapshot_from_message(snapshot)
+            .expect("valid replacement");
+        assert_eq!(snapshot.surface.colors.profile, colors);
+        let response = peer.next().await;
+        assert_eq!(response.kind, WireKind::SessionMutateResponse);
+        assert_eq!(response.request_id, 77);
+        assert_eq!(
+            prepared
+                .attachment
+                .write_input(b"too-early\n")
+                .expect_err("ACK still required")
+                .kind(),
+            DomainErrorKind::NotSynchronized
+        );
+        prepared
+            .attachment
+            .snapshot_applied(snapshot.revision)
+            .expect("apply required snapshot");
+        prepared
+            .attachment
+            .write_input(b"ready\n")
+            .expect("same controller becomes usable");
+        assert_eq!(
+            old.attachment
+                .write_input(b"retired\n")
+                .expect_err("old controller stays retired")
+                .kind(),
+            DomainErrorKind::LeaseLost
+        );
+        writer.abort();
+        let _ = writer.await;
+        sessions.shutdown().expect("stop takeover fixture");
+    }
+
+    #[tokio::test]
     async fn attachment_flush_and_control_queue_are_deadline_bounded() {
         let mut writer = StalledFlushWriter;
         let write_error = write_attachment_bytes_until(
@@ -3311,6 +3864,8 @@ mod tests {
             83,
             0,
             &v2::TerminalAttachRequest {
+                accept_zlib_frames: false,
+                acknowledge_surface_frames: false,
                 base_colors: Some(zterm_core::terminal::TerminalColorProfile::default().into()),
 
                 target: Some(remote_target(own)),
@@ -4266,18 +4821,34 @@ mod tests {
             },
         ] {
             assert!(
-                !write_lifecycle_event(&mut bytes, &server, &attachment, &context, stale, deadline)
-                    .await
-                    .expect("stale sync defers to lease loss")
+                !write_lifecycle_event(
+                    &mut bytes,
+                    &server,
+                    &attachment,
+                    &context,
+                    stale,
+                    deadline,
+                    &mut SurfaceOutput::default()
+                )
+                .await
+                .expect("stale sync defers to lease loss")
             );
             assert!(bytes.is_empty());
         }
         let event = lifecycle.borrow().clone();
         assert!(matches!(event, AttachmentLifecycle::LeaseLost { .. }));
         assert!(
-            write_lifecycle_event(&mut bytes, &server, &attachment, &context, event, deadline)
-                .await
-                .expect("deliver lease loss")
+            write_lifecycle_event(
+                &mut bytes,
+                &server,
+                &attachment,
+                &context,
+                event,
+                deadline,
+                &mut SurfaceOutput::default()
+            )
+            .await
+            .expect("deliver lease loss")
         );
         assert_eq!(decode_one(&bytes).kind, WireKind::TerminalLeaseLost);
         sessions.shutdown().expect("notification fixture cleanup");
@@ -4295,6 +4866,8 @@ mod tests {
         let mut profile = TerminalColorProfile::default();
         profile.values[COLOR_BACKGROUND] = TerminalColorValue::Rgb(200, 201, 202);
         let request = v2::TerminalAttachRequest {
+            accept_zlib_frames: false,
+            acknowledge_surface_frames: false,
             target: Some(remote_target(own)),
             session_id: None,
             takeover: false,
@@ -4361,5 +4934,604 @@ mod tests {
         drop(peer);
         let _ = task.await.expect("remote color server joins");
         sessions.shutdown().expect("remote color cleanup");
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn initial_snapshot_crosses_a_four_kib_link_within_existing_deadline() {
+        use prost::Message;
+        for compressed in [false, true] {
+            let temporary = tempfile::tempdir().expect("bandwidth fixture");
+            let own = device(0x71);
+            let remote = device(0x72);
+            let accepted = generation(1);
+            let sessions = unix_wire_service(own, temporary.path().to_path_buf());
+            let local = sessions.local_principal(AttachmentId::from_array([0x73; 16]));
+            let lease = sessions.issue_operation_lease(local).expect("create lease");
+            let summary = sessions
+                .create(
+                    local,
+                    OperationId { lease, sequence: 1 },
+                    SessionName::new("limited-link").expect("name"),
+                    None,
+                    None,
+                )
+                .expect("original session");
+            let server = SessionWireServer::new(sessions.clone());
+            let context =
+                remote_context(own, remote, accepted, authorized_registry(remote, accepted));
+            let (client, bridge_client) = tokio::io::duplex(4096);
+            let (bridge_host, host) = tokio::io::duplex(4096);
+            let (mut client_read, mut client_write) = tokio::io::split(bridge_client);
+            let (mut host_read, mut host_write) = tokio::io::split(bridge_host);
+            let bridge = tokio::spawn(async move {
+                let incoming = tokio::io::copy(&mut client_read, &mut host_write);
+                let outgoing = async {
+                    let mut chunk = [0u8; 1024];
+                    loop {
+                        let n = host_read.read(&mut chunk).await?;
+                        if n == 0 {
+                            return Ok::<_, std::io::Error>(());
+                        }
+                        if compressed {
+                            tokio::time::sleep(Duration::from_secs_f64(n as f64 / 4096.0)).await;
+                        }
+                        client_write.write_all(&chunk[..n]).await?;
+                    }
+                };
+                tokio::try_join!(incoming, outgoing)
+            });
+            let task = tokio::spawn(async move {
+                server
+                    .handle_remote_stream(
+                        host,
+                        context,
+                        SessionWireLimits::default(),
+                        Instant::now() + Duration::from_secs(5),
+                    )
+                    .await
+            });
+            let mut peer = TestRemotePeer::new(client);
+            let mut request = remote_attach_request(
+                own,
+                summary.session_id,
+                ResumeViewId::from_array([0x74; 16]),
+                None,
+            );
+            request.accept_zlib_frames = compressed;
+            peer.send(WireKind::TerminalAttachRequest, 1, &request)
+                .await;
+            let started = Instant::now();
+            let received = tokio::time::timeout(Duration::from_secs(5), async {
+                let mut raw = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let n = peer
+                        .stream
+                        .read(&mut chunk)
+                        .await
+                        .expect("limited-link read");
+                    assert_ne!(n, 0, "host ended before the snapshot");
+                    raw.extend_from_slice(&chunk[..n]);
+                    let mut frames = peer.decoder.feed(&chunk[..n]).expect("bounded frame");
+                    if !frames.is_empty() {
+                        let wire = v2::WireFrame::decode_length_delimited(raw.as_slice())
+                            .expect("wire header");
+                        return (frames.remove(0), wire.payload_encoding);
+                    }
+                }
+            })
+            .await;
+            eprintln!(
+                "initial snapshot compressed={compressed} elapsed_seconds={:.3} complete={}",
+                started.elapsed().as_secs_f64(),
+                received.is_ok()
+            );
+            drop(peer);
+            bridge.abort();
+            let _ = bridge.await;
+            task.abort();
+            let _ = task.await;
+            sessions.shutdown().expect("fixture cleanup");
+            let (frame, encoding) =
+                received.expect("initial snapshot must fit the existing five-second deadline");
+            assert_eq!(
+                encoding,
+                u32::from(compressed),
+                "legacy clients must receive the original encoding"
+            );
+            let message = frame
+                .decode_message(WireKind::TerminalSemanticSnapshot)
+                .expect("snapshot");
+            let (session_id, _, snapshot) =
+                zterm_proto::terminal_surface_snapshot_from_message(message)
+                    .expect("validated surface");
+            assert_eq!(session_id, summary.session_id);
+            assert_eq!(snapshot.surface.size, summary.viewport);
+        }
+    }
+
+    /// Bounded full-screen output like the field load: every 20 ms the child
+    /// prints 24 fresh pseudo-random 79-column rows, then it becomes an idle `cat`.
+    const SURFACE_BACKLOG_SCRIPT: &str = r#"awk 'BEGIN { srand(20261010); a = "abcdefghijklmnopqrstuvwxyz0123456789"; for (i = 0; i < 1500; i++) { for (j = 0; j < 24; j++) { s = ""; for (k = 0; k < 79; k++) s = s substr(a, int(rand() * 36) + 1, 1); print s } fflush(); system("sleep 0.02") } }'; exec cat"#;
+
+    fn unix_script_wire_service(
+        own: DeviceId,
+        working_directory: PathBuf,
+        script: &'static str,
+    ) -> SessionService {
+        SessionService::with_spawner(own, ResourceLimits::default(), move |size, requested| {
+            let cwd = requested.unwrap_or(&working_directory).to_path_buf();
+            let session = PtyHost::new()
+                .spawn(
+                    ExplicitPtyCommand::new(Path::new("/bin/sh"), &cwd)
+                        .arg("-c")
+                        .arg(script),
+                    PtySize::new(size.rows, size.columns),
+                )
+                .map_err(|error| {
+                    DaemonError::new(DomainErrorKind::StoreUnavailable, error.to_string())
+                })?;
+            Ok((session, cwd))
+        })
+    }
+
+    /// R03 model: a transport send buffer that accepts far more bytes than the
+    /// path delivers, like QUIC flow-control credit over a slow Relay path.
+    /// The requested viewport's snapshot must not wait behind that backlog.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn resize_snapshot_is_not_queued_behind_an_undelivered_surface_backlog() {
+        const DEEP_SEND_BUFFER: usize = 512 * 1024;
+        const LINK_BYTES_PER_SECOND: f64 = 32.0 * 1024.0;
+        const BACKLOG_BUILD: Duration = Duration::from_secs(4);
+        const RESIZE_BOUND: Duration = Duration::from_secs(5);
+        let temporary = tempfile::tempdir().expect("surface backlog fixture");
+        let own = device(0x75);
+        let remote = device(0x76);
+        let accepted = generation(1);
+        let sessions =
+            unix_script_wire_service(own, temporary.path().to_path_buf(), SURFACE_BACKLOG_SCRIPT);
+        let local = sessions.local_principal(AttachmentId::from_array([0x77; 16]));
+        let lease = sessions.issue_operation_lease(local).expect("create lease");
+        let summary = sessions
+            .create(
+                local,
+                OperationId { lease, sequence: 1 },
+                SessionName::new("surface-backlog").expect("name"),
+                None,
+                None,
+            )
+            .expect("output session");
+        let server = SessionWireServer::new(sessions.clone());
+        let context = remote_context(own, remote, accepted, authorized_registry(remote, accepted));
+        // Host writes complete into the deep buffer; only the bridge drains it
+        // at the slow path rate. Controller-to-host bytes are not limited.
+        let (client, bridge_client) = tokio::io::duplex(4096);
+        let (bridge_host, host) = tokio::io::duplex(DEEP_SEND_BUFFER);
+        let (mut client_read, mut client_write) = tokio::io::split(bridge_client);
+        let (mut host_read, mut host_write) = tokio::io::split(bridge_host);
+        let bridge = tokio::spawn(async move {
+            let upstream = tokio::io::copy(&mut client_read, &mut host_write);
+            let downstream = async {
+                let mut chunk = [0_u8; 1024];
+                loop {
+                    let read = host_read.read(&mut chunk).await?;
+                    if read == 0 {
+                        return Ok::<_, std::io::Error>(());
+                    }
+                    tokio::time::sleep(Duration::from_secs_f64(
+                        read as f64 / LINK_BYTES_PER_SECOND,
+                    ))
+                    .await;
+                    client_write.write_all(&chunk[..read]).await?;
+                }
+            };
+            tokio::try_join!(upstream, downstream)
+        });
+        let task = tokio::spawn(async move {
+            server
+                .handle_remote_stream(
+                    host,
+                    context,
+                    SessionWireLimits::default(),
+                    Instant::now() + Duration::from_secs(5),
+                )
+                .await
+        });
+        let mut peer = TestRemotePeer::new(client);
+        let mut request = remote_attach_request(
+            own,
+            summary.session_id,
+            ResumeViewId::from_array([0x78; 16]),
+            None,
+        );
+        request.accept_zlib_frames = true;
+        request.acknowledge_surface_frames = true;
+        peer.send(WireKind::TerminalAttachRequest, 1, &request)
+            .await;
+        let initial = peer.next().await;
+        assert_eq!(initial.kind, WireKind::TerminalSemanticSnapshot);
+        let (_, attachment_id, initial) = zterm_proto::terminal_surface_snapshot_from_message(
+            initial
+                .decode_message(WireKind::TerminalSemanticSnapshot)
+                .expect("initial snapshot"),
+        )
+        .expect("validated initial snapshot");
+        peer.send(
+            WireKind::TerminalSnapshotApplied,
+            2,
+            &v2::TerminalSnapshotApplied {
+                attachment_id: Some(attachment_id.into()),
+                revision: initial.revision.get(),
+            },
+        )
+        .await;
+
+        let mut observed = SurfaceBacklogObservation::default();
+        let build_until = Instant::now() + BACKLOG_BUILD;
+        while Instant::now() < build_until {
+            observed.observe(&mut peer, attachment_id).await;
+        }
+        let before_resize = observed;
+        let requested = TerminalSize {
+            rows: 30,
+            columns: 100,
+        };
+        peer.send(
+            WireKind::TerminalResize,
+            3,
+            &v2::TerminalResize {
+                operation_id: None,
+                attachment_id: Some(attachment_id.into()),
+                rows: u32::from(requested.rows),
+                columns: u32::from(requested.columns),
+            },
+        )
+        .await;
+        let resized = Instant::now();
+        let snapshot_size = tokio::time::timeout(RESIZE_BOUND, async {
+            loop {
+                if let Some(size) = observed.observe(&mut peer, attachment_id).await
+                    && size == requested
+                {
+                    return size;
+                }
+            }
+        })
+        .await;
+        let elapsed = resized.elapsed();
+        eprintln!(
+            "surface backlog: before_resize frames={} decoded_payload_bytes={}; after_resize \
+             frames={} decoded_payload_bytes={} snapshot_received={} elapsed_seconds={:.3}",
+            before_resize.frames,
+            before_resize.payload_bytes,
+            observed.frames - before_resize.frames,
+            observed.payload_bytes - before_resize.payload_bytes,
+            snapshot_size.is_ok(),
+            elapsed.as_secs_f64(),
+        );
+        drop(peer);
+        bridge.abort();
+        let _ = bridge.await;
+        task.abort();
+        let _ = task.await;
+        sessions.shutdown().expect("fixture cleanup");
+        assert!(
+            snapshot_size.is_ok(),
+            "requested viewport snapshot waited behind the undelivered surface backlog",
+        );
+    }
+
+    #[derive(Clone, Copy, Default)]
+    struct SurfaceBacklogObservation {
+        frames: usize,
+        payload_bytes: usize,
+        numbered: u64,
+    }
+
+    impl SurfaceBacklogObservation {
+        /// Reads one frame, reports numbered frames like the product client,
+        /// and returns a complete snapshot's surface size.
+        async fn observe(
+            &mut self,
+            peer: &mut TestRemotePeer,
+            attachment_id: AttachmentId,
+        ) -> Option<TerminalSize> {
+            let frame = peer.next().await;
+            self.frames += 1;
+            self.payload_bytes += frame.payload.len();
+            let (frame_sequence, size) = match frame.kind {
+                WireKind::TerminalSemanticSnapshot => {
+                    let message: v2::TerminalSemanticSnapshot = frame
+                        .decode_message(WireKind::TerminalSemanticSnapshot)
+                        .expect("surface snapshot");
+                    let frame_sequence = message.frame_sequence;
+                    let (_, _, snapshot) =
+                        zterm_proto::terminal_surface_snapshot_from_message(message)
+                            .expect("validated surface snapshot");
+                    (frame_sequence, Some(snapshot.surface.size))
+                }
+                WireKind::TerminalSemanticDelta => {
+                    let message: v2::TerminalSemanticDelta = frame
+                        .decode_message(WireKind::TerminalSemanticDelta)
+                        .expect("surface delta");
+                    (message.frame_sequence, None)
+                }
+                WireKind::TerminalSyncRequired => (0, None),
+                kind => panic!("unexpected surface backlog frame: {kind:?}"),
+            };
+            if frame_sequence != 0 {
+                assert_eq!(frame_sequence, self.numbered + 1, "consecutive numbering");
+                self.numbered = frame_sequence;
+                peer.send(
+                    WireKind::TerminalSurfaceFramesReceived,
+                    100,
+                    &v2::TerminalSurfaceFramesReceived {
+                        attachment_id: Some(attachment_id.into()),
+                        frame_sequence,
+                    },
+                )
+                .await;
+            }
+            size
+        }
+    }
+
+    #[tokio::test]
+    async fn surface_frame_receipts_validate_the_written_range_and_bound_the_window() {
+        let malformed = |result: Result<(), DaemonError>| {
+            result.expect_err("receipt must be rejected").kind() == DomainErrorKind::MalformedFrame
+        };
+        let (receipts, mut window) = SurfaceFrameReceipts::pair();
+        assert!(window.has_room());
+        assert_eq!(window.next_sequence(), 1);
+        assert!(malformed(receipts.accept(1)), "nothing was written yet");
+        assert!(malformed(receipts.accept(0)), "zero is never a frame");
+        let frames = u64::try_from(MAX_UNRECEIVED_SURFACE_FRAMES).expect("small bound");
+        for frame_sequence in 1..=frames {
+            assert!(window.has_room());
+            assert_eq!(window.next_sequence(), frame_sequence);
+            window.record(frame_sequence, 100);
+        }
+        assert!(!window.has_room(), "frame-count bound");
+        receipts.accept(2).expect("cumulative receipt");
+        receipts.accept(2).expect("a repeated receipt is harmless");
+        assert!(malformed(receipts.accept(1)), "receipts cannot regress");
+        assert!(
+            malformed(receipts.accept(frames + 1)),
+            "receipt beyond the written range"
+        );
+        assert!(window.has_room(), "received frames leave the window");
+
+        receipts.accept(frames).expect("everything received");
+        assert!(window.has_room());
+        let large = frames + 1;
+        window.record(large, MAX_UNRECEIVED_SURFACE_BYTES * 2);
+        assert!(
+            !window.has_room(),
+            "byte bound after one admitted large frame"
+        );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(window.receipt(), async {
+                receipts.accept(large).expect("large frame received");
+            });
+        })
+        .await
+        .expect("a receipt wakes the waiting writer");
+        assert!(window.has_room());
+
+        let mut disabled = SurfaceFrameWindow::default();
+        assert_eq!(
+            disabled.next_sequence(),
+            0,
+            "legacy frames are not numbered"
+        );
+        disabled.record(0, MAX_UNRECEIVED_SURFACE_BYTES * 8);
+        assert!(disabled.has_room(), "legacy attachments are never withheld");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn live_surface_updates_wait_for_receipts_without_losing_the_latest_state() {
+        let temporary = tempfile::tempdir().expect("receipt window fixture");
+        let own = device(0x79);
+        let remote = device(0x7a);
+        let accepted = generation(1);
+        let sessions =
+            unix_script_wire_service(own, temporary.path().to_path_buf(), SURFACE_BACKLOG_SCRIPT);
+        let local = sessions.local_principal(AttachmentId::from_array([0x7b; 16]));
+        let lease = sessions.issue_operation_lease(local).expect("create lease");
+        let summary = sessions
+            .create(
+                local,
+                OperationId { lease, sequence: 1 },
+                SessionName::new("receipt-window").expect("name"),
+                None,
+                None,
+            )
+            .expect("output session");
+        let context = remote_context(own, remote, accepted, authorized_registry(remote, accepted));
+        let mut request = remote_attach_request(
+            own,
+            summary.session_id,
+            ResumeViewId::from_array([0x7c; 16]),
+            None,
+        );
+        request.acknowledge_surface_frames = true;
+        let (mut peer, task) =
+            start_remote_attachment(SessionWireServer::new(sessions.clone()), context, request)
+                .await;
+        let initial = peer.next().await;
+        let initial: v2::TerminalSemanticSnapshot = initial
+            .decode_message(WireKind::TerminalSemanticSnapshot)
+            .expect("initial snapshot");
+        assert_eq!(
+            initial.frame_sequence, 0,
+            "the correlated attach reply is not counted"
+        );
+        let attachment_id: AttachmentId = initial
+            .attachment_id
+            .clone()
+            .expect("attachment ID")
+            .try_into()
+            .expect("valid attachment ID");
+        peer.send(
+            WireKind::TerminalSnapshotApplied,
+            2,
+            &v2::TerminalSnapshotApplied {
+                attachment_id: Some(attachment_id.into()),
+                revision: initial.revision,
+            },
+        )
+        .await;
+
+        // Without receipts the host writes at most one full window, then
+        // withholds further revisions although the child keeps printing.
+        let mut numbered = Vec::new();
+        let mut revision = initial.revision;
+        while let Some(frame) = peer.try_next(Duration::from_millis(700)).await {
+            assert_eq!(frame.kind, WireKind::TerminalSemanticDelta);
+            let delta: v2::TerminalSemanticDelta = frame
+                .decode_message(WireKind::TerminalSemanticDelta)
+                .expect("live delta");
+            assert_eq!(delta.from_revision, revision, "no update is skipped");
+            revision = delta.to_revision;
+            numbered.push(delta.frame_sequence);
+            assert!(
+                numbered.len() <= MAX_UNRECEIVED_SURFACE_FRAMES + 1,
+                "{numbered:?}"
+            );
+        }
+        let expected: Vec<u64> = (1..=u64::try_from(numbered.len()).expect("small")).collect();
+        assert!(
+            !numbered.is_empty(),
+            "the first live update is always admitted"
+        );
+        assert_eq!(numbered, expected, "live frames are numbered consecutively");
+
+        // One cumulative receipt resumes output with the latest merged state.
+        let received = *numbered.last().expect("numbered frame");
+        peer.send(
+            WireKind::TerminalSurfaceFramesReceived,
+            3,
+            &v2::TerminalSurfaceFramesReceived {
+                attachment_id: Some(attachment_id.into()),
+                frame_sequence: received,
+            },
+        )
+        .await;
+        let resumed = peer
+            .try_next(Duration::from_secs(2))
+            .await
+            .expect("a receipt resumes live output");
+        let resumed: v2::TerminalSemanticDelta = resumed
+            .decode_message(WireKind::TerminalSemanticDelta)
+            .expect("resumed delta");
+        assert_eq!(resumed.frame_sequence, received + 1);
+        assert_eq!(
+            resumed.from_revision, revision,
+            "withheld output was coalesced"
+        );
+        assert!(resumed.to_revision > revision);
+
+        drop(peer);
+        let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+        sessions.shutdown().expect("fixture cleanup");
+    }
+
+    #[tokio::test]
+    async fn legacy_attachments_stay_unnumbered_and_reject_surface_receipts() {
+        let temporary = tempfile::tempdir().expect("legacy receipt fixture");
+        let own = device(0x7d);
+        let remote = device(0x7e);
+        let accepted = generation(1);
+        let sessions = unix_wire_service(own, temporary.path().to_path_buf());
+        let local = sessions.local_principal(AttachmentId::from_array([0x7f; 16]));
+        let lease = sessions.issue_operation_lease(local).expect("create lease");
+        let summary = sessions
+            .create(
+                local,
+                OperationId { lease, sequence: 1 },
+                SessionName::new("legacy-receipt").expect("name"),
+                None,
+                None,
+            )
+            .expect("cat session");
+        let context = remote_context(own, remote, accepted, authorized_registry(remote, accepted));
+        let request = remote_attach_request(
+            own,
+            summary.session_id,
+            ResumeViewId::from_array([0x80; 16]),
+            None,
+        );
+        assert!(!request.acknowledge_surface_frames);
+        let (mut peer, task) =
+            start_remote_attachment(SessionWireServer::new(sessions.clone()), context, request)
+                .await;
+        let initial: v2::TerminalSemanticSnapshot = peer
+            .next()
+            .await
+            .decode_message(WireKind::TerminalSemanticSnapshot)
+            .expect("initial snapshot");
+        let attachment_id: AttachmentId = initial
+            .attachment_id
+            .clone()
+            .expect("attachment ID")
+            .try_into()
+            .expect("valid attachment ID");
+        peer.send(
+            WireKind::TerminalSnapshotApplied,
+            2,
+            &v2::TerminalSnapshotApplied {
+                attachment_id: Some(attachment_id.into()),
+                revision: initial.revision,
+            },
+        )
+        .await;
+        peer.send(
+            WireKind::TerminalInput,
+            3,
+            &v2::TerminalInput {
+                operation_id: None,
+                attachment_id: Some(attachment_id.into()),
+                bytes: b"legacy\r".to_vec(),
+            },
+        )
+        .await;
+        let delta = loop {
+            let frame = peer.next().await;
+            if frame.kind == WireKind::TerminalSemanticDelta {
+                break frame
+                    .decode_message::<v2::TerminalSemanticDelta>(WireKind::TerminalSemanticDelta)
+                    .expect("echo delta");
+            }
+        };
+        assert_eq!(
+            delta.frame_sequence, 0,
+            "legacy live frames are not numbered"
+        );
+        peer.send(
+            WireKind::TerminalSurfaceFramesReceived,
+            4,
+            &v2::TerminalSurfaceFramesReceived {
+                attachment_id: Some(attachment_id.into()),
+                frame_sequence: 1,
+            },
+        )
+        .await;
+        let error = loop {
+            let frame = peer.next().await;
+            if frame.kind == WireKind::ServiceErrorResponse {
+                break frame;
+            }
+        };
+        assert_eq!(error.request_id, 4);
+        let error: v2::ServiceError = error
+            .decode_message(WireKind::ServiceErrorResponse)
+            .expect("typed error");
+        assert_eq!(
+            DomainErrorKind::from_code(&error.code),
+            Some(DomainErrorKind::MalformedFrame)
+        );
+        drop(peer);
+        let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+        sessions.shutdown().expect("fixture cleanup");
     }
 }

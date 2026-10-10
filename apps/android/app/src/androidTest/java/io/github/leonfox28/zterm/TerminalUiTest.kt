@@ -342,12 +342,14 @@ print('SCENE_DONE')
 """.trimIndent()
 
     @Test fun gesturesCopyOverlayAndActivityRetention() {
+        val hostName = InstrumentationRegistry.getArguments().getString("hostName")
+        org.junit.Assume.assumeTrue("explicit disposable host", !hostName.isNullOrBlank())
         instrumentation.uiAutomation.serviceInfo = instrumentation.uiAutomation.serviceInfo.apply {
             flags = flags or android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
         }
         ui.waitUntil(20_000) { repository.state.value.initialized }
         val preferences = repository.state.value.saved.preferences
-        val host = repository.state.value.saved.hosts.first { it.name == (InstrumentationRegistry.getArguments().getString("hostName") ?: "my-mac") }
+        val host = repository.state.value.saved.hosts.first { it.name == hostName }
         val name = "android-ui-${System.nanoTime()}"
         var owned: String? = null
         var stopKeyboardFrames: (() -> Unit)? = null
@@ -417,10 +419,12 @@ print('SCENE_DONE')
             }
 
             val viewport = repository.frame.value!!.viewport
-            ui.onNodeWithText(name).performClick()
+            // The header also includes the shell's OSC title on Linux. Match
+            // our unique Session name without assuming an empty child title.
+            ui.onNodeWithText(name, substring = true).performClick()
             ui.onNodeWithText("New session").assertIsDisplayed()
             assertEquals("overlay preserves terminal dimensions", viewport, repository.frame.value!!.viewport)
-            ui.onAllNodesWithText(name).onFirst().performClick()
+            ui.onAllNodesWithText(name, substring = true).onFirst().performClick()
             ui.waitUntil { !repository.state.value.panel }
 
             val view = terminal()
@@ -523,7 +527,7 @@ print('SCENE_DONE')
                 assertEquals(session,repository.state.value.sessionId)
             }
 
-            ui.onNodeWithText(name).performClick()
+            ui.onNodeWithText(name, substring = true).performClick()
             ui.onNode(hasContentDescription("Session actions") and hasAnyAncestor(hasText(name))).performClick()
             ui.onNodeWithText("Rename").performClick()
             ui.onNodeWithText("Name").performTextReplacement("$name-renamed")
@@ -535,7 +539,7 @@ print('SCENE_DONE')
             await("second explicit Session") { repository.frame.value?.state == "active" && repository.state.value.sessions.any { it.name == "$name-second" } }
             val second = repository.state.value.sessionId
             assertNotEquals(owned,second)
-            ui.onNodeWithText("$name-second").performClick()
+            ui.onNodeWithText("$name-second", substring = true).performClick()
             ui.onNode(hasContentDescription("Session actions") and hasAnyAncestor(hasText("$name-second"))).performClick()
             ui.onNodeWithText("Delete").performClick()
             ui.onNodeWithText("Cancel").performClick()
@@ -558,12 +562,14 @@ print('SCENE_DONE')
     }
 
     @Test fun childMouseAndAlternateScrollUseTouchWithoutStealingLongPress() {
+        val hostName = InstrumentationRegistry.getArguments().getString("hostName")
+        org.junit.Assume.assumeTrue("explicit disposable host", !hostName.isNullOrBlank())
         instrumentation.uiAutomation.serviceInfo = instrumentation.uiAutomation.serviceInfo.apply {
             flags = flags or android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
         }
         ui.waitUntil(20_000) { repository.state.value.initialized }
         val preferences = repository.state.value.saved.preferences
-        val host = repository.state.value.saved.hosts.first { it.name == (InstrumentationRegistry.getArguments().getString("hostName") ?: "my-mac") }
+        val host = repository.state.value.saved.hosts.first { it.name == hostName }
         val name = "android-ui-pointer-${System.nanoTime()}"
         try {
             ui.runOnIdle { repository.setPreferences(Preferences("en","dark",12)); repository.goHome() }

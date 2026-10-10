@@ -20,12 +20,12 @@ pub use device::{
     RESERVED_DEVICE_ALIAS, RelayHint, RelayHintError, short_endpoint_id,
 };
 pub use domain::{
-    AttachmentId, AttachmentPrincipal, Capabilities, ConnectionAttemptId, ControllerLease,
-    DEFAULT_SESSION_NAME, DaemonIncarnation, DeviceId, DeviceIdTextError, DomainErrorKind,
-    EphemeralOperationId, IdLengthError, MAX_SESSION_NAME_BYTES, OperationId, OperationLease,
-    OperationOutcome, OperationWindow, OperationWindowError, PairNonce, PairOfferId,
-    ResourceLimits, ResumeViewId, Revision, SessionEndReason, SessionId, SessionIdTextError,
-    SessionName, SessionNameError, SessionSelector,
+    AttachmentId, AttachmentPrincipal, Capabilities, ConnectionAttemptId, ConnectionIncarnation,
+    ControllerLease, DEFAULT_SESSION_NAME, DaemonIncarnation, DeviceId, DeviceIdTextError,
+    DomainErrorKind, EphemeralOperationId, IdLengthError, MAX_SESSION_NAME_BYTES, OperationId,
+    OperationLease, OperationOutcome, OperationWindow, OperationWindowError, PairNonce,
+    PairOfferId, ResourceLimits, ResumeViewId, Revision, SessionEndReason, SessionId,
+    SessionIdTextError, SessionName, SessionNameError, SessionSelector,
 };
 pub use pairing::{
     DEFAULT_PAIR_TTL_SECONDS, MAX_DEVICE_NAME_BYTES, MAX_PAIR_TTL_SECONDS, MIN_PAIR_TTL_SECONDS,

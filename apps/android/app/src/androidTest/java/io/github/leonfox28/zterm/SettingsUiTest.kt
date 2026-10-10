@@ -179,8 +179,16 @@ class SettingsUiTest {
         val previous = repository.state.value.saved.preferences
         val store = AppStore(ui.activity)
         try {
+            // A saved terminal can still be restoring after initialization.
+            // Finish returning home before timing the settings assertions.
+            ui.runOnIdle { repository.goHome() }
+            ui.waitUntil(10_000) {
+                repository.state.value.let {
+                    it.route == Route.Home && it.hostId == null &&
+                        it.saved.activeTerminal == null && !it.busy
+                }
+            }
             ui.runOnIdle {
-                repository.goHome()
                 repository.setPreferences(previous.copy(language = "en", theme = "dark"))
             }
             ui.waitUntil { repository.state.value.saved.preferences.language == "en" && !repository.state.value.busy }

@@ -851,10 +851,14 @@ async fn run_terminal_driver(
                 }
                 () = events.closed() => {
                     effects.clear();
+                    // Retire input admission and queued command replies before
+                    // waiting for the peer to finish this attachment's detach.
+                    drop(commands);
                     let _ = client.detach().await;
                     return;
                 }
                 event = client.read_next_event() => {
+                    let delivered = event.is_ok();
                     if queue_local_attachment_event(
                         event,
                         &mut pending,
@@ -864,6 +868,12 @@ async fn run_terminal_driver(
                         &effects,
                     ) {
                         stop_after_pending = true;
+                    }
+                    if delivered && !stop_after_pending {
+                        // The read above is cancellable; this handler is not, so
+                        // the receipt write cannot be abandoned mid-frame. A
+                        // write failure is classified by the read half.
+                        let _ = client.report_surface_frames().await;
                     }
                 }
             }
@@ -889,6 +899,7 @@ async fn run_terminal_driver(
             permit = events.reserve() => {
                 let Ok(permit) = permit else {
                     effects.clear();
+                    drop(commands);
                     let _ = client.detach().await;
                     return;
                 };
@@ -2559,5 +2570,111 @@ mod tests {
                 }),
             }),
         }
+    }
+
+    #[cfg(unix)]
+    fn receipt_test_delta(attachment_id: AttachmentId, from: u64, frame_sequence: u64) -> Vec<u8> {
+        let delta = zterm_core::terminal::TerminalSurfaceDelta {
+            application_title: String::new(),
+            colors: Default::default(),
+            from_revision: Revision::new(from),
+            to_revision: Revision::new(from + 1),
+            size: TerminalSize::new(24, 80),
+            active_screen: zterm_core::terminal::ActiveScreen::Main,
+            row_patches: Vec::new(),
+            cursor: zterm_core::terminal::TerminalCursor {
+                presentation: Default::default(),
+                row: 0,
+                column: 0,
+                visible: true,
+                style: Default::default(),
+            },
+            modes: zterm_core::terminal::TerminalModes::default(),
+            scroll_metrics: Some(zterm_core::terminal::TerminalScrollMetrics {
+                epoch: Revision::ZERO,
+                revision: Revision::new(from + 1),
+                offset_from_bottom: 0,
+                max_offset_from_bottom: 0,
+                viewport_rows: 24,
+            }),
+        };
+        let mut message = zterm_proto::terminal_surface_delta_message(attachment_id, delta);
+        message.frame_sequence = frame_sequence;
+        encode_message(WireKind::TerminalSemanticDelta, 0, 0, &message).expect("bounded delta")
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminal_driver_reports_numbered_surface_frames_and_rejects_gaps() {
+        let (mut prepared, mut daemon, _, attachment_id) = terminal_test_view(false);
+        prepared.client.negotiate_surface_frame_receipts_for_test();
+        let server = tokio::spawn(async move {
+            let mut decoder = FrameDecoder::new();
+            let mut queued = VecDeque::new();
+            let initial = read_terminal_test_frame(&mut daemon, &mut decoder, &mut queued).await;
+            assert_eq!(initial.kind, WireKind::TerminalSnapshotApplied);
+            // An unnumbered frame (older host) is never acknowledged.
+            daemon
+                .write_all(&receipt_test_delta(attachment_id, 1, 0))
+                .await
+                .expect("write unnumbered delta");
+            daemon
+                .write_all(&receipt_test_delta(attachment_id, 2, 1))
+                .await
+                .expect("write first numbered delta");
+            let receipt = read_terminal_test_frame(&mut daemon, &mut decoder, &mut queued).await;
+            assert_eq!(receipt.kind, WireKind::TerminalSurfaceFramesReceived);
+            let receipt: v2::TerminalSurfaceFramesReceived = receipt
+                .decode_message(WireKind::TerminalSurfaceFramesReceived)
+                .expect("receipt");
+            assert_eq!(receipt.frame_sequence, 1);
+            assert_eq!(
+                AttachmentId::try_from(receipt.attachment_id.expect("attachment")).expect("id"),
+                attachment_id
+            );
+            daemon
+                .write_all(&receipt_test_delta(attachment_id, 3, 2))
+                .await
+                .expect("write second numbered delta");
+            let receipt = read_terminal_test_frame(&mut daemon, &mut decoder, &mut queued).await;
+            let receipt: v2::TerminalSurfaceFramesReceived = receipt
+                .decode_message(WireKind::TerminalSurfaceFramesReceived)
+                .expect("second receipt");
+            assert_eq!(receipt.frame_sequence, 2);
+            // A skipped sequence is a protocol violation, not a silent gap.
+            daemon
+                .write_all(&receipt_test_delta(attachment_id, 4, 4))
+                .await
+                .expect("write gapped delta");
+            daemon
+        });
+
+        let view = prepared
+            .acknowledge_initial()
+            .await
+            .expect("exact initial acknowledgement");
+        let (mut events, writer) = view.split();
+        assert!(matches!(
+            events.read_event().await.expect("initial state"),
+            Some(TerminalViewEvent::TransportState(
+                TerminalViewTransportState::Active
+            ))
+        ));
+        let mut deltas = 0;
+        let failure = loop {
+            match tokio::time::timeout(Duration::from_secs(5), events.read_event())
+                .await
+                .expect("driver event deadline")
+            {
+                Ok(Some(TerminalViewEvent::Delta(_))) => deltas += 1,
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("driver closed without reporting the gap"),
+                Err(error) => break error,
+            }
+        };
+        assert_eq!(deltas, 3, "the gapped frame is not delivered");
+        assert_eq!(failure.kind(), DomainErrorKind::MalformedFrame);
+        drop(writer);
+        let _daemon = server.await.expect("receipt test server");
     }
 }

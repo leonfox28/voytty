@@ -49,6 +49,7 @@ const CONTROLLED_RELAY_START_TIMEOUT: Duration = Duration::from_secs(15);
 const CONTROLLED_RELAY_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROLLED_RELAY_HOST: &str = "relay.test";
 const RELAY_IPV4_OVERRIDES_ENV: &str = "ZTERM_GATE_RELAY_IPV4_OVERRIDES";
+const EGRESS_INTERFACE_ENV: &str = "ZTERM_GATE_EGRESS_INTERFACE";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GateCase {
@@ -965,6 +966,21 @@ impl Drop for PublicEgress {
 }
 
 fn configure_public_egress(lab: &Lab, index: u8) -> Result<PublicEgress> {
+    // Docker uses eth0; a Lima VZ guest can route its public traffic through
+    // lima0 while eth0 serves the separate inter-guest network. Masquerading
+    // the wrong interface makes every public Relay look unavailable.
+    let egress_interface =
+        std::env::var(EGRESS_INTERFACE_ENV).unwrap_or_else(|_| "eth0".to_owned());
+    ensure!(
+        !egress_interface.is_empty()
+            && egress_interface.len() <= 15
+            && egress_interface
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte)),
+        "invalid network Gate egress interface"
+    );
+    command("ip", &["link", "show", "dev", &egress_interface])
+        .context("verify network Gate egress interface")?;
     let ix_if = format!("ztix{index}");
     let outer_if = format!("ztox{index}");
     let table = format!("ztg{index}");
@@ -1044,7 +1060,7 @@ fn configure_public_egress(lab: &Lab, index: u8) -> Result<PublicEgress> {
             "saddr",
             "198.18.0.0/15",
             "oifname",
-            "eth0",
+            &egress_interface,
             "masquerade",
         ],
     )?;

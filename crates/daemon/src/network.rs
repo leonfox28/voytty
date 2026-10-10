@@ -673,7 +673,10 @@ impl NetworkStartup {
                         observation.state = NetworkState::Stopping;
                     });
                     self.broker.quiesce().await;
+                    let closing = zterm_diagnostics::Operation::default();
+                    record_shutdown_stage(&closing, zterm_diagnostics::Stage::ClosingEndpoint);
                     endpoint.close().await;
+                    record_shutdown_stage(&closing, zterm_diagnostics::Stage::Closed);
                     self.hooks
                         .endpoint_close_count
                         .fetch_add(1, Ordering::AcqRel);
@@ -783,7 +786,10 @@ impl NetworkSupervisor {
         }
         // Stop new business-stream admission and reclaim every installed
         // handler under the caller's lifecycle deadline before Endpoint close.
+        let closing = zterm_diagnostics::Operation::default();
+        record_shutdown_stage(&closing, zterm_diagnostics::Stage::QuiescingStreams);
         self.handle.broker.quiesce_until(deadline).await?;
+        record_shutdown_stage(&closing, zterm_diagnostics::Stage::Stopping);
         let Some(mut task) = self.task.take() else {
             return Err(DaemonError::new(
                 DomainErrorKind::TransportUnavailable,
@@ -827,6 +833,18 @@ impl NetworkSupervisor {
         }
         result
     }
+}
+
+fn record_shutdown_stage(
+    operation: &zterm_diagnostics::Operation,
+    stage: zterm_diagnostics::Stage,
+) {
+    zterm_diagnostics::record(
+        zterm_diagnostics::Event::new(zterm_diagnostics::Kind::ShutdownStage)
+            .operation(operation)
+            .level(zterm_diagnostics::Level::Debug)
+            .stage(stage),
+    );
 }
 
 impl Drop for NetworkSupervisor {
@@ -1111,6 +1129,26 @@ async fn route_incoming(
     pair_handler: Option<Arc<dyn PairConnectionHandler>>,
     policy: TransportLimits,
 ) {
+    use zterm_diagnostics::{Event, Kind, Level, Operation, Outcome, Stage};
+    let operation = Operation::default();
+    let stage = |stage| {
+        zterm_diagnostics::record(
+            Event::new(Kind::ConnectionStartup)
+                .operation(&operation)
+                .stage(stage)
+                .level(Level::Debug),
+        );
+    };
+    let failed = |stage, kind| {
+        zterm_diagnostics::record(
+            Event::new(Kind::ConnectionFailed)
+                .operation(&operation)
+                .stage(stage)
+                .level(Level::Warn)
+                .outcome(Outcome::Failed)
+                .error(kind),
+        );
+    };
     let started = Instant::now();
     let normal_deadline = started
         .checked_add(policy.connect_attempt_budget)
@@ -1118,13 +1156,25 @@ async fn route_incoming(
     let pair_deadline = started
         .checked_add(policy.pairing_total_deadline)
         .unwrap_or(started);
+    stage(Stage::ReceivingTransport);
     let Ok(mut accepting) = incoming.accept() else {
         return;
     };
     let alpn = match timeout_at(normal_deadline, accepting.alpn()).await {
         Ok(Ok(alpn)) => alpn,
-        _ => return,
+        Ok(Err(_)) => {
+            failed(
+                Stage::ReceivingTransport,
+                DomainErrorKind::TransportUnavailable,
+            );
+            return;
+        }
+        Err(_) => {
+            failed(Stage::ReceivingTransport, DomainErrorKind::DeadlineExceeded);
+            return;
+        }
     };
+    stage(Stage::AuthenticatingTransport);
     match classify_incoming_alpn(&alpn) {
         Some(IncomingProtocol::Normal) => {
             let Ok(_category) = limits.normal.clone().try_acquire_owned() else {
@@ -1134,15 +1184,33 @@ async fn route_incoming(
             // completed Connection type cannot be produced by Iroh's 0-RTT API.
             let connection = match timeout_at(normal_deadline, accepting).await {
                 Ok(Ok(connection)) => connection,
-                _ => return,
+                Ok(Err(_)) => {
+                    failed(
+                        Stage::AuthenticatingTransport,
+                        DomainErrorKind::TransportUnavailable,
+                    );
+                    return;
+                }
+                Err(_) => {
+                    failed(
+                        Stage::AuthenticatingTransport,
+                        DomainErrorKind::DeadlineExceeded,
+                    );
+                    return;
+                }
             };
+            zterm_client::handshake::record_transport_ready(&operation, &connection);
             let remote = DeviceId::from_array(*connection.remote_id().as_bytes());
             let Some(_peer) = limits.normal_per_peer.try_acquire(remote) else {
                 connection.close(VarInt::from_u32(0x104), b"transport overloaded");
                 return;
             };
             let _outer = outer;
-            let _ = broker.accept_normal(connection).await;
+            stage(Stage::ReadingGreeting);
+            match broker.accept_normal(connection).await {
+                Ok(()) => stage(Stage::Ready),
+                Err(error) => failed(Stage::ReadingGreeting, error.kind()),
+            }
         }
         Some(IncomingProtocol::Pairing) => {
             let global = match limits.pairing.begin_with_outer(outer, pair_deadline).await {

@@ -36,6 +36,8 @@ check-fast:
 check:
     just check-fast
     cargo +1.98.0 test --workspace --all-features
+    just ci-noq
+    just ci-iroh
     cargo +1.98.0 doc --workspace --no-deps
     just ci-dependencies
     cargo +1.98.0 fmt --manifest-path tests/relay/handshake-probe/Cargo.toml -- --check
@@ -65,8 +67,19 @@ ci-unix docs='false' smoke='false':
     case {{ quote(smoke) }} in true|false) ;; *) echo 'smoke must be true or false' >&2; exit 64;; esac
     cargo +1.98.0 clippy --workspace --all-targets --all-features -- -D warnings
     cargo +1.98.0 test --workspace --all-features
+    just ci-noq
+    just ci-iroh
     if [ {{ quote(docs) }} = true ]; then cargo +1.98.0 doc --workspace --no-deps; fi
     if [ {{ quote(smoke) }} = true ]; then cargo +1.98.0 run --quiet --package zterm-cli; fi
+
+# Keep the patched transport's upstream suite and offline-path regression in CI.
+ci-noq:
+    cargo +1.98.0 test --locked --manifest-path vendor/noq-proto/Cargo.toml --target-dir target/noq-tests --lib
+
+# Endpoint lifecycle and socket-free cold-relay queue expiry regressions.
+ci-iroh:
+    cargo +1.98.0 fmt --manifest-path vendor/iroh/Cargo.toml -- --check
+    cargo +1.98.0 test --locked --manifest-path vendor/iroh/Cargo.toml --target-dir target/iroh-tests --no-default-features --features tls-ring,unstable-custom-transports --lib zterm_
 
 # Workspace and isolated relay-probe dependency policy.
 ci-dependencies:

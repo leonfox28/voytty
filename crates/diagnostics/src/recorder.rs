@@ -1,6 +1,8 @@
 //! Nonblocking producers and a single bounded sink worker.
 
-use crate::{DETAIL_SECONDS, Event, Kind, Level, QUEUE_BYTES, QUEUE_RECORDS, Record};
+use crate::{
+    DETAIL_SECONDS, Event, Kind, Level, QUEUE_BYTES, QUEUE_RECORDS, Record, TransportPhase,
+};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::sync::{
@@ -77,8 +79,48 @@ struct Lane {
 }
 #[derive(Default)]
 struct Admission {
-    rate: Option<(Instant, usize)>,
+    rate: Option<DetailRate>,
     summaries: Vec<(Kind, Option<String>, Instant)>,
+}
+struct DetailRate {
+    start: Instant,
+    total: usize,
+    packets: usize,
+}
+impl DetailRate {
+    fn new(start: Instant) -> Self {
+        Self {
+            start,
+            total: 0,
+            packets: 0,
+        }
+    }
+    fn admit(&mut self, event: &Event, now: Instant) -> bool {
+        if now.duration_since(self.start) >= Duration::from_secs(1) {
+            *self = Self::new(now);
+        }
+        // Keep twenty of the existing hundred slots available for sync and
+        // connection phases. A packet burst must not erase its own recovery
+        // evidence. This does not bypass the queue bounds or detail interval.
+        let packet = event.kind == Kind::TransportTrace
+            && matches!(
+                event.fields.transport_phase,
+                Some(
+                    TransportPhase::RelayEnqueued
+                        | TransportPhase::RelayWrite
+                        | TransportPhase::RelayReceived
+                        | TransportPhase::RelayDelivered
+                        | TransportPhase::RelayExpired
+                        | TransportPhase::RelayFlushed
+                )
+            );
+        if self.total >= 100 || packet && self.packets >= 80 {
+            return false;
+        }
+        self.total += 1;
+        self.packets += usize::from(packet);
+        true
+    }
 }
 #[derive(Default)]
 struct FlushState {
@@ -244,10 +286,11 @@ fn admit(shared: &Shared, event: &Event, detail: bool) -> bool {
         event.kind,
         Kind::AdmissionRejected | Kind::ListenerFailed | Kind::RequestFailed
     ) || detail
-        && matches!(
-            event.kind,
-            Kind::SyncChanged | Kind::ViewportChanged | Kind::InputFenceChanged
-        );
+        && (matches!(event.kind, Kind::ViewportChanged | Kind::InputFenceChanged)
+            // A snapshot's send/receive/ACK stages can all occur in one
+            // millisecond. Summarizing them by Session erases causality.
+            // They still obey the global detail rate and queue bounds below.
+            || event.kind == Kind::SyncChanged && event.fields.stage.is_none());
     if !detail && !summary {
         return true;
     }
@@ -256,16 +299,12 @@ fn admit(shared: &Shared, event: &Event, detail: bool) -> bool {
         return false;
     };
     if detail {
-        let (start, count) = admission.rate.get_or_insert((Instant::now(), 0));
-        if start.elapsed() >= Duration::from_secs(1) {
-            *start = Instant::now();
-            *count = 0;
-        }
-        if *count >= 100 {
+        let now = Instant::now();
+        let rate = admission.rate.get_or_insert_with(|| DetailRate::new(now));
+        if !rate.admit(event, now) {
             shared.suppressed.fetch_add(1, Ordering::Relaxed);
             return false;
         }
-        *count += 1;
     }
     if summary {
         let key = if detail {
@@ -476,5 +515,85 @@ mod interval_tests {
         assert!(interval.observe(Some(renewed), 1_898_500, 1_002).0);
         assert!(!interval.observe(Some(renewed), 2_800_000, 1_003).0);
         assert!(!interval.observe(Some(renewed), 1_899_000, 1_004).0);
+    }
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use super::*;
+    use crate::{Stage, TransportPhase};
+
+    fn packet() -> Event {
+        transport(TransportPhase::RelayDelivered)
+    }
+    fn transport(phase: TransportPhase) -> Event {
+        let mut event = Event::new(Kind::TransportTrace).level(Level::Debug);
+        event.fields.transport_phase = Some(phase);
+        event
+    }
+    fn snapshot() -> Event {
+        Event::new(Kind::SyncChanged)
+            .level(Level::Debug)
+            .stage(Stage::SnapshotReceived)
+    }
+
+    #[test]
+    fn packet_burst_keeps_snapshot_and_connection_phases_observable() {
+        let now = Instant::now();
+        let mut rate = DetailRate::new(now);
+        let admitted = (0..1000).filter(|_| rate.admit(&packet(), now)).count();
+        for stage in [Stage::SnapshotReceived, Stage::SnapshotApplied] {
+            assert!(
+                rate.admit(&snapshot().stage(stage), now),
+                "snapshot phase starved by packet trace"
+            );
+        }
+        for phase in [
+            TransportPhase::RelayTcpReady,
+            TransportPhase::RelayTlsStarted,
+            TransportPhase::RelayTlsReady,
+            TransportPhase::RelayAuthReady,
+        ] {
+            assert!(rate.admit(&transport(phase), now));
+        }
+        assert_eq!(admitted, 80);
+    }
+
+    #[test]
+    fn detail_budget_stays_bounded_and_resets_both_counters() {
+        let now = Instant::now();
+        let mut rate = DetailRate::new(now);
+        for _ in 0..20 {
+            for _ in 0..4 {
+                assert!(rate.admit(&packet(), now));
+            }
+            assert!(rate.admit(&snapshot(), now));
+        }
+        for elapsed in [0, 999] {
+            let before_reset = now + Duration::from_millis(elapsed);
+            assert!(!rate.admit(&packet(), before_reset));
+            assert!(!rate.admit(&snapshot(), before_reset));
+        }
+        let reset = now + Duration::from_secs(1);
+        assert_eq!(
+            (0..100).filter(|_| rate.admit(&packet(), reset)).count(),
+            80
+        );
+        assert_eq!(
+            (0..100).filter(|_| rate.admit(&snapshot(), reset)).count(),
+            20
+        );
+        assert!(!rate.admit(&packet(), reset));
+    }
+
+    #[test]
+    fn non_packet_detail_can_use_the_entire_global_budget() {
+        let now = Instant::now();
+        let mut rate = DetailRate::new(now);
+        assert_eq!(
+            (0..101).filter(|_| rate.admit(&snapshot(), now)).count(),
+            100
+        );
+        assert!(!rate.admit(&packet(), now));
     }
 }

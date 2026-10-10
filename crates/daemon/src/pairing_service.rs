@@ -1144,21 +1144,29 @@ impl AcceptCell {
                 return result;
             }
             if *shutdown.borrow() {
-                return Err(cancelled("pairing service is stopping"));
+                return Err(pair_outcome_unknown(
+                    "pair accept operation was unresolved when the service stopped",
+                ));
             }
             if Instant::now() >= deadline {
-                return Err(deadline_exceeded("local pair accept deadline elapsed"));
+                // This is an admitted operation running in its own task. A
+                // waiter timing out does not roll back a proof already sent.
+                return Err(pair_outcome_unknown(
+                    "pair accept operation was unresolved at the local deadline",
+                ));
             }
             tokio::select! {
                 _ = notified => {}
                 changed = shutdown.changed() => {
                     if changed.is_err() || *shutdown.borrow() {
-                        return Err(cancelled("pairing service is stopping"));
+                        return Err(pair_outcome_unknown(
+                            "pair accept operation was unresolved when the service stopped",
+                        ));
                     }
                 }
-                () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
-                    return Err(deadline_exceeded("local pair accept deadline elapsed"));
-                }
+                // Recheck a concurrently completed result before reporting an
+                // unresolved deadline; do not extend the caller's budget.
+                () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {}
             }
         }
     }
@@ -1410,6 +1418,7 @@ mod tests {
         confirmations: Mutex<VecDeque<Result<ConfirmedAuthorization, DaemonError>>>,
         connect_calls: AtomicUsize,
         confirmation_calls: AtomicUsize,
+        confirmation_gate: Option<Arc<Notify>>,
     }
 
     impl FakeTransport {
@@ -1422,6 +1431,7 @@ mod tests {
                 confirmations: Mutex::new(VecDeque::from([confirmation])),
                 connect_calls: AtomicUsize::new(0),
                 confirmation_calls: AtomicUsize::new(0),
+                confirmation_gate: None,
             }
         }
 
@@ -1431,6 +1441,7 @@ mod tests {
                 confirmations: Mutex::new(VecDeque::new()),
                 connect_calls: AtomicUsize::new(0),
                 confirmation_calls: AtomicUsize::new(0),
+                confirmation_gate: None,
             }
         }
     }
@@ -1460,7 +1471,12 @@ mod tests {
             let result = mutex_lock(&self.confirmations)
                 .pop_front()
                 .unwrap_or_else(|| Err(cancelled("fake normal confirmation was already consumed")));
-            Box::pin(async move { result })
+            Box::pin(async move {
+                if let Some(gate) = &self.confirmation_gate {
+                    gate.notified().await;
+                }
+                result
+            })
         }
     }
 
@@ -1783,6 +1799,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn post_proof_waiter_deadline_retains_ambiguity_and_same_operation() {
+        let local = device_id(0x11);
+        let host = device_id(0x22);
+        let ticket = ticket(host);
+        let gate = Arc::new(Notify::new());
+        let io = MemoryPairIo::new(valid_challenge(&ticket), local, host);
+        let output = io.output.clone();
+        let mut transport = FakeTransport::new(Ok(io), Err(address_unavailable()));
+        transport.confirmation_gate = Some(gate.clone());
+        let transport = Arc::new(transport);
+        let harness = harness(transport.clone());
+
+        // A valid proof has been sent, but the normal confirmation task has
+        // not resolved when the caller's unchanged deadline expires.
+        let error = harness
+            .service
+            .accept_until(
+                accept_input(&ticket, 0x54),
+                Instant::now() + Duration::from_millis(100),
+            )
+            .await
+            .expect_err("unresolved proof cannot imply pairing did not commit");
+        assert_eq!(transport.connect_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(transport.confirmation_calls.load(Ordering::SeqCst), 1);
+        let frames = zterm_proto::FrameDecoder::new()
+            .feed(&mutex_lock(&output))
+            .expect("controller pair frames");
+        assert_eq!(
+            frames.iter().map(|frame| frame.kind).collect::<Vec<_>>(),
+            [WireKind::PairBegin, WireKind::PairProof]
+        );
+        gate.notify_one();
+        let replay = harness
+            .service
+            .accept_until(
+                accept_input(&ticket, 0x54),
+                Instant::now() + Duration::from_secs(1),
+            )
+            .await
+            .expect_err("same operation observes its original outcome");
+        assert_eq!(transport.connect_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(transport.confirmation_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(replay.kind(), DomainErrorKind::PairOutcomeUnknown);
+        assert_eq!(error.kind(), DomainErrorKind::PairOutcomeUnknown);
+    }
+
+    #[tokio::test]
+    async fn post_proof_waiter_shutdown_does_not_claim_the_operation_was_cancelled() {
+        let local = device_id(0x11);
+        let host = device_id(0x22);
+        let ticket = ticket(host);
+        let gate = Arc::new(Notify::new());
+        let mut transport = FakeTransport::new(
+            Ok(MemoryPairIo::new(valid_challenge(&ticket), local, host)),
+            Err(address_unavailable()),
+        );
+        transport.confirmation_gate = Some(gate.clone());
+        let transport = Arc::new(transport);
+        let harness = harness(transport.clone());
+        let service = harness.service.clone();
+        let input = accept_input(&ticket, 0x55);
+        let waiter = tokio::spawn(async move {
+            service
+                .accept_until(input, Instant::now() + Duration::from_secs(2))
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while transport.confirmation_calls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("proof sent before stopping the waiter");
+        harness.service.inner.shutdown.send_replace(true);
+        let error = waiter
+            .await
+            .expect("pair waiter")
+            .expect_err("unresolved operation");
+        gate.notify_one();
+        harness
+            .service
+            .shutdown_until(Instant::now() + Duration::from_secs(1))
+            .await
+            .expect("join released operation");
+        assert_eq!(error.kind(), DomainErrorKind::PairOutcomeUnknown);
+        assert_eq!(transport.connect_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn pair_accepted_drop_normal_confirmation_repairs_one_way_known_device() {
         let local = device_id(0x11);
         let host = device_id(0x22);
@@ -2079,6 +2184,28 @@ mod tests {
 
     #[test]
     fn create_requires_online_route_replays_and_rejects_fingerprint_mismatch() {
+        // Other parallel tests install/drop tracing dispatchers. Keep the
+        // exactly-once log/redaction assertion in its own process so global
+        // callsite interest updates cannot suppress this thread's event.
+        const CHILD: &str = "ZTERM_PAIR_LOG_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+                .args([
+                    "--exact",
+                    "pairing_service::tests::create_requires_online_route_replays_and_rejects_fingerprint_mismatch",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .expect("isolated pairing log test");
+            assert!(
+                output.status.success(),
+                "isolated pairing assertion failed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
         use std::io::{Read as _, Seek as _, SeekFrom};
         let mut capture = tempfile::tempfile().expect("pair log capture");
         let writer = capture.try_clone().expect("pair log writer");

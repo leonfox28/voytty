@@ -21,6 +21,7 @@ pub fn protocol_error(error: zterm_proto::ProtocolError) -> ClientError {
         | ProtocolError::InvalidIdentifier(_)
         | ProtocolError::InvalidTerminalSize { .. }
         | ProtocolError::InvalidTerminalSurface(_)
+        | ProtocolError::InvalidPayloadEncoding
         | ProtocolError::InvalidLocalConnectionStage
         | ProtocolError::InvalidTerminalSemanticField(_) => DomainErrorKind::MalformedFrame,
         ProtocolError::InvalidUpload(kind) => kind,
@@ -100,6 +101,22 @@ pub fn resolved_target_from_wire(
 use std::time::Duration;
 /// Default absolute control-operation budget; idle streams have no timeout.
 pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(5);
+/// Total budget for a remote initial request, including discovery and authentication.
+pub const REMOTE_STARTUP_DEADLINE: Duration = Duration::from_secs(15);
+
+/// Local operations retain the control budget; remote startup includes connection setup.
+pub fn startup_budget(target: ResolvedSessionTarget) -> Duration {
+    if target.is_local() {
+        DEFAULT_DEADLINE
+    } else {
+        REMOTE_STARTUP_DEADLINE
+    }
+}
+
+/// One absolute initial-request deadline, shared by setup and the first response.
+pub fn startup_deadline(target: ResolvedSessionTarget) -> tokio::time::Instant {
+    tokio::time::Instant::now() + startup_budget(target)
+}
 const ATTACHMENT_COMMAND_STREAM_CLOSED: &str = "local terminal attachment command stream closed";
 
 /// Creates a bounded control-operation deadline.

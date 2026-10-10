@@ -536,13 +536,6 @@ mod unix {
         status_renderer.resize(physical_size);
         let _ = resize_coalescer.observe(layout.child, transport_state);
         let (events, writer) = view.split();
-        if let Some(query) = viewport.prefetch_live()
-            && writer.request_history_window(query).await.is_err()
-        {
-            // Live prefetch is opportunistic. Preserve the valid attachment
-            // and let the first real gesture retry.
-            viewport.window_cache.defer_pending_request();
-        }
         let sync_requested = false;
         let copy_key_lease = CopyKeyLease::default();
         let deferred_active = false;

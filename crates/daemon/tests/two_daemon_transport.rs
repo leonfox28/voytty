@@ -15,6 +15,280 @@ use zterm_proto::{FrameDecoder, WireKind, encode_message, v2};
 mod two_daemon_fixture;
 use two_daemon_fixture::PreparedDaemonOwner;
 
+async fn normal_setup_with_delays(
+    transport_delay: Duration,
+    hello_delay: Duration,
+) -> (bool, Duration) {
+    assert_linux_before_bind();
+    let host = PreparedDaemonOwner::new("slow-host");
+    let controller = PreparedDaemonOwner::new("slow-controller");
+    let host_id = host.device_id();
+    let client_id = controller.device_id();
+    let host = host
+        .bind_with_setup_delays(
+            &[(client_id, "slow-controller")],
+            &[],
+            TransportLimits::default(),
+            transport_delay,
+            hello_delay,
+        )
+        .await;
+    let controller = controller
+        .bind(
+            &[],
+            &[(host_id, "slow-host", "slow-host")],
+            TransportLimits::default(),
+        )
+        .await;
+    controller
+        .broker()
+        .set_test_route(host_id, host.direct_address())
+        .expect("direct fixture route");
+    let started = Instant::now();
+    let deadline = started + zterm_client::protocol::REMOTE_STARTUP_DEADLINE;
+    let demand = controller
+        .broker()
+        .demand(host_id, deadline)
+        .await
+        .expect("known host demand");
+    let result = demand.confirm_authorization(deadline).await;
+    let elapsed = started.elapsed();
+    let success = result.is_ok();
+    eprintln!(
+        "normal setup transport={transport_delay:?} hello={hello_delay:?}: elapsed={elapsed:?}, error={:?}",
+        result.as_ref().err()
+    );
+    drop(demand);
+    controller.shutdown().await;
+    host.shutdown().await;
+    (success, elapsed)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "real Iroh loopback is Linux CI only"
+)]
+async fn startup_budget_normal_transport_survives_eleven_seconds() {
+    let (success, elapsed) =
+        normal_setup_with_delays(Duration::from_secs(11), Duration::from_secs(1)).await;
+    assert!(
+        success,
+        "normal transport must not be cut off at ten seconds"
+    );
+    assert!(elapsed >= Duration::from_secs(12) && elapsed < Duration::from_secs(15));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "real Iroh loopback is Linux CI only"
+)]
+async fn startup_budget_normal_authentication_survives_six_seconds() {
+    let (success, elapsed) = normal_setup_with_delays(Duration::ZERO, Duration::from_secs(6)).await;
+    assert!(
+        success,
+        "authentication uses the startup deadline before the operation timer begins"
+    );
+    assert!(elapsed >= Duration::from_secs(6) && elapsed < Duration::from_secs(15));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "real Iroh loopback is Linux CI only"
+)]
+async fn startup_budget_normal_setup_still_has_one_total_deadline() {
+    let (success, elapsed) =
+        normal_setup_with_delays(Duration::from_secs(8), Duration::from_secs(8)).await;
+    assert!(
+        !success,
+        "separate setup phases cannot renew the total deadline"
+    );
+    assert!(elapsed >= Duration::from_secs(15) && elapsed < Duration::from_secs(16));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "real Iroh loopback is Linux CI only"
+)]
+async fn restarted_owner_replaces_stale_primary_and_rejects_late_old_handshake() {
+    use zterm_core::{Capabilities, ConnectionAttemptId};
+    use zterm_daemon::connection_broker::ConnectionIdentity;
+    assert_linux_before_bind();
+    let host = PreparedDaemonOwner::new("host");
+    let controller = PreparedDaemonOwner::new("controller");
+    let controller_id = controller.device_id();
+    let identity = || {
+        ConnectionIdentity::new(
+            controller_id,
+            "controller",
+            "test",
+            "linux",
+            Capabilities::from_bits_retain(Capabilities::SESSION_SERVICE),
+        )
+        .expect("identity")
+    };
+    let old_identity = identity();
+    let new_identity = identity();
+    let host = host
+        .bind(
+            &[(controller_id, "controller")],
+            &[],
+            TransportLimits::default(),
+        )
+        .await;
+    let controller = controller.bind(&[], &[], TransportLimits::default()).await;
+    let old = controller
+        .connect_with_identity(
+            &host,
+            &old_identity,
+            ConnectionAttemptId::from_array([1; 16]),
+        )
+        .await
+        .expect("old Hello");
+    host.wait_for_primary(controller_id, Instant::now() + Duration::from_secs(5))
+        .await
+        .expect("old primary");
+    // A larger attempt must win over a dead previous incarnation, while the
+    // ordinary lexicographic arbitration within one incarnation stays intact.
+    let fresh = controller
+        .connect_with_identity(
+            &host,
+            &new_identity,
+            ConnectionAttemptId::from_array([250; 16]),
+        )
+        .await
+        .expect("restart Hello");
+    tokio::time::timeout(Duration::from_secs(3), old.closed())
+        .await
+        .expect("stale primary retired");
+    assert!(
+        fresh.close_reason().is_none(),
+        "restart connection was incorrectly discarded"
+    );
+    let late_old = controller
+        .connect_with_identity(
+            &host,
+            &old_identity,
+            ConnectionAttemptId::from_array([2; 16]),
+        )
+        .await;
+    assert!(
+        late_old.is_err(),
+        "a delayed retired incarnation must not displace the new one"
+    );
+    assert!(fresh.close_reason().is_none());
+    let (mut send, mut recv) = fresh.open_bi().await.expect("fresh business stream");
+    let request = encode_message(
+        WireKind::SessionListRequest,
+        701,
+        0,
+        &v2::SessionListRequest::default(),
+    )
+    .expect("request");
+    send.write_all(&request).await.expect("write request");
+    send.finish().expect("finish request");
+    let frame = zterm_client::handshake::read_one_frame(
+        &mut recv,
+        16 * 1024,
+        Instant::now() + Duration::from_secs(5),
+    )
+    .await
+    .expect("fresh service reply");
+    assert_eq!(frame.request_id, 701);
+    fresh.close(0_u32.into(), b"test complete");
+    controller.shutdown().await;
+    host.shutdown().await;
+}
+
+/// A reverse direction needs its own Welcome even when its new connection
+/// loses arbitration to an already active connection from the smaller ID.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "real Iroh loopback is Linux CI only"
+)]
+async fn reverse_confirmation_survives_losing_duplicate_arbitration() {
+    assert_linux_before_bind();
+    let first = PreparedDaemonOwner::new("first");
+    let second = PreparedDaemonOwner::new("second");
+    let (lower, higher) = if first.device_id() < second.device_id() {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    let lower_id = lower.device_id();
+    let higher_id = higher.device_id();
+    let limits = TransportLimits::default();
+    let lower = lower
+        .bind(
+            &[(higher_id, "higher")],
+            &[(higher_id, "higher", "higher")],
+            limits,
+        )
+        .await;
+    let higher = higher
+        .bind(
+            &[(lower_id, "lower")],
+            &[(lower_id, "lower", "lower")],
+            limits,
+        )
+        .await;
+    lower
+        .broker()
+        .set_test_route(higher_id, higher.direct_address())
+        .expect("lower route");
+    higher
+        .broker()
+        .set_test_route(lower_id, lower.direct_address())
+        .expect("higher route");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let forward = lower
+        .broker()
+        .demand(higher_id, deadline)
+        .await
+        .expect("forward demand");
+    forward
+        .confirm_authorization(deadline)
+        .await
+        .expect("forward confirmation");
+    higher
+        .wait_for_primary(lower_id, deadline)
+        .await
+        .expect("inbound primary");
+    let primary = higher
+        .broker()
+        .peer_observation(lower_id)
+        .await
+        .primary
+        .expect("primary");
+    let reverse = higher
+        .broker()
+        .demand(lower_id, deadline)
+        .await
+        .expect("reverse demand");
+    reverse
+        .confirm_authorization(deadline)
+        .await
+        .expect("reverse confirmation must receive Welcome before duplicate close");
+    assert_eq!(
+        higher.broker().peer_observation(lower_id).await.primary,
+        Some(primary)
+    );
+    let mut stream = reverse
+        .open_bi(StreamPurpose::Service, deadline)
+        .await
+        .expect("reverse service stream");
+    complete_fallback_service_exchange(&mut stream, 703).await;
+    drop(stream);
+    drop(reverse);
+    drop(forward);
+    higher.shutdown().await;
+    lower.shutdown().await;
+}
+
 #[test]
 fn production_cli_has_no_state_override_argument() {
     let cli = include_str!("../../cli/src/lib.rs");

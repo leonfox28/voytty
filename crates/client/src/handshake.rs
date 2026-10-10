@@ -1,13 +1,133 @@
 //! Shared normal-ALPN greeting, Welcome validation and bounded handshake I/O.
 use crate::{error::ClientError as DaemonError, protocol::protocol_error};
-use iroh::endpoint::{Connection, ConnectionError};
+use iroh::{
+    Endpoint, EndpointAddr, TransportAddr,
+    endpoint::{Connection, ConnectionError},
+};
+use ring::rand::{SecureRandom, SystemRandom};
 use std::time::Instant;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zterm_core::{
-    Capabilities, ConnectionAttemptId, ConnectionHello, ConnectionWelcome, DeviceDisplayName,
-    DeviceId, DomainErrorKind,
+    Capabilities, ConnectionAttemptId, ConnectionHello, ConnectionIncarnation, ConnectionWelcome,
+    DeviceDisplayName, DeviceId, DomainErrorKind,
 };
+use zterm_diagnostics::{Event, Kind, Level, Operation, Outcome, Reason, Stage};
 use zterm_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
+
+/// Connects under the caller's unchanged deadline, distinguishing Iroh route
+/// preparation from the cryptographic handshake in content-free diagnostics.
+pub async fn connect_transport(
+    endpoint: &Endpoint,
+    address: EndpointAddr,
+    alpn: &[u8],
+    deadline: Instant,
+) -> Result<Connection, DaemonError> {
+    let operation = Operation::default();
+    let mut stage = Stage::ResolvingTransport;
+    let result: Result<Connection, DaemonError> = async {
+        record_transport_stage(&operation, stage);
+        let mut connecting = timeout_until(
+            deadline,
+            endpoint.connect_with_opts(address, alpn, Default::default()),
+        )
+        .await?
+        .map_err(|_| transport_unavailable("Iroh route preparation failed"))?;
+        stage = Stage::HandshakingTransport;
+        record_transport_stage(&operation, stage);
+        // ALPN availability marks receipt of TLS handshake data. It is not
+        // authentication: still await the fully authenticated Connection below.
+        timeout_until(deadline, connecting.alpn())
+            .await?
+            .map_err(|_| transport_unavailable("Iroh handshake data unavailable"))?;
+        stage = Stage::AuthenticatingTransport;
+        record_transport_stage(&operation, stage);
+        let connection = timeout_until(deadline, connecting)
+            .await?
+            .map_err(|_| transport_unavailable("Iroh secure handshake failed"))?;
+        record_transport_ready(&operation, &connection);
+        Ok(connection)
+    }
+    .await;
+    if let Err(error) = &result {
+        zterm_diagnostics::record(
+            Event::new(Kind::ConnectionFailed)
+                .operation(&operation)
+                .stage(stage)
+                .level(Level::Warn)
+                .outcome(Outcome::Failed)
+                .error(error.kind()),
+        );
+    }
+    result
+}
+
+/// Records selected path and counters only after complete transport authentication.
+pub fn record_transport_ready(operation: &Operation, connection: &Connection) {
+    if !zterm_diagnostics::detail_enabled() {
+        return;
+    }
+    zterm_diagnostics::record(with_transport_state(
+        Event::new(Kind::ConnectionStartup)
+            .operation(operation)
+            .stage(Stage::TransportReady)
+            .level(Level::Debug),
+        connection,
+    ));
+}
+
+/// Observes an owner's cached connection at reuse or retirement. Retirement
+/// describes local ownership, not acknowledgment of closure by the remote.
+pub fn record_transport_observation(
+    operation: &Operation,
+    connection: &Connection,
+    stage: Stage,
+    active_streams: Option<u64>,
+) {
+    if !zterm_diagnostics::detail_enabled() {
+        return;
+    }
+    let mut event = Event::new(Kind::TransportObserved)
+        .operation(operation)
+        .connection(operation.id())
+        .stage(stage)
+        .level(Level::Debug);
+    if let Some(count) = active_streams {
+        event = event.transport_streams(count);
+    }
+    zterm_diagnostics::record(with_transport_state(event, connection));
+}
+
+pub(crate) fn with_transport_state(event: Event, connection: &Connection) -> Event {
+    let stats = connection.stats();
+    let paths = connection.paths();
+    let max_rtt = paths
+        .iter()
+        .map(|path| u64::try_from(path.rtt().as_millis()).unwrap_or(u64::MAX))
+        .max();
+    let mut event = event
+        .transport_counters(stats.udp_tx.bytes, stats.udp_rx.bytes, stats.lost_packets)
+        .transport_paths(paths.iter().count() as u64, max_rtt);
+    if let Some(path) = paths.iter().find(|path| path.is_selected()) {
+        let reason = match path.remote_addr() {
+            TransportAddr::Ip(_) => Reason::Direct,
+            TransportAddr::Relay(_) => Reason::Relay,
+            _ => Reason::Unknown,
+        };
+        event = event
+            .reason(reason)
+            .transport_rtt(u64::try_from(path.rtt().as_millis()).unwrap_or(u64::MAX));
+    }
+    event
+}
+
+fn record_transport_stage(operation: &Operation, stage: Stage) {
+    zterm_diagnostics::record(
+        Event::new(Kind::ConnectionStartup)
+            .operation(operation)
+            .stage(stage)
+            .level(Level::Debug),
+    );
+}
 
 /// Existing normal-ALPN application close code for rejected/revoked authorization.
 pub const CLOSE_UNAUTHORIZED: u32 = 0x100;
@@ -20,6 +140,7 @@ pub struct ConnectionIdentity {
     build: String,
     platform: String,
     capabilities: Capabilities,
+    incarnation: ConnectionIncarnation,
 }
 
 impl ConnectionIdentity {
@@ -55,12 +176,20 @@ impl ConnectionIdentity {
                 format!("invalid local connection diagnostics: {error}"),
             )
         })?;
+        let mut incarnation = [0_u8; 16];
+        SystemRandom::new().fill(&mut incarnation).map_err(|_| {
+            DaemonError::new(
+                DomainErrorKind::IdentityInvalid,
+                "connection incarnation entropy unavailable",
+            )
+        })?;
         Ok(Self {
             device_id,
             display_name,
             build,
             platform,
             capabilities,
+            incarnation: ConnectionIncarnation::from_array(incarnation),
         })
     }
 
@@ -93,6 +222,20 @@ impl ConnectionIdentity {
     #[must_use]
     pub const fn device_id(&self) -> DeviceId {
         self.device_id
+    }
+
+    /// Transient identity shared by candidates in this peer connection generation.
+    #[must_use]
+    pub const fn incarnation(&self) -> ConnectionIncarnation {
+        self.incarnation
+    }
+
+    /// Binds the greeting to the owner's current live generation for this peer.
+    /// A new generation is required when no previous connection can be reused.
+    #[must_use]
+    pub fn with_incarnation(mut self, incarnation: ConnectionIncarnation) -> Self {
+        self.incarnation = incarnation;
+        self
     }
 
     /// Validated local display name used by pairing and normal handshakes.
@@ -131,6 +274,7 @@ impl ConnectionIdentity {
                 format!("local Hello became invalid: {error}"),
             )
         })
+        .map(|hello| hello.with_incarnation(Some(self.incarnation)))
     }
 }
 
@@ -228,11 +372,16 @@ pub async fn controller_handshake(
     maximum_body_bytes: usize,
     deadline: Instant,
 ) -> Result<ConnectionWelcome, DaemonError> {
+    let operation = Operation::default();
+    let mut stage = Stage::OpeningGreeting;
     let result = async {
+        record_transport_stage(&operation, stage);
         let (mut send, mut recv) = timeout_until(deadline, connection.open_bi())
             .await?
             .map_err(|_| transport_unavailable("unable to open Hello stream"))?;
         let hello = identity.hello(attempt)?;
+        stage = Stage::WritingGreeting;
+        record_transport_stage(&operation, stage);
         write_handshake_message(
             &mut send,
             WireKind::ConnectionHello,
@@ -242,10 +391,25 @@ pub async fn controller_handshake(
         .await?;
         send.finish()
             .map_err(|_| transport_unavailable("unable to finish Hello stream"))?;
+        stage = Stage::ReadingGreeting;
+        record_transport_stage(&operation, stage);
         read_controller_welcome(&mut recv, maximum_body_bytes, deadline).await
     }
     .await;
-    result.map_err(|error| classify_handshake_failure(error, connection.close_reason()))
+    result.map_err(|error| {
+        let error = classify_handshake_failure(error, connection.close_reason());
+        let stats = connection.stats();
+        zterm_diagnostics::record(
+            Event::new(Kind::ConnectionFailed)
+                .operation(&operation)
+                .stage(stage)
+                .level(Level::Warn)
+                .outcome(Outcome::Failed)
+                .error(error.kind())
+                .transport_counters(stats.udp_tx.bytes, stats.udp_rx.bytes, stats.lost_packets),
+        );
+        error
+    })
 }
 
 fn classify_handshake_failure(error: DaemonError, closed: Option<ConnectionError>) -> DaemonError {
@@ -335,6 +499,42 @@ mod tests {
             .expect_err("no complete Welcome");
             assert_eq!(error.kind(), DomainErrorKind::MalformedFrame);
         }
+    }
+
+    #[tokio::test]
+    async fn complete_welcome_does_not_require_transport_eof() {
+        let welcome = ConnectionWelcome::new(
+            zterm_proto::WIRE_MAJOR,
+            Capabilities::from_bits_retain(0),
+            "peer",
+            "test",
+            "test",
+            zterm_core::AuthGeneration::new(1).expect("generation"),
+        )
+        .expect("welcome");
+        let bytes = encode_message(
+            WireKind::ConnectionWelcome,
+            0,
+            0,
+            &v2::ConnectionWelcome::from(&welcome),
+        )
+        .expect("frame");
+        let (mut reader, mut writer) = tokio::io::duplex(4096);
+        writer
+            .write_all(&bytes)
+            .await
+            .expect("write Welcome without FIN");
+        assert_eq!(
+            read_controller_welcome(
+                &mut reader,
+                4096,
+                Instant::now() + std::time::Duration::from_millis(100)
+            )
+            .await
+            .expect("complete framed reply"),
+            welcome
+        );
+        drop(writer);
     }
 
     #[tokio::test]

@@ -196,7 +196,19 @@ impl InfrastructureProfile {
     pub fn endpoint_builder(&self, secret_key: SecretKey) -> Builder {
         ProductionAddressLookups::from_iroh_constants()
             .apply(Endpoint::builder(presets::Minimal))
+            // Virtual Linux NICs can reject UDP_SEGMENT after QUIC has queued
+            // a batch, stalling initial snapshots and pairing replies. Match
+            // the Android transport's ordinary-datagram path; protocol limits
+            // and connection deadlines remain unchanged.
+            .transport_config(
+                iroh::endpoint::QuicTransportConfig::builder()
+                    .enable_segmentation_offload(false)
+                    .build(),
+            )
             .secret_key(secret_key)
+            // The daemon lock and single network supervisor own this identity;
+            // a replacement is bound only after the old Endpoint has closed.
+            .persistent_stateless_reset(true)
             .relay_mode(self.relay_mode())
             .addr_filter(AddrFilter::relay_only())
             .alpns(vec![ZTERM_ALPN.to_vec(), ZTERM_PAIR_ALPN.to_vec()])

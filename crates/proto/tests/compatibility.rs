@@ -316,6 +316,7 @@ fn unknown_fields_and_capability_bits_survive_round_trip() {
         initiator_display: "laptop".to_owned(),
         initiator_build: "0.1.1".to_owned(),
         initiator_platform: "macos".to_owned(),
+        incarnation: Vec::new(),
     };
     let bytes = hello.encode_to_vec();
     let decoded = v2::ConnectionHello::decode(bytes.as_slice()).expect("hello decodes");
@@ -330,6 +331,62 @@ fn unknown_fields_and_capability_bits_survive_round_trip() {
     with_unknown.extend_from_slice(&[0xf8, 0x07, 0x01]); // field 255, varint 1
     let decoded = v2::ConnectionHello::decode(with_unknown.as_slice()).expect("unknown field kept");
     assert_eq!(decoded, hello);
+}
+
+#[test]
+fn connection_incarnation_is_optional_but_fixed_width_when_present() {
+    let hello = ConnectionHello::new(
+        WIRE_MAJOR,
+        WIRE_MAJOR,
+        Capabilities::from_bits_retain(0),
+        ConnectionAttemptId::from_array([1; 16]),
+        "peer",
+        "test",
+        "linux",
+    )
+    .expect("hello");
+    let legacy = v2::ConnectionHello::from(&hello);
+    assert!(
+        ConnectionHello::try_from(legacy.clone())
+            .expect("legacy")
+            .incarnation()
+            .is_none()
+    );
+    let incarnation = zterm_core::ConnectionIncarnation::from_array([2; 16]);
+    let modern = hello.with_incarnation(Some(incarnation));
+    assert_eq!(
+        ConnectionHello::try_from(v2::ConnectionHello::from(&modern)).expect("modern"),
+        modern
+    );
+    for length in [1, 15, 17, 1024] {
+        let mut bad = legacy.clone();
+        bad.incarnation = vec![1; length];
+        assert!(matches!(
+            ConnectionHello::try_from(bad),
+            Err(WireFieldError::InvalidIdentifier(_))
+        ));
+    }
+    let welcome = ConnectionWelcome::new(
+        WIRE_MAJOR,
+        Capabilities::from_bits_retain(0),
+        "peer",
+        "test",
+        "linux",
+        AuthGeneration::new(1).expect("generation"),
+    )
+    .expect("welcome")
+    .with_incarnation(Some(incarnation));
+    assert_eq!(
+        ConnectionWelcome::try_from(v2::ConnectionWelcome::from(&welcome))
+            .expect("welcome roundtrip"),
+        welcome
+    );
+    let mut bad = v2::ConnectionWelcome::from(&welcome);
+    bad.incarnation = vec![1; 15];
+    assert!(matches!(
+        ConnectionWelcome::try_from(bad),
+        Err(WireFieldError::InvalidIdentifier(_))
+    ));
 }
 
 #[test]
@@ -544,6 +601,7 @@ fn handshake_adapters_reject_zero_protocol_and_authorization_sentinels() {
         initiator_display: "peer".to_owned(),
         initiator_build: "0.1.1".to_owned(),
         initiator_platform: "test".to_owned(),
+        incarnation: Vec::new(),
     };
     assert!(matches!(
         ConnectionHello::try_from(zero_range),
@@ -551,6 +609,7 @@ fn handshake_adapters_reject_zero_protocol_and_authorization_sentinels() {
     ));
 
     let zero_welcome = v2::ConnectionWelcome {
+        incarnation: Vec::new(),
         wire_major: 0,
         capabilities: 0,
         responder_display: "host".to_owned(),
@@ -584,6 +643,7 @@ fn generated_pair_messages_and_decoded_frames_redact_sensitive_payloads() {
     const TICKET_SENTINEL: &str = "zterm-pair-v1:PAIR_TICKET_SENTINEL_470b";
 
     let wire = v2::WireFrame {
+        payload_encoding: 0,
         wire_major: WIRE_MAJOR,
         kind: WireKind::PairProof as u32,
         payload: FRAME_SENTINEL.to_vec(),
@@ -723,6 +783,7 @@ fn generated_session_terminal_and_route_debug_is_redacted_without_wire_changes()
             modes: Some(v2::TerminalModes::default()),
             scroll_metrics: None,
         }),
+        frame_sequence: 0,
     };
     let delta = v2::TerminalSemanticDelta {
         application_title: String::new(),
@@ -748,6 +809,7 @@ fn generated_session_terminal_and_route_debug_is_redacted_without_wire_changes()
         cursor: Some(v2::TerminalCursor::default()),
         modes: Some(v2::TerminalModes::default()),
         scroll_metrics: None,
+        frame_sequence: 0,
     };
     let history = v2::TerminalSemanticHistoryWindowFrame {
         hyperlinks: Vec::new(),
@@ -788,6 +850,8 @@ fn generated_session_terminal_and_route_debug_is_redacted_without_wire_changes()
         value: RESUME_SENTINEL.to_vec(),
     };
     let attach = v2::TerminalAttachRequest {
+        accept_zlib_frames: false,
+        acknowledge_surface_frames: false,
         base_colors: Some(zterm_core::terminal::TerminalColorProfile::default().into()),
 
         target: None,

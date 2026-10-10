@@ -17,6 +17,8 @@ internal data class AppState(
     val hostId: String? = null,
     val sessionId: String? = null,
     val sessions: List<NativeSession> = emptyList(),
+    val sessionsRefreshing: Boolean = false,
+    val sessionListError: String? = null,
     val panel: Boolean = false,
     val busy: Boolean = false,
     val error: String? = null,
@@ -26,9 +28,13 @@ internal data class AppState(
 )
 
 /** The Application owns mutations, streams and frames. Activity collectors own none of them. */
-internal class AppRepository(context: Context, val runtime: NativeRuntime, private val diagnostics: AppDiagnostics? = null) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val store = AppStore(context)
+internal class AppRepository(
+    context: Context,
+    val runtime: NativeRuntime,
+    private val diagnostics: AppDiagnostics? = null,
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+    private val store: AppStore = AppStore(context),
+) {
     private val storage = Mutex()
     private val appVisible = MutableStateFlow(false)
     private var startedActivities = 0
@@ -83,6 +89,7 @@ internal class AppRepository(context: Context, val runtime: NativeRuntime, priva
     private val frameClock = TerminalFrameClock()
     private var operation: Job? = null
     private var epoch = 0L
+    private var sessionListRequest = 0L
     val uploads = TerminalUploads(context.applicationContext, scope) {
         val target = terminal
         val snapshot = frame.value
@@ -152,6 +159,7 @@ internal class AppRepository(context: Context, val runtime: NativeRuntime, priva
                     notifications.setAppEnabled(saved.preferences.notificationsEnabled)
                     mutable.update { it.copy(saved = saved, initialized = true) }
                     network.start()
+                    scope.coroutineContext.job.invokeOnCompletion { network.stop() }
                     if (clearRecoveryOnLoad) save { it.copy(activeTerminal = null) }
                     restoreActiveTerminal()
                     diagnostics?.record(AppDiagnostic.INITIALIZED)
@@ -220,7 +228,7 @@ internal class AppRepository(context: Context, val runtime: NativeRuntime, priva
                 sessionId = active.session, restoringSession = true, connecting = true) }
             // Never list/fall back to default creation on process restoration.
             attach(active.host, active.session, false)
-            refresh(active.host)
+            refreshSessionList(active.host)
         }
     }
     fun clearError() { mutable.update { it.copy(error = null) }; localTerminal { it.clearNotice() } }
@@ -292,7 +300,7 @@ internal class AppRepository(context: Context, val runtime: NativeRuntime, priva
         }
         mutable.update { it.copy(sessionId = null) }
         when (sessions.size) {
-            0 -> { attach(host, null, false); if (state.value.route == Route.Terminal && state.value.hostId == host) refresh(host) }
+            0 -> { attach(host, null, false); if (state.value.route == Route.Terminal && state.value.hostId == host) refreshSessionList(host) }
             1 -> { val session = sessions.single()
                 if (session.occupied) mutable.update { it.copy(panel = true) }
                 else attach(host, session.sessionId, false)
@@ -301,16 +309,48 @@ internal class AppRepository(context: Context, val runtime: NativeRuntime, priva
         }
     }
     private suspend fun refresh(host: String): List<NativeSession> {
+        // Explicit machine entry requires a successful list before choosing or
+        // creating a Session. Its failure remains a connection-operation error.
+        return querySessions(host).getOrThrow()
+    }
+    private suspend fun querySessions(host: String): Result<List<NativeSession>> {
         val mine = epoch
-        val sessions = runtime.listSessions(host)
-        if (mine == epoch && state.value.hostId == host && state.value.route == Route.Terminal) mutable.update { it.copy(sessions = sessions) }
-        return sessions
+        val request = ++sessionListRequest
+        fun current() = mine == epoch && request == sessionListRequest &&
+            state.value.hostId == host && state.value.route == Route.Terminal
+        if (current()) mutable.update { it.copy(sessionsRefreshing = true, sessionListError = null) }
+        try {
+            val sessions = runtime.listSessions(host)
+            if (!current()) throw CancellationException("Session list request was retired")
+            mutable.update { it.copy(sessions = sessions, sessionListError = null) }
+            return Result.success(sessions)
+        } catch (cancel: CancellationException) { throw cancel }
+        catch (error: Exception) {
+            val code = errorCode(error)
+            diagnostics?.record(AppDiagnostic.SESSION_LIST_FAILED, code)
+            // The required opening query also returns through act(). Retiring
+            // only its panel update would still leak its error into a new route.
+            if (!current()) throw CancellationException("Session list request was retired")
+            mutable.update { it.copy(sessionListError = code) }
+            return Result.failure(error)
+        } finally {
+            if (current()) mutable.update { it.copy(sessionsRefreshing = false) }
+        }
+    }
+    private suspend fun refreshSessionList(host: String) {
+        // Auxiliary metadata never retires or reconnects a working terminal.
+        // Retain the last successful list and expose a panel-local retry.
+        querySessions(host)
+    }
+    fun refreshSessionList() {
+        val host = state.value.hostId ?: return
+        if (state.value.route == Route.Terminal) scope.launch { refreshSessionList(host) }
     }
     fun togglePanel() {
         val next = !state.value.panel
         mutable.update { it.copy(panel = next) }
         val host = state.value.hostId ?: return
-        if (next) scope.launch { try { refresh(host) } catch (error: Exception) { report(error) } }
+        if (next) scope.launch { refreshSessionList(host) }
     }
     fun closePanel() { mutable.update { it.copy(panel = false) } }
     fun selectSession(session: String, takeover: Boolean = false) {
@@ -385,24 +425,28 @@ internal class AppRepository(context: Context, val runtime: NativeRuntime, priva
             activeTerminal = if (mine == epoch && state.value.route == Route.Terminal) RecentConnection(host, session.sessionId) else saved.activeTerminal) }
         if (mine == epoch && state.value.route == Route.Terminal && state.value.hostId == host) {
             attach(host, session.sessionId, false)
-            refresh(host)
+            refreshSessionList(host)
         }
     }
     fun renameSession(session: String, name: String) = act {
         val host = state.value.hostId ?: return@act
-        runtime.renameSession(host, session, name)
-        refresh(host)
+        val mine = epoch
+        val renamed = runtime.renameSession(host, session, name)
+        if (mine != epoch) return@act
+        mutable.update { it.copy(sessions = it.sessions.map { row -> if (row.sessionId == session) renamed else row }) }
+        refreshSessionList(host)
     }
     fun deleteSession(session: String) = act {
         val host = state.value.hostId ?: return@act
         val mine = epoch
         runtime.closeSession(host, session)
         if (mine != epoch) return@act
+        mutable.update { it.copy(sessions = it.sessions.filterNot { row -> row.sessionId == session }) }
         if (state.value.sessionId == session) {
             retire()
             save { it.copy(activeTerminal = null) }
         }
-        refresh(host)
+        refreshSessionList(host)
         mutable.update { it.copy(panel = true) }
     }
     fun removeHost(host: String) = act {
@@ -415,6 +459,8 @@ internal class AppRepository(context: Context, val runtime: NativeRuntime, priva
     private suspend fun retire(): Long {
         uploads.retire()
         val mine = ++epoch
+        ++sessionListRequest
+        mutable.update { it.copy(sessionsRefreshing = false, sessionListError = null) }
         scrollIntent = null
         val observer = observation
         observation = null
@@ -435,12 +481,17 @@ internal class AppRepository(context: Context, val runtime: NativeRuntime, priva
     fun goHome() {
         restoreConsumed = true
         uploads.retire()
-        ++epoch
+        val pendingConnection = operation?.takeIf { state.value.connecting }
+        pendingConnection?.cancel()
+        val mine = ++epoch
         mutable.update { it.copy(route = Route.Home, connecting = false, restoringSession = false) }
         scope.launch {
+            pendingConnection?.join()
+            if (mine != epoch) return@launch
             if (state.value.initialized) {
                 try { save { it.copy(activeTerminal = null) } } catch (error: Exception) { report(error) }
             } else clearRecoveryOnLoad = true
+            if (mine != epoch) return@launch
             if (retire() != epoch) return@launch
             mutable.update { it.copy(route = Route.Home, hostId = null, sessionId = null, panel = false, error = null, busy = operation?.isActive == true) }
         }
@@ -524,8 +575,13 @@ internal class AppRepository(context: Context, val runtime: NativeRuntime, priva
             catch (error: Exception) { if (mine == epoch) report(error) }
         }
     }
+    private fun errorCode(error: Exception) = when (error) {
+        is NativeException.RequestFailed -> error.code
+        is StoreFailure -> error.code
+        else -> "transport_unavailable"
+    }
     private fun report(error: Exception) {
-        val code = when (error) { is NativeException.RequestFailed -> error.code; is StoreFailure -> error.code; else -> "transport_unavailable" }
+        val code = errorCode(error)
         diagnostics?.record(if (error is StoreFailure) AppDiagnostic.STORAGE_FAILED else AppDiagnostic.OPERATION_FAILED, code)
         mutable.update { it.copy(error = code) }
     }

@@ -388,6 +388,11 @@ fixed_id!(
     "Random identifier of one connection dial attempt."
 );
 fixed_id!(
+    ConnectionIncarnation,
+    16,
+    "Random identity of one owner's live connection generation for a peer; never persisted."
+);
+fixed_id!(
     EphemeralOperationId,
     16,
     "Client-generated identifier of one local pairing operation."

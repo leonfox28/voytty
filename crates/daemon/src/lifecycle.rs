@@ -274,14 +274,7 @@ fn run_daemon_with_network_mode(
     paths
         .prepare_state_directories()
         .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?;
-    let daemon_lock = zterm_platform::local_unix::DaemonLock::try_acquire(paths)
-        .map_err(platform_error)?
-        .ok_or_else(|| {
-            DaemonError::new(
-                DomainErrorKind::DaemonAlreadyRunning,
-                "another daemon owns daemon.lock",
-            )
-        })?;
+    let daemon_lock = acquire_daemon_lock(paths)?;
     let store = StateStore::open(paths)?;
     let setup = validate_committed_setup_with_store(paths, &store)?;
     let network_inputs = match network_mode {
@@ -404,6 +397,30 @@ fn run_daemon_with_network_mode(
 }
 
 #[cfg(unix)]
+fn acquire_daemon_lock(
+    paths: &UserPaths,
+) -> Result<zterm_platform::local_unix::DaemonLock, DaemonError> {
+    let deadline = Instant::now() + START_TIMEOUT;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(DaemonError::new(
+                DomainErrorKind::DaemonAlreadyRunning,
+                "daemon.lock stayed busy throughout the startup budget",
+            ));
+        }
+        if let Some(lock) =
+            zterm_platform::local_unix::DaemonLock::try_acquire(paths).map_err(platform_error)?
+        {
+            return Ok(lock);
+        }
+        // Read-only status/diagnostic probes also acquire this lock briefly.
+        // A single busy observation does not prove another daemon exists.
+        // Retry within the existing startup budget, without bypassing ownership.
+        std::thread::sleep(LOCK_POLL.min(deadline.saturating_duration_since(Instant::now())));
+    }
+}
+
+#[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 fn run_owned_daemon_listener(
     paths: &UserPaths,
@@ -461,7 +478,7 @@ fn run_owned_daemon_listener(
                 let socket_cleanup = zterm_platform::local_unix::remove_owned_daemon_socket(
                     paths,
                     daemon_lock,
-                    socket_ownership,
+                    &socket_ownership,
                 )
                 .map_err(platform_error);
                 pairing_cleanup?;
@@ -494,7 +511,7 @@ fn run_owned_daemon_listener(
                 zterm_platform::local_unix::remove_owned_daemon_socket(
                     paths,
                     daemon_lock,
-                    socket_ownership,
+                    &socket_ownership,
                 )
                 .map_err(platform_error)?;
                 return Err(server_error);
@@ -524,7 +541,7 @@ fn run_owned_daemon_listener(
                     match zterm_platform::local_unix::rebind_owned_daemon_socket(
                         paths,
                         daemon_lock,
-                        socket_ownership,
+                        &socket_ownership,
                     ) {
                         Ok(rebound) => break rebound,
                         Err(error) => {

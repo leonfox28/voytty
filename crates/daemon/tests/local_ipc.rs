@@ -123,6 +123,7 @@ async fn same_uid_service_errors_are_connection_local_and_stop_ack_is_flushed() 
     client.readiness().await.expect("server survives major");
 
     let unknown_kind = raw_wire(v2::WireFrame {
+        payload_encoding: 0,
         wire_major: WIRE_MAJOR,
         kind: 65_535,
         payload: Vec::new(),

@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+mod compression;
+pub use compression::compress_terminal_frames;
 mod terminal_links;
 pub mod upload;
 use terminal_links::{LinkEncoder, decode_links, decode_row};
@@ -45,6 +47,7 @@ impl fmt::Debug for v2::WireFrame {
             .field("kind", &self.kind)
             .field("payload", &"[REDACTED]")
             .field("payload_len", &self.payload.len())
+            .field("payload_encoding", &self.payload_encoding)
             .field("request_id", &self.request_id)
             .field("deadline_ms", &self.deadline_ms)
             .finish()
@@ -138,6 +141,7 @@ impl fmt::Debug for v2::TerminalSemanticSnapshot {
             .field("attachment_id_present", &self.attachment_id.is_some())
             .field("revision", &self.revision)
             .field("surface", &self.surface)
+            .field("frame_sequence", &self.frame_sequence)
             .finish()
     }
 }
@@ -166,6 +170,7 @@ impl fmt::Debug for v2::TerminalSemanticDelta {
             .field("cursor", &self.cursor)
             .field("modes", &self.modes)
             .field("scroll_metrics", &self.scroll_metrics)
+            .field("frame_sequence", &self.frame_sequence)
             .finish()
     }
 }
@@ -404,6 +409,11 @@ impl fmt::Debug for v2::TerminalAttachRequest {
                 &self.resume_view_id.as_ref().map(|_| "[REDACTED]"),
             )
             .field("known_revision", &self.known_revision)
+            .field("accept_zlib_frames", &self.accept_zlib_frames)
+            .field(
+                "acknowledge_surface_frames",
+                &self.acknowledge_surface_frames,
+            )
             .finish()
     }
 }
@@ -567,6 +577,8 @@ pub enum WireKind {
     TerminalBaseColors = 324,
     /// Ordinary transient controller notification.
     TerminalNotification = 325,
+    /// Controller receipt of numbered live surface frames on one stream.
+    TerminalSurfaceFramesReceived = 326,
     /// Starts an attachment-bound upload on a separate service stream.
     UploadBegin = 400,
     /// Host admission and unique transfer identity.
@@ -700,6 +712,7 @@ impl TryFrom<u32> for WireKind {
             322 => Self::TerminalClipboardWrite,
             324 => Self::TerminalBaseColors,
             325 => Self::TerminalNotification,
+            326 => Self::TerminalSurfaceFramesReceived,
             400 => Self::UploadBegin,
             401 => Self::UploadReady,
             402 => Self::UploadChunk,
@@ -778,6 +791,8 @@ pub enum ProtocolError {
     },
     /// Numeric message kind is not registered.
     UnknownKind(u32),
+    /// A compressed payload was malformed, unsupported, or used on a forbidden kind.
+    InvalidPayloadEncoding,
     /// Caller attempted to decode a frame as another known kind.
     UnexpectedKind {
         /// Kind required by the typed decoder.
@@ -827,6 +842,7 @@ impl fmt::Display for ProtocolError {
                 "wire major mismatch: local {expected}, peer {actual}"
             ),
             Self::UnknownKind(kind) => write!(formatter, "unknown wire message kind {kind}"),
+            Self::InvalidPayloadEncoding => write!(formatter, "invalid frame payload encoding"),
             Self::UnexpectedKind { expected, actual } => {
                 write!(formatter, "expected {expected:?}, got {actual:?}")
             }
@@ -886,6 +902,13 @@ impl Default for FrameDecoder {
 }
 
 impl FrameDecoder {
+    /// Bytes retained for the current incomplete frame, including its prefix.
+    /// Reveals no contents and is unaffected by cancellation of the stream read.
+    #[must_use]
+    pub fn buffered_len(&self) -> usize {
+        self.prefix_len + self.body.len()
+    }
+
     /// Creates an empty incremental decoder.
     #[must_use]
     pub const fn new() -> Self {
@@ -953,7 +976,7 @@ impl FrameDecoder {
                     let body = Zeroizing::new(std::mem::take(&mut self.body));
                     self.expected_body = None;
                     self.prefix_len = 0;
-                    frames.push(decode_wire_frame(body.as_slice())?);
+                    frames.push(decode_wire_frame(body.as_slice(), self.maximum_body_bytes)?);
                 }
             }
         }
@@ -989,6 +1012,7 @@ pub fn encode_payload(
 ) -> Result<Vec<u8>, ProtocolError> {
     validate_payload_limit(kind, payload.len())?;
     let wire = v2::WireFrame {
+        payload_encoding: 0,
         wire_major: WIRE_MAJOR,
         kind: kind as u32,
         payload,
@@ -1005,8 +1029,11 @@ pub fn encode_payload(
     Ok(output)
 }
 
-fn decode_wire_frame(body: &[u8]) -> Result<DecodedFrame, ProtocolError> {
-    let wire = v2::WireFrame::decode(body).map_err(ProtocolError::MalformedProtobuf)?;
+fn decode_wire_frame(
+    body: &[u8],
+    maximum_body_bytes: usize,
+) -> Result<DecodedFrame, ProtocolError> {
+    let mut wire = v2::WireFrame::decode(body).map_err(ProtocolError::MalformedProtobuf)?;
     if wire.wire_major != WIRE_MAJOR {
         return Err(ProtocolError::WireMajorMismatch {
             expected: WIRE_MAJOR,
@@ -1014,6 +1041,7 @@ fn decode_wire_frame(body: &[u8]) -> Result<DecodedFrame, ProtocolError> {
         });
     }
     let kind = WireKind::try_from(wire.kind)?;
+    compression::decode_payload(&mut wire, kind, maximum_body_bytes)?;
     validate_payload_limit(kind, wire.payload.len())?;
     Ok(DecodedFrame {
         kind,
@@ -1692,6 +1720,8 @@ pub fn terminal_surface_snapshot_message(
         attachment_id: Some(attachment_id.into()),
         revision: snapshot.revision.get(),
         surface: Some(terminal_surface_message(snapshot.surface)),
+        // Numbered only by a host stream owner after explicit opt-in.
+        frame_sequence: 0,
     }
 }
 
@@ -1749,6 +1779,8 @@ pub fn terminal_surface_delta_message(
         modes: Some(delta.modes.into()),
         scroll_metrics: delta.scroll_metrics.map(Into::into),
         hyperlinks: links.finish(),
+        // Numbered only by a host stream owner after explicit opt-in.
+        frame_sequence: 0,
     }
 }
 
@@ -2387,6 +2419,7 @@ impl TryFrom<v2::ConnectionHello> for ConnectionHello {
     type Error = WireFieldError;
 
     fn try_from(value: v2::ConnectionHello) -> Result<Self, Self::Error> {
+        let incarnation = decode_connection_incarnation(&value.incarnation)?;
         let attempt_id = ConnectionAttemptId::from_bytes(&value.attempt_id)
             .map_err(WireFieldError::InvalidIdentifier)?;
         ConnectionHello::new(
@@ -2399,6 +2432,7 @@ impl TryFrom<v2::ConnectionHello> for ConnectionHello {
             value.initiator_platform,
         )
         .map_err(WireFieldError::InvalidConnection)
+        .map(|hello| hello.with_incarnation(incarnation))
     }
 }
 
@@ -2412,6 +2446,9 @@ impl From<&ConnectionHello> for v2::ConnectionHello {
             initiator_display: value.initiator_display().to_owned(),
             initiator_build: value.initiator_build().to_owned(),
             initiator_platform: value.initiator_platform().to_owned(),
+            incarnation: value
+                .incarnation()
+                .map_or_else(Vec::new, |id| id.to_bytes().to_vec()),
         }
     }
 }
@@ -2420,6 +2457,7 @@ impl TryFrom<v2::ConnectionWelcome> for ConnectionWelcome {
     type Error = WireFieldError;
 
     fn try_from(value: v2::ConnectionWelcome) -> Result<Self, Self::Error> {
+        let incarnation = decode_connection_incarnation(&value.incarnation)?;
         let generation = AuthGeneration::new(value.accepted_authorization_generation).ok_or(
             WireFieldError::InvalidGeneration {
                 actual: value.accepted_authorization_generation,
@@ -2434,6 +2472,7 @@ impl TryFrom<v2::ConnectionWelcome> for ConnectionWelcome {
             generation,
         )
         .map_err(WireFieldError::InvalidConnection)
+        .map(|welcome| welcome.with_incarnation(incarnation))
     }
 }
 
@@ -2446,7 +2485,22 @@ impl From<&ConnectionWelcome> for v2::ConnectionWelcome {
             responder_build: value.responder_build().to_owned(),
             responder_platform: value.responder_platform().to_owned(),
             accepted_authorization_generation: value.accepted_authorization_generation().get(),
+            incarnation: value
+                .incarnation()
+                .map_or_else(Vec::new, |id| id.to_bytes().to_vec()),
         }
+    }
+}
+
+fn decode_connection_incarnation(
+    bytes: &[u8],
+) -> Result<Option<zterm_core::ConnectionIncarnation>, WireFieldError> {
+    if bytes.is_empty() {
+        Ok(None)
+    } else {
+        zterm_core::ConnectionIncarnation::from_bytes(bytes)
+            .map(Some)
+            .map_err(WireFieldError::InvalidIdentifier)
     }
 }
 
@@ -2664,6 +2718,7 @@ mod tests {
     #[test]
     fn decoder_rejects_unknown_major_kind_and_incomplete_or_malformed_lengths() {
         let unknown_major = v2::WireFrame {
+            payload_encoding: 0,
             wire_major: 1,
             kind: WireKind::LocalStatusRequest as u32,
             payload: Vec::new(),
@@ -2680,6 +2735,7 @@ mod tests {
         ));
 
         let unknown_kind = v2::WireFrame {
+            payload_encoding: 0,
             wire_major: WIRE_MAJOR,
             kind: 65_535,
             payload: Vec::new(),
@@ -2771,6 +2827,7 @@ mod tests {
             );
         }
         let body = v2::WireFrame {
+            payload_encoding: 0,
             wire_major: WIRE_MAJOR,
             kind: WireKind::LocalConnectionProgress as u32,
             payload: vec![0; 65],
@@ -2817,6 +2874,7 @@ mod tests {
             Err(ProtocolError::ControlPayloadTooLarge(_))
         ));
         let oversized_control = v2::WireFrame {
+            payload_encoding: 0,
             wire_major: WIRE_MAJOR,
             kind: WireKind::LocalStatusResponse as u32,
             payload: vec![0; MAX_CONTROL_PAYLOAD_BYTES + 1],
@@ -3109,6 +3167,10 @@ mod tests {
                 v2::MessageKind::TerminalNotification as u32,
             ),
             (
+                WireKind::TerminalSurfaceFramesReceived,
+                v2::MessageKind::TerminalSurfaceFramesReceived as u32,
+            ),
+            (
                 WireKind::TerminalClipboardWrite,
                 v2::MessageKind::TerminalClipboardWrite as u32,
             ),
@@ -3158,6 +3220,8 @@ mod tests {
         assert_message_round_trip(
             WireKind::TerminalAttachRequest,
             v2::TerminalAttachRequest {
+                accept_zlib_frames: false,
+                acknowledge_surface_frames: false,
                 base_colors: Default::default(),
 
                 target: target.clone(),
@@ -3189,6 +3253,14 @@ mod tests {
                 revision: 13,
             },
         );
+        assert_message_round_trip(
+            WireKind::TerminalSurfaceFramesReceived,
+            v2::TerminalSurfaceFramesReceived {
+                attachment_id: attachment_id.clone(),
+                frame_sequence: 21,
+            },
+        );
+        assert!(WireKind::TerminalSurfaceFramesReceived.is_control());
         assert_message_round_trip(
             WireKind::TerminalSyncRequest,
             v2::TerminalSyncRequest {

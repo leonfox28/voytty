@@ -12,16 +12,38 @@ pub struct DaemonLock(FileLock);
 
 /// Filesystem identity of the socket created while one daemon lock is held.
 /// Fatal-listener recovery uses this token to avoid unlinking a replaced path.
-/// Change time is part of the identity because Linux may immediately reuse an
-/// inode after the original socket path is unlinked.
+/// Linux also pins the filesystem inode: unlink/rebind can reuse both inode
+/// number and change time within one filesystem clock tick.
 #[cfg(unix)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct DaemonSocketOwnership {
     device: u64,
     inode: u64,
     change_time_seconds: i64,
     change_time_nanoseconds: i64,
+    #[cfg(target_os = "linux")]
+    _inode_pin: std::sync::Arc<fs::File>,
 }
+
+#[cfg(unix)]
+impl PartialEq for DaemonSocketOwnership {
+    fn eq(&self, other: &Self) -> bool {
+        (
+            self.device,
+            self.inode,
+            self.change_time_seconds,
+            self.change_time_nanoseconds,
+        ) == (
+            other.device,
+            other.inode,
+            other.change_time_seconds,
+            other.change_time_nanoseconds,
+        )
+    }
+}
+
+#[cfg(unix)]
+impl Eq for DaemonSocketOwnership {}
 
 impl DaemonLock {
     /// Tries to acquire the per-user daemon lifetime lock.
@@ -189,13 +211,13 @@ pub fn bind_owned_daemon_socket(
 pub fn rebind_owned_daemon_socket(
     paths: &UserPaths,
     _lock: &DaemonLock,
-    previous: DaemonSocketOwnership,
+    previous: &DaemonSocketOwnership,
 ) -> Result<(std::os::unix::net::UnixListener, DaemonSocketOwnership), LocalPlatformError> {
     use std::os::unix::net::{UnixListener, UnixStream};
 
     paths.prepare_runtime_directory()?;
     match socket_ownership(paths)? {
-        Some(current) if current == previous => {
+        Some(current) if &current == previous => {
             if UnixStream::connect(paths.socket()).is_ok() {
                 return Err(LocalPlatformError::AlreadyRunning);
             }
@@ -226,10 +248,10 @@ pub fn rebind_owned_daemon_socket(
 pub fn remove_owned_daemon_socket(
     paths: &UserPaths,
     _lock: &DaemonLock,
-    ownership: DaemonSocketOwnership,
+    ownership: &DaemonSocketOwnership,
 ) -> Result<(), LocalPlatformError> {
     match socket_ownership(paths)? {
-        Some(current) if current == ownership => fs::remove_file(paths.socket())
+        Some(current) if &current == ownership => fs::remove_file(paths.socket())
             .map_err(|error| LocalPlatformError::Io(error.to_string())),
         Some(_) => Err(LocalPlatformError::UnsafeSocket(
             paths.socket().to_path_buf(),
@@ -244,6 +266,24 @@ fn socket_ownership(
 ) -> Result<Option<DaemonSocketOwnership>, LocalPlatformError> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 
+    #[cfg(target_os = "linux")]
+    let inode_pin = {
+        use std::os::unix::fs::OpenOptionsExt;
+        match fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_PATH | nix::libc::O_NOFOLLOW)
+            .open(paths.socket())
+        {
+            Ok(file) => std::sync::Arc::new(file),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(LocalPlatformError::Io(error.to_string())),
+        }
+    };
+    #[cfg(target_os = "linux")]
+    let metadata = inode_pin
+        .metadata()
+        .map_err(|error| LocalPlatformError::Io(error.to_string()))?;
+    #[cfg(not(target_os = "linux"))]
     let metadata = match fs::symlink_metadata(paths.socket()) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -263,6 +303,8 @@ fn socket_ownership(
         inode: metadata.ino(),
         change_time_seconds: metadata.ctime(),
         change_time_nanoseconds: metadata.ctime_nsec(),
+        #[cfg(target_os = "linux")]
+        _inode_pin: inode_pin,
     }))
 }
 
@@ -499,31 +541,34 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         use std::os::unix::net::{UnixListener, UnixStream};
 
-        let (_temporary, paths) = isolated_paths();
-        let lock = DaemonLock::try_acquire(&paths)
-            .expect("daemon lock probe")
-            .expect("daemon lock acquired");
-        let (listener, ownership) =
-            bind_owned_daemon_socket(&paths, &lock).expect("owned socket bind");
-        drop(listener);
-        fs::remove_file(paths.socket()).expect("replace original socket path");
-        let replacement = UnixListener::bind(paths.socket()).expect("replacement socket bind");
-        fs::set_permissions(paths.socket(), fs::Permissions::from_mode(0o600))
-            .expect("replacement socket permissions");
+        // Repeated unlink/rebind stresses inode reuse within one clock tick.
+        for _ in 0..128 {
+            let (_temporary, paths) = isolated_paths();
+            let lock = DaemonLock::try_acquire(&paths)
+                .expect("daemon lock probe")
+                .expect("daemon lock acquired");
+            let (listener, ownership) =
+                bind_owned_daemon_socket(&paths, &lock).expect("owned socket bind");
+            drop(listener);
+            fs::remove_file(paths.socket()).expect("replace original socket path");
+            let replacement = UnixListener::bind(paths.socket()).expect("replacement socket bind");
+            fs::set_permissions(paths.socket(), fs::Permissions::from_mode(0o600))
+                .expect("replacement socket permissions");
 
-        assert!(matches!(
-            rebind_owned_daemon_socket(&paths, &lock, ownership),
-            Err(LocalPlatformError::UnsafeSocket(_))
-        ));
-        assert!(matches!(
-            remove_owned_daemon_socket(&paths, &lock, ownership),
-            Err(LocalPlatformError::UnsafeSocket(_))
-        ));
-        assert!(
-            UnixStream::connect(paths.socket()).is_ok(),
-            "mismatched replacement socket was unlinked"
-        );
-        drop(replacement);
-        fs::remove_file(paths.socket()).expect("replacement cleanup");
+            assert!(matches!(
+                rebind_owned_daemon_socket(&paths, &lock, &ownership),
+                Err(LocalPlatformError::UnsafeSocket(_))
+            ));
+            assert!(matches!(
+                remove_owned_daemon_socket(&paths, &lock, &ownership),
+                Err(LocalPlatformError::UnsafeSocket(_))
+            ));
+            assert!(
+                UnixStream::connect(paths.socket()).is_ok(),
+                "mismatched replacement socket was unlinked"
+            );
+            drop(replacement);
+            fs::remove_file(paths.socket()).expect("replacement cleanup");
+        }
     }
 }

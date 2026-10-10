@@ -101,6 +101,11 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
                         else stringResource(R.string.connection_failure_body)
                     WideStatusCard(title, body, Modifier.align(Alignment.Center).padding(24.dp),
                         icon = "disconnect", busy = state.busy) {
+                        if (state.busy && state.connecting) {
+                            OutlinedButton(repository::goHome, Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                                Text(stringResource(R.string.cancel))
+                            }
+                        } else {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             FilledTonalButton(repository::togglePanel, Modifier.weight(1f).heightIn(min = 48.dp), enabled = !state.busy) {
                                 Text(stringResource(R.string.sessions))
@@ -109,6 +114,7 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
                                 modifier = Modifier.weight(1.35f).heightIn(min = 48.dp), enabled = !state.busy) {
                                 Text(stringResource(if (canTakeover) R.string.takeover else R.string.retry))
                             }
+                        }
                         }
                     }
                 }
@@ -197,6 +203,9 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
                         }
                     }
                     ErrorText(state.error, Modifier.padding(horizontal = 20.dp))
+                    state.sessionListError?.let { code ->
+                        SessionListError(code, !state.sessionsRefreshing, repository::refreshSessionList)
+                    }
                     TextButton({ creating = true }, Modifier.fillMaxWidth().height(52.dp), enabled = !state.busy) {
                         LineIcon("plus"); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.new_session))
                     }
@@ -218,6 +227,14 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
         ConfirmDialog(stringResource(R.string.takeover), name?.let { "$it\n" }.orEmpty() + stringResource(R.string.takeover_message), stringResource(R.string.takeover), { taking = null }) {
             taking = null; repository.selectSession(id,true)
         }
+    }
+}
+
+@Composable internal fun SessionListError(code: String, enabled: Boolean, retry: () -> Unit) {
+    Column(Modifier.padding(horizontal = 20.dp)) {
+        Text(stringResource(R.string.session_list_refresh_failed), color = MaterialTheme.colorScheme.error)
+        ErrorText(code)
+        TextButton(retry, enabled = enabled) { Text(stringResource(R.string.retry)) }
     }
 }
 @Composable internal fun TerminalConnectionSubtitle(host: String, status: TerminalStatus?, busy: Boolean, error: String?) {

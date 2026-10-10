@@ -76,6 +76,19 @@ impl PreparedDaemonOwner {
         known: &[(DeviceId, &str, &str)],
         limits: TransportLimits,
     ) -> DaemonNetworkOwner {
+        self.bind_with_setup_delays(inbound, known, limits, Duration::ZERO, Duration::ZERO)
+            .await
+    }
+
+    /// Delays transport acceptance and normal Hello dispatch without changing client timers.
+    pub async fn bind_with_setup_delays(
+        self,
+        inbound: &[(DeviceId, &str)],
+        known: &[(DeviceId, &str, &str)],
+        limits: TransportLimits,
+        transport_delay: Duration,
+        hello_delay: Duration,
+    ) -> DaemonNetworkOwner {
         assert_linux_before_bind();
 
         let persisted_identity =
@@ -188,6 +201,7 @@ impl PreparedDaemonOwner {
             broker.clone(),
             std::sync::Arc::clone(&pair_accepts),
             std::sync::Arc::clone(&pair_changed),
+            (transport_delay, hello_delay),
         );
 
         DaemonNetworkOwner {
@@ -220,6 +234,31 @@ pub struct DaemonNetworkOwner {
 }
 
 impl DaemonNetworkOwner {
+    /// Keeps an old authenticated connection alive while a new running owner
+    /// with the same persistent identity connects. This models a crashed peer
+    /// whose QUIC idle timeout has not elapsed at the receiver yet.
+    pub async fn connect_with_identity(
+        &self,
+        remote: &Self,
+        identity: &ConnectionIdentity,
+        attempt: zterm_core::ConnectionAttemptId,
+    ) -> Result<iroh::endpoint::Connection, zterm_client::error::ClientError> {
+        let connection = self
+            .endpoint
+            .connect(remote.direct_address(), ZTERM_ALPN)
+            .await
+            .expect("fixture TLS");
+        zterm_client::handshake::controller_handshake(
+            &connection,
+            identity,
+            attempt,
+            16 * 1024,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .await?;
+        Ok(connection)
+    }
+
     pub fn broker(&self) -> &ConnectionBroker {
         &self.broker
     }
@@ -371,6 +410,7 @@ fn spawn_accept_router(
     broker: ConnectionBroker,
     pair_accepts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pair_changed: std::sync::Arc<Notify>,
+    setup_delays: (Duration, Duration),
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut handlers = JoinSet::new();
@@ -386,7 +426,7 @@ fn spawn_accept_router(
                     let pair_accepts = std::sync::Arc::clone(&pair_accepts);
                     let pair_changed = std::sync::Arc::clone(&pair_changed);
                     handlers.spawn(async move {
-                        route_incoming(incoming, broker, pair_accepts, pair_changed).await;
+                        route_incoming(incoming, broker, pair_accepts, pair_changed, setup_delays).await;
                     });
                 }
             }
@@ -401,7 +441,9 @@ async fn route_incoming(
     broker: ConnectionBroker,
     pair_accepts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pair_changed: std::sync::Arc<Notify>,
+    setup_delays: (Duration, Duration),
 ) {
+    tokio::time::sleep(setup_delays.0).await;
     let Ok(mut accepting) = incoming.accept() else {
         return;
     };
@@ -410,6 +452,7 @@ async fn route_incoming(
     };
     if alpn == ZTERM_ALPN {
         if let Ok(Ok(connection)) = tokio::time::timeout(Duration::from_secs(10), accepting).await {
+            tokio::time::sleep(setup_delays.1).await;
             let _ = broker.accept_normal(connection).await;
         }
     } else if alpn == ZTERM_PAIR_ALPN

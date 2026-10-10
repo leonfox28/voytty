@@ -957,6 +957,14 @@ impl TerminalUiSession {
         self.healthy_resize = preserve_input && next == TerminalViewTransportState::Synchronizing;
         self.transport_state = next;
         if next == TerminalViewTransportState::Active {
+            // A prepared takeover's initial ACK does not make it a controller.
+            // Wait for the correlated takeover and any replacement snapshot
+            // before the first history request, just like ordinary input.
+            if let Some(query) = self.viewport.prefetch_live()
+                && self.writer.request_history_window(query).await.is_err()
+            {
+                self.viewport.window_cache.defer_pending_request();
+            }
             self.progress.report(ConnectionStage::TerminalReady);
             self.progress.stop();
         }

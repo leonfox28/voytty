@@ -13,6 +13,65 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class DiagnosticsTest {
+    private fun diagnosticHandles(directory: File): Int = checkNotNull(File("/proc/self/fd").listFiles()).count { fd ->
+        // /proc resolves Android's /data/user/0 alias to /data/data. The random
+        // fixture directory component also matches descriptors for rotated files.
+        runCatching { android.system.Os.readlink(fd.path).contains("/${directory.name}/") }.getOrDefault(false)
+    }
+
+    @Test fun repeatedStorageOperationsCloseAllOwnedDescriptors() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = File(context.cacheDir, "diagnostics-fds-${UUID.randomUUID()}")
+        val files = DiagnosticFiles(directory, 256)
+        try {
+            files.setControl(diagnosticControl(true))
+            repeat(128) { index ->
+                assertTrue(files.append(index % 2 == 0, "safe record $index ${"x".repeat(32)}\n"))
+                assertTrue(diagnosticRemainingMs(files.control()) > 0uL)
+                if (index % 16 == 0) assertTrue(files.flush())
+            }
+            assertTrue(files.flush())
+            assertTrue(File(directory, "events.jsonl.1").exists())
+            assertTrue(File(directory, "detail.jsonl.1").exists())
+            assertEquals("append, normalize, control and flush must close their own descriptors", 0, diagnosticHandles(directory))
+        } finally { directory.deleteRecursively() }
+    }
+
+    @Test fun exportClosesSnapshotsOnSuccessAndOutputFailure() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = File(context.cacheDir, "diagnostics-fds-${UUID.randomUUID()}")
+        val files = DiagnosticFiles(directory)
+        try {
+            assertTrue(files.append(false, "legacy key event\n"))
+            assertTrue(files.append(true, "legacy detail event\n"))
+            val baseline = diagnosticHandles(directory)
+            repeat(8) {
+                files.export(ByteArrayOutputStream(), true, 0u)
+                val failed = runCatching { files.export(object : java.io.OutputStream() {
+                    override fun write(value: Int) { throw java.io.IOException("fixture output failure") }
+                }, true, 0u) }
+                assertTrue(failed.exceptionOrNull() is java.io.IOException)
+            }
+            assertEquals("export must release snapshots, including when the destination fails", baseline, diagnosticHandles(directory))
+        } finally { directory.deleteRecursively() }
+    }
+
+    @Test fun failedSnapshotCollectionClosesPreviouslyOpenedFiles() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = File(context.cacheDir, "diagnostics-fds-${UUID.randomUUID()}")
+        val outside = File(context.cacheDir, "diagnostics-target-${UUID.randomUUID()}")
+        val files = DiagnosticFiles(directory)
+        try {
+            assertTrue(files.append(false, "legacy event\n"))
+            outside.writeText("unchanged")
+            android.system.Os.symlink(outside.path, File(directory, "events.jsonl.1").path)
+            val baseline = diagnosticHandles(directory)
+            repeat(8) { assertTrue(runCatching { files.export(ByteArrayOutputStream(), true, 0u) }.isFailure) }
+            assertEquals("failed collection must release the first snapshot", baseline, diagnosticHandles(directory))
+            assertEquals("unchanged", outside.readText())
+        } finally { directory.deleteRecursively(); outside.delete() }
+    }
+
     @Test fun installingDiagnosticsOnMainResolvesItsDirectoryOnlyOnTheWorker() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val parent = File(instrumentation.targetContext.cacheDir, "diagnostics-${UUID.randomUUID()}")
