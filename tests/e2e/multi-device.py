@@ -993,8 +993,11 @@ class Suite:
         # Pair tickets are never argv, log entries, or persisted evidence.
         ticket = self.lab.cli(host, "pair", "create", private=True).strip().encode()
         if client == "C":
+            # A freshly installed app has no files/ until something writes
+            # there; the app's own first write can land after this one.
             self.lab.adb("shell", "run-as", PACKAGE, "sh", "-c",
-                         shlex.quote("cat > files/multi-device-ticket.txt"), data=ticket, private=True)
+                         shlex.quote("mkdir -p files && cat > files/multi-device-ticket.txt"),
+                         data=ticket, private=True)
             result = self.android.command("pair")
             if result["snapshot"].get("error"):
                 raise AssertionError(result)

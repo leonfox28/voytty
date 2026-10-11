@@ -1095,6 +1095,7 @@ QUIC 对持久重置密钥、CID 不复用及重置 oracle 的约束见
 | T30 | 独立 Android 验收在 VM 重启后直接开始，产品 daemon 仍为 Stopped；基础网络预检不保证产品主机已启动 | 新增 [本地主机准备工具](../../tests/e2e/multi-device-hosts.py)，通过显式 local 查询启动已配置 daemon，并记录前后状态、等待 Online；不重启活跃服务、不创建会话、不预热控制端。三项回归及完整运行器 48 项通过。`cold-start-fix/host-readiness-analysis-02.json` 区分前提错误与修正后仍存在的真实握手失败，原日志不改写 |
 | T31 | 短断网恢复只断言 Active／inputReady 和主机尺寸，未要求 Android 显示尺寸同步 | [运行器](../../tests/e2e/multi-device.py) 在原 60 秒期限内等待 Android 实际尺寸匹配，再发送连续性输入；[审计](../../tests/e2e/multi-device-audit.py) 按 `host-and-android-surface-v1` 检查尺寸和输入状态，旧证据保留原契约。两种尺寸滞后回归修正前均失败、修正后通过，另验证审计拒绝缺失／错误尺寸和不可输入状态；运行器及主机准备测试 49/49。旧制品 B→C 十轮通过；证据 `checks/ordered-fixes/r03-sync/` |
 | T32 | Android instrumentation 已退出，恢复轮询仍读取遗留状态文件，将观察器故障误报为同步超时 | [运行器](../../tests/e2e/multi-device.py) 的状态断言先确认测试进程存活，退出立即报错；证据采集仍显式保留最后状态。退出码 0／1 两种回归修正前均失败、修正后通过，运行器及主机准备 50/50；`checks/ordered-fixes/r03-relay-cause/coordinator-before.log` 和 `coordinator-after.log`。原 `cause-01/0016` 失败不改写，结合 P33 的 EMFILE 与已收到的快照 ACK 单列归因 |
+| T33 | 重建环境后首次运行，C 的配对票据写入 `files/multi-device-ticket.txt` 失败，四个 Android 行被配对前提阻塞：新装应用在 08:56:07 才首次写入 `files/`，而写票据发生在 08:56:04–05，运行器又不创建目录。旧模拟器的 `files/` 早已存在，因此此前未暴露。改为先 `mkdir -p files` 再写入；新增回归在无 `files/` 的临时应用目录执行设备端脚本，修正前以 `No such file or directory` 失败、修正后通过，协调回归 48/48 | `$LAB/lab-rebuild-cold-01/pairing.json`、`checks/lab-rebuild/ticket-dir-before-01.log`、`ticket-dir-after-01.log`；见 [环境重建记录](multi-device-lab.md) |
 
 ## 环境与构建问题
 
