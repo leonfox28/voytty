@@ -177,3 +177,25 @@ Native 冷构建与恢复后 SHA-256 均为
 目录缓存不包含这个文件。裁剪现在通过 `CARGO_TARGET_DIR` 定位已知缓存根，仍仅让
 Cargo 清理 metadata 找出的 path 包；新增真实 Cargo fixture 覆盖缺 marker 的恢复
 场景、多个 profile、path 包清除和第三方库保留。
+
+首轮 hosted CI（`0328164`）全绿，用时 7m40s。Android 是 critical path（7m23s），
+其中已命中 Rust 编译缓存，host/arm64 编译分别约 19/60 秒，其余主要是 Gradle。
+因此继续补充 Gradle task-output 缓存：main 冷构建后保存、PR 才恢复，单项上限
+1 GiB；JVM Test 与所有 lint* task 明确禁止复用检查结果，Rust/identity 自定义 task
+也保持不可缓存。Gradle 根据每个 task 的实际输入内容判断编译输出能否复用。
+
+本地 Gradle 验证使用独立 task-output cache，首次完整构建后停止 daemon、`clean`
+删除项目输出，再从缓存构建 debug/release APK 并运行两套 lint 与 JVM 测试：
+
+| Task | 首次执行 | 恢复后 | 恢复行为 |
+| --- | --- | --- | --- |
+| compileDebugKotlin | 49.091 s | 0.135 s | FROM-CACHE |
+| compileReleaseKotlin | 45.945 s | 0.108 s | FROM-CACHE |
+| lintAnalyzeDebug | 76.300 s | 54.871 s | 实际执行 |
+| lintAnalyzeRelease | 64.890 s | 48.688 s | 实际执行 |
+| testDebugUnitTest | 2.093 s | 0.708 s | 实际执行，11 项通过 |
+
+共 50 项 task 从缓存恢复，55 项执行，缓存约 57 MiB。debug 与 unsigned release APK
+在两轮构建中分别逐字节一致。总构建时间从 4m20.90s 到 1m14.64s，但这也包含 Cargo
+本地热构建和 Gradle 初始化的收益，不能全部归因于新 Gradle 缓存；上表单列实际
+Kotlin 编译与检查 task 的耗时。hosted 稳态收益仍需 main 首次填充后验证。

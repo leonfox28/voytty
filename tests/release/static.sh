@@ -61,6 +61,12 @@ environment_gates=$(grep -Fc 'environment: release' "$workflow" || true)
 android_job=$(sed -n '/^  android:/,/^  candidate:/p' "$ci_workflow")
 printf '%s\n' "$android_job" | grep -Fq 'tools/android/release.py prepare' \
     || fail "Android CI must inspect the exact release candidate"
+printf '%s\n' "$android_job" | grep -Fq "lookup-only: \${{ github.event_name != 'pull_request' }}" \
+    || fail "main Android candidates must not restore Gradle compilation outputs"
+grep -Fq 'this is Test || name.startsWith("lint")' "$repo_root/apps/android/app/build.gradle.kts" \
+    || fail "Gradle verification tasks must be excluded from compilation caching"
+grep -Fq 'outputs.doNotCacheIf(' "$repo_root/apps/android/app/build.gradle.kts" \
+    || fail "Gradle verification must not reuse cached test/lint results"
 grep -Fq "CI_NEEDS: \${{ toJSON(needs) }}" "$ci_workflow" \
     || fail "all job results must participate in the stable CI gate"
 grep -Fq 'run: python3 tools/ci/workflow-policy.py gate' "$ci_workflow" \

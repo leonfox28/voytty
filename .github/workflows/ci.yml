@@ -496,6 +496,15 @@ jobs:
           key: ci-compiled-android-v1-rust-1.98.0-nodebug-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ci-compiled-android-v1-rust-1.98.0-nodebug-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore Gradle compilation outputs only for PR checks
+        id: gradle-build
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          lookup-only: ${{ github.event_name != 'pull_request' }}
+          path: ~/.gradle/caches/build-cache-1
+          key: gradle-build-v1-${{ runner.os }}-${{ runner.arch }}-java17-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'apps/android/gradle/**', 'apps/android/**/*.gradle.kts', 'apps/android/gradle.properties', 'apps/android/app/src/**', 'apps/android/app/gradle.lockfile', 'crates/**', 'proto/**', 'vendor/**', 'tools/android/**', 'tools/uniffi-bindgen/**') }}
+          restore-keys: |
+            gradle-build-v1-${{ runner.os }}-${{ runner.arch }}-java17-
       - name: Select pinned build tools
         shell: bash
         run: |
@@ -513,7 +522,7 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
             export ZTERM_SOURCE_COMMIT="$GITHUB_SHA"
           fi
-          sh tools/android/build.sh :app:assembleDebug :app:assembleRelease :app:lintDebug :app:lintRelease :app:testDebugUnitTest
+          sh tools/android/build.sh --build-cache :app:assembleDebug :app:assembleRelease :app:lintDebug :app:lintRelease :app:testDebugUnitTest
       - name: Inspect the unsigned release APK
         run: >-
           python3 tools/android/release.py prepare
@@ -546,8 +555,8 @@ jobs:
         with:
           path: ~/.cargo/bin/cargo-ndk*
           key: ${{ steps.cargo-ndk.outputs.cache-primary-key }}
-      - name: Stop Gradle before saving its dependency downloads
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.gradle.outputs.cache-hit != 'true'
+      - name: Stop Gradle before saving its caches
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.gradle.outputs.cache-hit != 'true' || steps.gradle-build.outputs.cache-hit != 'true')
         run: apps/android/gradlew -p apps/android --stop
       - name: Save main Gradle dependency downloads
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.gradle.outputs.cache-hit != 'true'
@@ -555,6 +564,26 @@ jobs:
         with:
           path: ~/.gradle/caches/modules-2
           key: ${{ steps.gradle.outputs.cache-primary-key }}
+      - name: Bound the cold main Gradle compilation cache
+        id: trim-gradle
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.gradle-build.outputs.cache-hit != 'true'
+        run: |
+          if [ ! -d "$HOME/.gradle/caches/build-cache-1" ]; then
+            echo '::warning::Gradle produced no build cache; not saved'
+            exit 0
+          fi
+          size=$(du -sk "$HOME/.gradle/caches/build-cache-1" | awk '{print $1}')
+          if [ "$size" -le 1048576 ]; then
+            echo 'cacheable=true' >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Gradle build cache is $size KiB, above 1 GiB; not saved"
+          fi
+      - name: Save cold main Gradle compilation outputs for PR checks
+        if: steps.trim-gradle.outputs.cacheable == 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.gradle/caches/build-cache-1
+          key: ${{ steps.gradle-build.outputs.cache-primary-key }}
       # Main builds its APK candidate without compiled caches, then saves the
       # trimmed third-party outputs for later pull requests.
       - name: Look up main compiled Android dependencies

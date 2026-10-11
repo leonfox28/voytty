@@ -196,6 +196,15 @@ PRs when the lockfile key is new. A local cold/restored comparison on
 2026-10-10 compiled 630 versus 19 crates and produced a byte-identical
 `libzterm_android.so`.
 
+The Android job also enables Gradle's task-output build cache. Only PRs restore
+`~/.gradle/caches/build-cache-1`; main looks up the key without downloading it,
+builds cold and saves at most 1 GiB after all checks pass and Gradle stops. Keys
+include the toolchain/build configuration and source inputs; Gradle additionally
+checks each task's content-based inputs before reusing an output. JVM `Test`
+tasks and all `lint*` tasks explicitly reject cached results. The custom Rust
+and build-identity tasks remain non-cacheable, so compilation can be reused
+without replacing verification or current-source native generation.
+
 The independent `target/noq-tests` and `target/iroh-tests` roots also cache only
 third-party `debug/{deps,build,.fingerprint}` outputs, keyed by their own manifest
 and lockfile, toolchain, OS and architecture. Main trims using each vendor
