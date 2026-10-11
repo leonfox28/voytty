@@ -120,6 +120,14 @@ androidComponents.onVariants { variant ->
 
 dependencyLocking { lockAllConfigurations() }
 
+// Reuse compilation outputs, but execute verification on every fresh CI runner.
+// The custom Rust and identity tasks are non-cacheable by default.
+tasks.configureEach {
+    if (this is Test || name.startsWith("lint")) {
+        outputs.doNotCacheIf("Verification must execute instead of restoring a prior result") { true }
+    }
+}
+
 dependencies {
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

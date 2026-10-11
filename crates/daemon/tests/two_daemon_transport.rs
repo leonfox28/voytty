@@ -9,11 +9,27 @@ use std::time::{Duration, Instant};
 
 use zterm_core::{AuthorizationStatus, DomainErrorKind, TransportLimits};
 use zterm_daemon::connection_broker::{AuthenticatedBiStream, StreamPurpose};
+use zterm_daemon::network::NetworkObserver;
 use zterm_proto::{FrameDecoder, WireKind, encode_message, v2};
 
 #[path = "support/two_daemon_fixture.rs"]
 mod two_daemon_fixture;
 use two_daemon_fixture::PreparedDaemonOwner;
+
+async fn wait_for_primary_observation(observer: NetworkObserver, deadline: Instant) {
+    // Peer state and the public snapshot are published separately. Wait on
+    // the channel being asserted, without extending the operation's deadline.
+    let mut receiver = observer.subscribe();
+    loop {
+        if receiver.borrow_and_update().primary_connection_count == 1 {
+            return;
+        }
+        tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), receiver.changed())
+            .await
+            .expect("public primary observation deadline")
+            .expect("network observation publisher remains live");
+    }
+}
 
 async fn normal_setup_with_delays(
     transport_delay: Duration,
@@ -420,6 +436,8 @@ async fn two_daemon_owners_reuse_endpoint_for_pair_and_normal_confirmation() {
     a.wait_for_primary(b_id, normal_deadline)
         .await
         .expect("host observes the same normal primary");
+    wait_for_primary_observation(a.broker().observe(), normal_deadline).await;
+    wait_for_primary_observation(b.broker().observe(), normal_deadline).await;
     assert_eq!(a.broker().observe().snapshot().primary_connection_count, 1);
     assert_eq!(b.broker().observe().snapshot().primary_connection_count, 1);
 

@@ -1,0 +1,35 @@
+name: scheduled dependency policy
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    name: Check newly published dependency advisories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install exact Rust toolchain
+        run: rustup toolchain install 1.98.0 --profile minimal
+      - name: Restore dependency downloads
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
+      - uses: ./.github/actions/setup-ci-tools
+        with:
+          profile: dependencies
+      - name: Run both dependency-policy owners
+        run: just ci-dependencies

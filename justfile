@@ -49,14 +49,16 @@ ci-policy:
     cargo +1.98.0 fmt --manifest-path tests/relay/handshake-probe/Cargo.toml -- --check
     sh tests/secret-scan.sh
     sh tests/secret-scan-fixture.sh
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/ci/workflow_policy_test.py
+    sh tests/ci/trim-cache-fixture.sh
     actionlint
     sh tests/release/static.sh
     sh tests/release/operator-fixture.sh
     sh tests/release/candidate-fixture.sh
     PYTHONDONTWRITEBYTECODE=1 python3 tests/release/android_test.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/release/recover_draft_test.py
-    shellcheck -s sh install/install.sh tests/release/*.sh tests/secret-scan*.sh tests/terminal-dependency-policy.sh $(find tools/ci tools/release -type f -name '*.sh' -print)
-    sh tools/ci/check-python-syntax.sh tests/e2e/*.py tests/release/https_fixture.py tests/release/https_fixture_bind_test.py tools/android/*.py tools/release/recover-draft.py tests/release/android_test.py tests/release/recover_draft_test.py
+    shellcheck -s sh install/install.sh tests/release/*.sh tests/ci/*.sh tests/secret-scan*.sh tests/terminal-dependency-policy.sh $(find tools/ci tools/release -type f -name '*.sh' -print)
+    sh tools/ci/check-python-syntax.sh tests/e2e/*.py tests/ci/*.py tools/ci/*.py tests/release/https_fixture.py tests/release/https_fixture_bind_test.py tools/android/*.py tools/release/recover-draft.py tests/release/android_test.py tests/release/recover_draft_test.py
 
 # Full Unix runtime evidence; CI assigns docs to its canonical host. The
 # no-argument CLI smoke runs against each native release candidate instead.

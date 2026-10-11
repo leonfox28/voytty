@@ -126,8 +126,14 @@ just check-fast
 just check
 ```
 
-`just check` is the authoritative pre-push gate on the current host. It
-composes the hosted profiles rather than repeating their commands:
+`just check` is the authoritative pre-push gate for product, test, build, dependency,
+and workflow changes on the current host. For changes limited to `README.md`,
+`AGENTS.md`, and Markdown under `docs/` (except `docs/relay.md`, which relay tests
+consume), `just ci-policy` is sufficient locally. PR dependency policy still runs.
+Ordinary commits can use targeted checks; `check-fast` is an optional checkpoint,
+not a mandatory full-workspace check before every commit.
+
+The full local gate composes the hosted profiles rather than repeating their commands:
 `ci-policy`, `ci-unix` with docs, `ci-dependencies`, and the Docker-free
 `relay-static` part of `ci-relay`, so a change to a hosted profile reaches the
 local gate too. `just check-fast` is the shorter edit loop: source policy,
@@ -136,15 +142,20 @@ glibc builder, Docker/QEMU execution, a protected signing secret, final signed
 installers, GitHub attestation, or immutable publication; GitHub Actions owns
 those boundaries and the recipes print that distinction.
 
+Run `just android-check` when Android or its inputs change: `apps/android`,
+`crates/android`, shared `client/core/proto/diagnostics` code, patched Iroh/noq,
+UniFFI, Cargo dependencies, or Android build tools. Directory names alone do not
+define the Android dependency boundary.
+
 CI uses the same repository profiles:
 
 | Hosted owner | Reproduction entry |
 | --- | --- |
 | Policy and portable checks | `just ci-policy` |
-| Three Unix hosts | `just ci-unix <docs>` on the matching host |
+| Three Unix hosts (full CI) | `just ci-unix <docs>` on the matching host |
 | Dependency policy | `just ci-dependencies` |
 | Docker/QEMU relay bundle | `just ci-relay` on Docker-capable Linux |
-| Three native candidates (every event; uploaded only by main) | `tools/release/build-native.sh <output-directory>` with explicit source identity on the native/pinned builder |
+| Three native candidates (full CI; uploaded only by main) | `tools/release/build-native.sh <output-directory>` with explicit source identity on the native/pinned builder |
 
 Workspace version, every format check (workspace, patched Iroh, relay probe)
 and the secret scan each run once in `ci-policy`, docs run on Linux x64, and the
@@ -173,7 +184,7 @@ and were never saved; without it they measured 1.5–2.0 GiB on 2026-10-10, Linu
 x64 being largest because it also builds docs (and then still built the smoke binary). An
 oversized set raises a workflow warning and is not saved; restores keep using
 the last saved entry until the key version is bumped. Incremental compilation is disabled in CI. The whole `target` tree,
-large test fixtures and release outputs are not cached. Measure restore/save
+large test fixtures and product release outputs are not cached. Measure restore/save
 and test durations together before changing this policy.
 
 The Android job caches pinned cargo-ndk and Gradle's `modules-2` dependency
@@ -184,6 +195,27 @@ restore it; main builds the APK candidate cold, then trims and saves for later
 PRs when the lockfile key is new. A local cold/restored comparison on
 2026-10-10 compiled 630 versus 19 crates and produced a byte-identical
 `libzterm_android.so`.
+
+The Android job also enables Gradle's task-output build cache. Only PRs restore
+`~/.gradle/caches/build-cache-1`; main looks up the key without downloading it,
+builds cold and saves at most 1 GiB after all checks pass and Gradle stops. Keys
+include the toolchain/build configuration and source inputs; Gradle additionally
+checks each task's content-based inputs before reusing an output. JVM `Test`
+tasks and all `lint*` tasks explicitly reject cached results. The custom Rust
+and build-identity tasks remain non-cacheable, so compilation can be reused
+without replacing verification or current-source native generation.
+
+The independent `target/noq-tests` and `target/iroh-tests` roots also cache only
+third-party `debug/{deps,build,.fingerprint}` outputs, keyed by their own manifest
+and lockfile, toolchain, OS and architecture. Main trims using each vendor
+manifest, so the patched path packages and their tests always rebuild.
+
+Native candidate jobs cache third-party `target/release` dependencies for PRs.
+Main uses `lookup-only`, always builds cold, then strips every path package before
+saving a missing key. Native keys separate target and builder floor and include
+the lockfile and build scripts. Restored PR candidates still run the complete
+floor checks, release self-check and no-argument CLI check. No source-identified
+product binary is included in these caches.
 
 ## Branch and pull-request flow
 
@@ -200,8 +232,16 @@ CI runs for the pull request, not a duplicate branch-push workflow. Updating
 the branch cancels the older PR-head run. Main runs are never cancelled: each
 merge commit keeps its own exact-SHA run and candidate even when another merge
 follows quickly. Merge only after the stable `CI gate`
-is green. PR CI also builds and checks the three native candidates without
-uploading them; the `CI gate` requires them on every event. The resulting `main`
+is green. A lightweight job compares the complete tested PR merge tree with
+its exact base using a NUL-delimited Git diff, including deletions and both rename
+paths. Only the documentation allowlist above can skip Rust, Android, relay and
+native jobs. Missing history, unknown paths or classification errors select full
+checks. Policy and dependency jobs always run. `CI gate` always runs and verifies
+all job results against the explicit classification; failed, cancelled, missing
+or accidentally skipped required jobs cannot pass.
+
+All other PRs build and check the three native candidates without uploading
+them; the `CI gate` requires their success. The resulting `main`
 push runs the full integration graph, uploads all three exact-SHA native
 candidates, and runs the Android APK job and one unsigned assembly. Tag publication
 reuses that candidate instead of compiling the product again.
@@ -225,7 +265,9 @@ The release operator checks them and does not mutate them:
 Apply protection only after `CI gate` exists on the default branch. After
 20–30 PR/main runs, review critical path, cache hit rate, flaky failures and
 unique platform catches before considering nextest, path classification, or
-compile-only secondary targets.
+compile-only secondary targets. Weekly `dependencies.yml` also runs both
+dependency-policy owners to detect new advisories while the project is idle.
+This is early detection; PR/main dependency failures remain blocking.
 
 For a failed job, use the matching recipe printed in its step summary. Runner
 queue delay is separate from job execution time; job timeouts prevent hangs
