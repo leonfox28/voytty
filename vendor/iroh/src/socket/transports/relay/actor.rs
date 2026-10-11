@@ -67,6 +67,8 @@ use crate::{endpoint::RelayStatus, net_report::Report, socket::Metrics as Socket
 #[cfg(test)]
 mod cold_start_tests;
 #[cfg(test)]
+mod dial_hedge_tests;
+#[cfg(test)]
 mod fairness_tests;
 
 /// How long a non-home relay connection needs to be idle (last written to) before we close it.
@@ -90,6 +92,15 @@ const SEND_DATAGRAM_BATCH_SIZE: usize = 20;
 /// This includes DNS, dialing the server, upgrading the connection, and completing the
 /// handshake.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Time after which a relay dial that has not connected gets one concurrent attempt.
+///
+/// Behind a transparent proxy, a first TLS handshake can make no progress until
+/// [`CONNECT_TIMEOUT`] while a fresh connection to the same relay completes in well
+/// under a second. Successful dials observed through such a proxy finished within
+/// about 3.5 seconds; a hedge that fires on a slow but progressing dial only adds a
+/// parallel attempt and never cancels the first.
+const DIAL_HEDGE_DELAY: Duration = Duration::from_secs(3);
 
 /// Time after which the [`ActiveRelayActor`] will drop undeliverable datagrams.
 ///
@@ -605,9 +616,16 @@ impl ActiveRelayActor {
     // This is using `impl Future` to return a future without a reference to self.
     fn dial_relay(&self) -> impl Future<Output = Result<Client, DialError>> + use<> {
         let client_builder = self.relay_client_builder.clone();
-        let span = crate::transport_trace::dial_span(&self.url);
+        let url = self.url.clone();
+        // Each attempt has its own span so diagnostics correlate its phases.
+        let attempt = move || {
+            let client_builder = client_builder.clone();
+            let span = crate::transport_trace::dial_span(&url);
+            async move { client_builder.connect().await }.instrument(span)
+        };
         async move {
-            match time::timeout(CONNECT_TIMEOUT, client_builder.connect()).await {
+            let dial = hedged(attempt(), attempt, DIAL_HEDGE_DELAY);
+            match time::timeout(CONNECT_TIMEOUT, dial).await {
                 Ok(Ok(client)) => Ok(client),
                 Ok(Err(err)) => Err(e!(DialError::Connect, err)),
                 Err(_) => Err(e!(DialError::Timeout {
@@ -615,7 +633,6 @@ impl ActiveRelayActor {
                 })),
             }
         }
-        .instrument(span)
     }
 
     /// Runs the actor loop when connected to a relay server.
@@ -1731,6 +1748,35 @@ pub(crate) struct RelayRecvDatagram {
     pub(crate) url: RelayUrl,
     pub(crate) src: EndpointId,
     pub(crate) datagrams: Datagrams,
+}
+
+/// Runs `first` alone for `delay`, then races it against one attempt from `second`.
+///
+/// The first success wins and drops the other attempt. An error from the attempt
+/// running alone is returned at once, as before; once both run, a failed attempt
+/// waits for the other one. The caller's deadline bounds both attempts.
+async fn hedged<T, E, F>(first: F, second: impl FnOnce() -> F, delay: Duration) -> Result<T, E>
+where
+    F: Future<Output = Result<T, E>>,
+{
+    tokio::pin!(first);
+    tokio::select! {
+        biased;
+        result = &mut first => return result,
+        _ = time::sleep(delay) => {}
+    }
+    let second = second();
+    tokio::pin!(second);
+    tokio::select! {
+        result = &mut first => match result {
+            Ok(client) => Ok(client),
+            Err(_) => second.await,
+        },
+        result = &mut second => match result {
+            Ok(client) => Ok(client),
+            Err(_) => first.await,
+        },
+    }
 }
 
 #[cfg(test)]

@@ -1268,6 +1268,227 @@ mod tests {
         elapsed
     }
 
+    /// Signed lookup whose advertised Relay follows the host, like Pkarr.
+    #[derive(Debug)]
+    struct MovableLookup {
+        relay: Arc<StdMutex<iroh::RelayUrl>>,
+        delay: std::time::Duration,
+    }
+
+    impl iroh::address_lookup::AddressLookup for MovableLookup {
+        fn resolve(
+            &self,
+            remote: iroh::EndpointId,
+        ) -> Option<
+            futures_util::stream::BoxStream<
+                'static,
+                Result<iroh::address_lookup::Item, iroh::address_lookup::Error>,
+            >,
+        > {
+            let relay = self
+                .relay
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let item = iroh::address_lookup::Item::new(
+                iroh::EndpointAddr::new(remote).with_relay_url(relay).into(),
+                "movable-route-fixture",
+                None,
+            );
+            let delay = self.delay;
+            Some(Box::pin(futures_util::stream::once(async move {
+                tokio::time::sleep(delay).await;
+                Ok(item)
+            })))
+        }
+    }
+
+    async fn relay_host(secret: SecretKey, relay: iroh::RelayUrl) -> Endpoint {
+        let host = Endpoint::builder(presets::Minimal)
+            .secret_key(secret)
+            .ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify())
+            .relay_mode(RelayMode::Custom(
+                iroh::RelayConfig::new(relay, None).into(),
+            ))
+            .clear_ip_transports()
+            .alpns(vec![ZTERM_ALPN.to_vec()])
+            .bind()
+            .await
+            .expect("relay-only host");
+        tokio::time::timeout(std::time::Duration::from_secs(5), host.online())
+            .await
+            .expect("host relay online");
+        host
+    }
+
+    async fn hold_incoming(host: Endpoint) {
+        let mut held = tokio::task::JoinSet::new();
+        while let Some(incoming) = host.accept().await {
+            held.spawn(async move {
+                if let Ok(connection) = incoming.await {
+                    connection.closed().await;
+                }
+            });
+        }
+    }
+
+    /// A host incarnation that disappears without a QUIC close, like a killed
+    /// process or VM. Its runtime is abandoned, so no close frame is written.
+    async fn spawn_killable_host(
+        secret: SecretKey,
+        relay: iroh::RelayUrl,
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let (ready, online) = tokio::sync::oneshot::channel();
+        let (kill, killed) = tokio::sync::oneshot::channel::<()>();
+        let thread = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .expect("killable host runtime");
+            runtime.block_on(async move {
+                let host = relay_host(secret, relay).await;
+                tokio::spawn(hold_incoming(host.clone()));
+                ready.send(()).expect("report host online");
+                let _ = killed.await;
+                std::mem::forget(host);
+            });
+            runtime.shutdown_background();
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(10), online)
+            .await
+            .expect("killable host online")
+            .expect("killable host reports readiness");
+        (kill, thread)
+    }
+
+    /// The host restarts abruptly and returns on another Relay. A faster stale
+    /// lookup can still advertise the old Relay, as DNS did in the field.
+    async fn moved_host_fixture(old_connection_open: bool, stale_lookup_first: bool) {
+        use std::time::Duration;
+        let spawn_relay = || async {
+            let mut config = iroh_relay::server::ServerConfig::default();
+            config.relay = Some(iroh_relay::server::testing::relay_config());
+            let server = iroh_relay::server::Server::spawn(config)
+                .await
+                .expect("isolated loopback relay");
+            let url: iroh::RelayUrl =
+                format!("https://{}", server.https_addr().expect("relay HTTPS"))
+                    .parse()
+                    .expect("relay URL");
+            (server, url)
+        };
+        let (old_server, old_relay) = spawn_relay().await;
+        let (new_server, new_relay) = spawn_relay().await;
+        let advertised = Arc::new(StdMutex::new(old_relay.clone()));
+        let mut client = Endpoint::builder(presets::Minimal)
+            .ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify())
+            .relay_mode(RelayMode::Custom(
+                [
+                    iroh::RelayConfig::new(old_relay.clone(), None),
+                    iroh::RelayConfig::new(new_relay.clone(), None),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .clear_ip_transports()
+            .address_lookup(MovableLookup {
+                relay: Arc::clone(&advertised),
+                delay: Duration::from_millis(300),
+            });
+        if stale_lookup_first {
+            client = client.address_lookup(FixtureLookup {
+                relay: old_relay.clone(),
+                stalled: false,
+                delay: Duration::from_millis(20),
+            });
+        }
+        let controller = IrohController::new(client.bind().await.expect("client"), "moved host")
+            .expect("controller");
+        let secret = SecretKey::generate();
+        let remote = device_from_endpoint_id(secret.public());
+        let verified = RelayHint::new(old_relay.to_string()).expect("verified route");
+
+        let (kill, old_host) = spawn_killable_host(secret.clone(), old_relay.clone()).await;
+        let (old_connection, _) = controller
+            .dial(
+                remote,
+                vec![verified.clone()],
+                Vec::new(),
+                ZTERM_ALPN,
+                Instant::now() + crate::protocol::REMOTE_STARTUP_DEADLINE,
+            )
+            .await
+            .expect("original connection");
+        // A real restart takes seconds; the original connection's own lookup
+        // (300 ms here) has finished long before the host returns elsewhere.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let _ = kill.send(());
+        tokio::task::spawn_blocking(move || old_host.join())
+            .await
+            .expect("join old host")
+            .expect("old host thread");
+        if !old_connection_open {
+            old_connection.close(VarInt::from_u32(0), b"idle timeout model");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        *advertised
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = new_relay.clone();
+        let host = relay_host(secret, new_relay).await;
+        let holding = tokio::spawn(hold_incoming(host.clone()));
+
+        let started = Instant::now();
+        let result = controller
+            .dial(
+                remote,
+                vec![verified],
+                Vec::new(),
+                ZTERM_ALPN,
+                started + crate::protocol::REMOTE_STARTUP_DEADLINE,
+            )
+            .await;
+        let elapsed = started.elapsed();
+        let error = result.as_ref().err().map(ClientError::kind);
+        eprintln!(
+            "moved host: old_connection_open={old_connection_open} \
+             stale_lookup_first={stale_lookup_first} elapsed={elapsed:?} error={error:?}"
+        );
+        drop(result);
+        drop(old_connection);
+        holding.abort();
+        let _ = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(controller.shutdown(), host.close());
+        })
+        .await;
+        old_server.shutdown().await.expect("old relay shutdown");
+        new_server.shutdown().await.expect("new relay shutdown");
+        assert_eq!(error, None, "moved host was not found after {elapsed:?}");
+        // The old connection's idle timeout (30 s on Relay) must not gate it.
+        assert!(
+            elapsed < crate::protocol::DEFAULT_DEADLINE,
+            "moved host took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn moved_host_is_found_after_the_old_connection_closed_despite_a_stale_first_lookup() {
+        moved_host_fixture(false, true).await;
+    }
+
+    #[tokio::test]
+    async fn moved_host_is_found_while_the_old_connection_is_open_without_a_stale_lookup() {
+        moved_host_fixture(true, false).await;
+    }
+
+    #[tokio::test]
+    async fn moved_host_is_found_while_the_old_connection_is_open_despite_a_stale_first_lookup() {
+        moved_host_fixture(true, true).await;
+    }
+
     async fn exchange_test_greeting(
         client: &Endpoint,
         host: &Endpoint,

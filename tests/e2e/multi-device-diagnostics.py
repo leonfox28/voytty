@@ -3,6 +3,7 @@
 
 import argparse
 import datetime as dt
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,10 @@ import shlex
 import subprocess
 import uuid
 
-BASE = Path(__file__).resolve().parents[2] / "target/verification/multi-device"
+spec = importlib.util.spec_from_file_location("multi_device", Path(__file__).with_name("multi-device.py"))
+md = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(md)
+BASE = md.BASE
 PACKAGE = "io.github.leonfox28.zterm.dev"
 SDK = Path(os.environ.get("ANDROID_HOME", Path.home() / "Library/Android/sdk"))
 

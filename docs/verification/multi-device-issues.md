@@ -15,13 +15,36 @@ P27／P28 制品完整扩展矩阵为 72 通过／16 失败；P29、P30 的验�
 
 “已修正”指对应分支有实现和回归证据，不表示所有相似现场故障都已解释，也不表示完整三端验收通过。
 “待定位”只有症状或候选解释；尚未验证的方案明确写为下一步，不能算作已完成修复。
-代码变更仍在工作区，没有提交或发布。
+P01–P35 已提交到 `main`（`1f4b180`）；2026-10-11 新增的 P36 在分支
+`investigate/r02-stale-relay-route`，尚未提交或发布。
 
 原始证据根目录为 `target/verification/multi-device/`；下文 `checks/...` 和运行编号均相对于此目录。
+2026-10-11 核对时本机该目录已不存在（`target/` 于 2026-10-10 17:08 重建，晚于 P01–P35
+提交），此前各轮引用的原始证据无法在本机复查；文字记录保留，历史结论不因此改写。
+此后实验根目录移到 `${XDG_STATE_HOME:-~/.local/state}/zterm-verification/multi-device/`
+（可用 `ZTERM_MULTI_DEVICE_ROOT` 覆盖），新证据的 `checks/...` 相对该目录，P36 证据已移入；
+重建过程见 [三端测试环境重建记录](multi-device-lab.md)。
 详细时间线见 [验收报告](multi-device.md) 和 [历史过程](multi-device-history.md)，操作入口见
 [运行说明](../../tests/e2e/README.md)。
 
 ## 当前续修状态
+
+**2026-10-11 继续 R02，新增 P36：新连接不再被同一对端旧连接的选中路径钉住。**
+受控复现确认 Iroh 的一个确定性缺陷：只要同一对端还有未关闭的旧连接，新出站连接的
+握手包只发往旧连接的选中路径，并跳过地址查询和 P31 的 Initial 补发。主机被强杀后在
+另一 Relay 上恢复时，旧连接要等 30 秒 Relay 路径 idle 才关闭，新拨号在原十五秒预算内
+必然失败。修正前两种“旧连接仍开着”的组合均 **15.0 秒 DeadlineExceeded**，修正后
+**0.31–0.33 秒**成功；旧连接已关闭的对照前后均约 0.33 秒成功。期限和 QUIC／Relay 计时器未改。
+
+这只证明该缺陷存在，**不能据此归因历史 R02 失败**：Android 控制端只在关闭自己的旧连接后
+重拨，冷启动新进程也没有旧连接，因此 Android 首次列表等多数冷启动超时不在 P36 范围内。
+可能受影响的是 daemon 在仍有同一对端连接时的出站拨号（例如 A／B 互为控制端的行）。
+本轮 Mac 上 `just check`（含一次网络失败后重跑的 relay 静态检查）和 `just android-check` 通过，
+没有运行 A／B／C 或 Linux 完整工作区；
+详见 [P36](#p36新连接被同一对端旧连接的选中路径钉住) 和
+[本轮交接](#2026-10-11-r02-新连接选中路径修复交接)。
+
+### 上轮 R03 画面帧窗口修复与定向验收（保留历史）
 
 **R03 已按用户确认的有限标准定向验收通过，关闭。** 本轮实现 P35：远程终端实时画面帧
 改为有界未回执窗口（4 帧或 32 KiB），使 resize 后的快照不再排在慢 Relay 路径上未送达的
@@ -915,6 +938,63 @@ A Direct 各 **10/10**；B Direct 首轮 9/10，唯一失败在注入断网前�
 中断重连，恢复 **1.723–13.526 秒**，60 次都有完整快照链。修复后 Relay 上 resize 快照前的
 过期帧中位数降为 **6 帧**（最多 11 帧／17 KB），详见文末交接。
 
+### P36：新连接被同一对端旧连接的选中路径钉住
+
+继续 R02 时先怀疑 [fresh_relay_hints](../../crates/client/src/route.rs) 取第一个返回的
+地址服务结果：DNS 曾短暂返回旧 `aps1-1`，而 Pkarr 已返回 `usw1-1`。受控对照否定了它是
+主因：旧连接已关闭时，Iroh 自身的地址查询会合并全部服务结果，即使 DNS 先返回旧 Relay
+也在约 0.33 秒连上。真正的失败条件是**同一对端还有未关闭的旧连接**。
+
+Iroh 每个对端只有一个选中路径。[remote_state.rs](../../vendor/iroh/src/socket/remote_map/remote_state.rs)
+原先把 mixed 地址数据报（只承载新出站连接的握手）全部只发往该路径；有选中路径时还
+跳过地址查询和 P31 的 Initial 补发。主机被强杀或 VM 重启、没有 CONNECTION_CLOSE 送达时，
+旧连接要等 idle（Relay 路径 30 秒）才关闭并清空选中路径。若主机换了 Relay 或端口，
+期间每次新拨号都发不到主机，即使调用方已提供正确的新 Relay。上游 `main` 行为相同，
+已报告为 [n0-computer/iroh#4600](https://github.com/n0-computer/iroh/issues/4600)。
+
+现在握手数据报先发选中路径，再发其他已知的非本机路径，与上游无选中路径时一致；
+新连接在没有查询进行时启动地址查询，查询新增路径时补发仍有效的 Initial；Initial 缓存
+改为在新连接加入、查询结束或过期时清空。已建立连接的路径、路径选择、打洞、QUIC 计时器、
+十五秒／五秒期限均未修改，也不重放应用请求。
+
+客户端 `moved_host_` 三项回归使用两个本机 Relay：仅 Relay 的主机在独立运行时中被丢弃，
+不发送 QUIC 关闭，再用同一身份在另一 Relay 上恢复；拨号沿用十五秒启动预算。修正前
+“旧连接仍开着 + 正确新 Relay 提示”和“旧连接仍开着 + 旧 DNS 先返回”均 **15.0 秒
+DeadlineExceeded**，修正后分别约 **0.31 秒**和 **0.33 秒**成功，连跑三次一致；旧连接
+已关闭的对照前后都约 0.33 秒成功。首版夹具在第一次连接的 300 ms 查询结束前就重启主机，
+旧查询仍在进行，按设计不会重复启动，这是夹具时序错误：现场主机重启需要数秒。夹具改为
+先等第一次查询结束，原失败输出不计作产品行为。另有三项 `zterm_` vendor 单元回归：
+新握手不只发选中路径、有选中路径仍启动查询、另一连接的选中路径不终止 Initial 补发；
+修正前三项失败，修正后 `just ci-iroh` **28/28** 通过。
+
+这些测试证明钉住缺陷存在，不证明哪些历史 R02 失败由它造成。按当前代码阅读，Android
+控制端只在关闭自己的旧连接后重拨，冷启动新进程也没有旧连接；daemon 只在仍有同一对端的
+primary（例如对方的入站连接）而尚未获得远端接受时才另行出站拨号。因此 Android
+冷启动和首次列表超时不在 P36 范围内，需要现场证据才能判断哪些行受影响。
+
+### P37：Relay 首次 TLS 无进展时等满十秒拨号期限
+
+重建后的三端环境中，`lab-rebuild-cold-02` 的两行 Linux 冷启动（A←B Direct 12.293 秒、
+B←A Direct 12.639 秒）各有一次所需 Relay 的拨号：TCP 由本机透明代理 1 ms 内确认，TLS 随后
+十秒没有任何进展，以 `dial_deadline`（10,005／10,002 ms）结束；立即重拨约 0.47 秒连上。
+这十秒占去十五秒启动预算的大部分，期间排队的 QUIC Initial 每三秒过期一批。其余拨号 TLS
+0.09–2.1 秒完成。这与历史 `0042` 首次 TLS 失败后重拨 649 ms 即完成的形态一致，现在有了
+类型化的失败类别。上游 `main` 同样只做一次尝试。
+
+[Relay actor](../../vendor/iroh/src/socket/transports/relay/actor.rs) 现在在拨号 3 秒仍未连上时
+对同一 Relay 并发再发起一次；先成功者胜出并丢弃另一个，一个失败则等待另一个，3 秒前的错误
+照旧立即返回，慢但有进展的原尝试不会被取消。十秒拨号期限仍约束两次尝试，退避、数据报过期、
+QUIC 计时器和产品十五秒／五秒期限均未修改。落败但已完成认证的尝试会短暂以同一身份注册；
+固定的 iroh-relay 1.3.0 服务端保留新连接、降级旧连接，新连接断开时把旧连接恢复为 active，
+客户端只记录健康通知。
+
+五项暂停时钟的 `zterm_relay_dial_` 单元回归覆盖首次尝试停滞、快速尝试不对冲、早期错误不对冲、
+慢但有进展的首次尝试仍胜出、一次失败等待另一次。真实 TLS Relay 的 socket 回归让代理接受
+首个 TCP 连接但永不转发：单次尝试时首个请求 **10.09 秒**，对冲后四次 **3.15–3.16 秒**。
+`just ci-iroh` 33/33，P30 的 socket 回归仍通过（3.49 秒）。证据在
+`checks/ordered-fixes/hedged-relay-dial/` 及 `checks/lab-rebuild/relay-dials-cold-02.json`。
+这证明了停滞拨号的等待机制及其修正，不等于历史全部 R02 超时同因；三端同源复测见文末交接。
+
 ## 隔离修复候选的首次证据（2026-10-06 历史）
 
 以下保留当时尚未合入的证据与边界；2026-10-08 的正式实现见 P27／P28。
@@ -989,7 +1069,7 @@ QUIC 对持久重置密钥、CID 不复用及重置 oracle 的约束见
 | 编号 | 已知事实 | 已做的处理及下一步 |
 | --- | --- | --- |
 | R01：旧连接上的首次查询仍有失败未归因 | 旧失败保留；新 `restart-extended-01/0034`／`0082` 仍在复用连接的查询上超时，随后精确闲置清理生效。`0082` 超时期间接收计数增长，不能认为连接完全静默 | P27 已处理完整 Endpoint 重启的密钥／CID 配置问题，三个生产配置首次查询在原期限通过，CID 单独修改失败对照也已补齐。`740376ef` 三端扩展仍有失败；P27 不等于全部 R01 闭环 |
-| R02：冷启动、进程／VM 重启后的握手与首次操作仍间歇超时 | 当前 `0c99f1f6` 已补齐正常连接共享十五秒期限，六项受控回归通过。`r02-15s-matrix-02` 45 通过／7 失败，一小时准备另有三次握手失败。同源新捕获 `r02-timeout-path-01` 8/8，最慢 10.116 秒成功，未覆盖旧失败 | 旧 `0020` 的客户端 10 个数据报全到主机，主机 16 个写出仅 5 个见于客户端；`0042` Relay 建连耗 12,644 ms。新查到短暂 DNS／Pkarr 地址不一致，但未证明造成旧失败。链路等待已进一步定位，代理／运营商／Relay 的唯一归因仍缺少同次边界证据。见 `checks/ordered-fixes/r02-timeout-path/` 和文末交接；R02、完整核心／扩展／稳定性仍未通过 |
+| R02：冷启动、进程／VM 重启后的握手与首次操作仍间歇超时 | 当前 `0c99f1f6` 已补齐正常连接共享十五秒期限，六项受控回归通过。`r02-15s-matrix-02` 45 通过／7 失败，一小时准备另有三次握手失败。同源新捕获 `r02-timeout-path-01` 8/8，最慢 10.116 秒成功，未覆盖旧失败 | 旧 `0020` 的客户端 10 个数据报全到主机，主机 16 个写出仅 5 个见于客户端；`0042` Relay 建连耗 12,644 ms。新查到短暂 DNS／Pkarr 地址不一致，但未证明造成旧失败。链路等待已进一步定位，代理／运营商／Relay 的唯一归因仍缺少同次边界证据。见 `checks/ordered-fixes/r02-timeout-path/` 和文末交接；R02、完整核心／扩展／稳定性仍未通过。2026-10-11 的 P36 修复同一对端旧连接未关闭时新拨号被旧选中路径钉住的缺陷（受控 15.0 秒失败→约 0.33 秒成功），但 Android 冷启动不具备该前提，不能据此关闭 R02。2026-10-11 重建三端后，P37 对冲救回单连接 TLS 卡死；剩余失败与经 Mac 代理到公共 Relay 的路径质量同时刻吻合（成簇不可达、只建连不转发、主机重启后 home relay 被改选），见 [环境重建记录](multi-device-lab.md) |
 | R03：短断网后偶发停留 synchronizing、尺寸没有更新（**定向验收通过，关闭**） | 上一候选 `723cb596` 在 `r03-acceptance-relay-hour-04/0003` 超过六十秒仍为 101×31、synchronizing：主机 6 ms 写出新快照，客户端在请求后又读 74 帧／560 KB 仍未读到。已定位为 P35：Relay 上快照排在每轮中位数 41–53 帧的过期增量之后 | P35 修复后，同源 `2d86a806` 按冻结计划：四组合 A／B Direct／Relay 各至少 10 次有效恢复全部通过（1 次注入前初连失败单列 R02），同会话一小时 60/60、含 6 次 Relay 重连，审计通过。更早的 `r03-sync-phases-03/0003`、`/0011` 未保存同类积压观测，不逐个宣称同因；完整项目验收仍见 R09 |
 | R04：创建、接管或配对的结果不确定仍出现 | 新 `restart-extended-01/0029` 主机已提交接管，客户端结果不完整；`0030` 初始 Session 请求仍返回未知结果。旧晚提交证据保留，单次空查询不能证明未来不提交 | P18 修正配对分类；测试器保存只读核对、实施跨行清理屏障，不换操作 ID 重发。新故障说明剩余确认链仍需定位；保留历史 `checks/pair-deadline-repro/`、`checks/v19-failure-analysis.json`、`core-final-11/` |
 | R05：CLI 正常 detach／daemon 关闭超时尚未全部对应根因 | `0029` 业务流已 quiesce，随后 ClosingEndpoint 超过五秒；受控约 2 秒 RTT 且无关闭回应时，已确认可卡在 `wait_all_draining` 直到 11.565 秒的协议计时器。现场没有唯一归因证据 | P28 修复半关闭隧道；P29 修复关闭取消／并发时提前返回及 Drop 遗漏任务取消，六项回归通过。慢链路无回应仍须如实保留五秒失败，不放宽期限，不跳过协议等待，不把强制结束算正常完成；继续捕获现场具体关闭等待与回应路径 |
@@ -1038,6 +1118,8 @@ QUIC 对持久重置密钥、CID 不复用及重置 oracle 的约束见
 | T30 | 独立 Android 验收在 VM 重启后直接开始，产品 daemon 仍为 Stopped；基础网络预检不保证产品主机已启动 | 新增 [本地主机准备工具](../../tests/e2e/multi-device-hosts.py)，通过显式 local 查询启动已配置 daemon，并记录前后状态、等待 Online；不重启活跃服务、不创建会话、不预热控制端。三项回归及完整运行器 48 项通过。`cold-start-fix/host-readiness-analysis-02.json` 区分前提错误与修正后仍存在的真实握手失败，原日志不改写 |
 | T31 | 短断网恢复只断言 Active／inputReady 和主机尺寸，未要求 Android 显示尺寸同步 | [运行器](../../tests/e2e/multi-device.py) 在原 60 秒期限内等待 Android 实际尺寸匹配，再发送连续性输入；[审计](../../tests/e2e/multi-device-audit.py) 按 `host-and-android-surface-v1` 检查尺寸和输入状态，旧证据保留原契约。两种尺寸滞后回归修正前均失败、修正后通过，另验证审计拒绝缺失／错误尺寸和不可输入状态；运行器及主机准备测试 49/49。旧制品 B→C 十轮通过；证据 `checks/ordered-fixes/r03-sync/` |
 | T32 | Android instrumentation 已退出，恢复轮询仍读取遗留状态文件，将观察器故障误报为同步超时 | [运行器](../../tests/e2e/multi-device.py) 的状态断言先确认测试进程存活，退出立即报错；证据采集仍显式保留最后状态。退出码 0／1 两种回归修正前均失败、修正后通过，运行器及主机准备 50/50；`checks/ordered-fixes/r03-relay-cause/coordinator-before.log` 和 `coordinator-after.log`。原 `cause-01/0016` 失败不改写，结合 P33 的 EMFILE 与已收到的快照 ACK 单列归因 |
+| T33 | 重建环境后首次运行，C 的配对票据写入 `files/multi-device-ticket.txt` 失败，四个 Android 行被配对前提阻塞：新装应用在 08:56:07 才首次写入 `files/`，而写票据发生在 08:56:04–05，运行器又不创建目录。旧模拟器的 `files/` 早已存在，因此此前未暴露。改为先 `mkdir -p files` 再写入；新增回归在无 `files/` 的临时应用目录执行设备端脚本，修正前以 `No such file or directory` 失败、修正后通过，协调回归 48/48 | `$LAB/lab-rebuild-cold-01/pairing.json`、`checks/lab-rebuild/ticket-dir-before-01.log`、`ticket-dir-after-01.log`；见 [环境重建记录](multi-device-lab.md) |
+| T34 | `p37-cold-01` 第 2 轮 A←C Direct 以 `'hosts'` 失败：Android 桥在发布首个 `status.json` 之前就写入 `ready`，运行器看到 `ready` 后立即读状态得到空值，`snapshot()` 返回 `{}`，`connect()` 取 `hosts` 时 KeyError。状态文件本身以临时文件加 rename 原子发布，不是读到半个文件。改为先发布状态再写 `ready`，需重建测试 APK | `$LAB/p37-cold-01/0009-cold-A-C-C-direct-2/`；见 [环境重建记录](multi-device-lab.md) |
 
 ## 环境与构建问题
 
@@ -1051,6 +1133,8 @@ QUIC 对持久重置密钥、CID 不复用及重置 oracle 的约束见
 | E06 | Linux 检查忘记既定 umask 077，002 下身份重置夹具触发 PathUnsafe | 002 失败、022／077 通过；恢复 077 后完整重跑，没有放宽产品目录权限检查；`checks/ordered-fixes/linux-lib-01.log` 保留 |
 | E07 | 早期 core-final-03 的协调进程退出，未留完整结束记录，原因不明 | 保存原 568 行，剩余明确跳过：363 通过、205 失败、892 跳过；不能拼接成十轮完成。后续运行使用固定运行器、独立证据、审计及清理记录 |
 | E08 | 本轮 Mac Iroh 全库测试时用户拒绝传入连接，只读核查确认该测试可执行文件被系统防火墙阻止 | 已停止受影响轮次并保留 `endpoint-restart-fix/iroh-full-01.log`、`firewall-incident-01.json`，不修改防火墙。Mac 内存传输回归通过；完整网络库检查转到隔离 Linux VM，不能把受限轮次算作通过 |
+| E09 | 2026-10-11 发现 `target/` 已于 2026-10-10 17:08 重建：运行器的 `environment.json`、venv、日志和全部 `checks/` 证据丢失；C 的 AVD 由 `create` 建在 `environment/avd` 下，也一并删除，仅剩指向不存在路径的 `~/.android/avd/zterm-md-20261003t024103z-c.ini`。A／B 在 `~/.lima`，仍在 | 重新进行三端实验前必须重建 C（含配对）并重建环境清单；不能把旧 VM 当作已核对的环境。实验环境放在 `target/` 下会被清理命令一并删除，后续应考虑移出 |
+| E10 | 2026-10-11 C 的 Direct 行在 Relay 走代理与否时都只剩 Relay 路径。原因是 herdr 后台服务丢失 macOS“本地网络”权限：从它派生的会话与模拟器向任何局域网地址发包都返回 `No route to host`。重启 herdr 服务后新标签页恢复，模拟器需从新标签页重启 | 已在运行的进程不会随 herdr 重启恢复；失效原因未确认。之前因此失败的行属于环境问题，不计作产品或代理规则结论；见 [环境重建记录](multi-device-lab.md) 第 11 节 |
 
 ## 续修前的交接点（保留历史）
 
@@ -1638,3 +1722,57 @@ P25 的七项 NOQ 回归、P26 的三项真实 TLS 失败复现均已修正，�
 8. **R03 定向验收通过，关闭。** 更早的 `r03-sync-phases-03/0003`、`/0011` 只有送达缺口证据，
    未保存同类积压观测，不逐个宣称同因。R02 初连超时、完整核心 1460 项、扩展 88 项与完整三端
    稳定性仍开放；后续保持原期限，不重放不确定变更。
+
+## 2026-10-11 R02 新连接选中路径修复交接
+
+1. 从 `origin/main`（`2020d2a`）新建分支 `investigate/r02-stale-relay-route`。本机已没有
+   历史证据目录，本轮不再分析旧运行，只做受控复现。
+2. 最初假设“DNS 旧 Relay 先返回、`fresh_relay_hints` 只取第一个结果”被对照否定为主因；
+   受控复现定位到 P36：同一对端旧连接未关闭时，新连接握手被钉在旧选中路径上。
+3. 改动：[remote_state.rs](../../vendor/iroh/src/socket/remote_map/remote_state.rs)、
+   [discovery_tests.rs](../../vendor/iroh/src/socket/remote_map/remote_state/discovery_tests.rs)、
+   [vendor 说明](../../vendor/iroh/ZTERM.md)、客户端
+   [iroh_controller.rs](../../crates/client/src/iroh_controller.rs) 的三项 `moved_host_` 回归。
+   原 P31 测试“选中路径后停止补发”的断言与新规则冲突，已改为“另一连接的选中路径不终止补发、
+   查询结束才停止”。期限、计时器和产品请求语义未改。
+4. 已通过（Mac）：`moved_host_` 3/3 且连跑三次一致（修正前 1/3）、`just ci-iroh` 28/28（修正前 25/28）、
+   zterm-client／zterm-daemon 429 通过／0 失败／12 忽略、vendor Iroh Clippy 与格式、`just android-check`。
+   `just check` 全部测试 1280 通过／0 失败／16 忽略，依赖策略通过；末尾 `relay-static` 的
+   `verify-upstream.sh` 首次因 curl 连接 github.com 出现 SSL_ERROR_SYSCALL 失败，原日志保留，
+   单独重跑该 recipe 及其后的 Compose 静态检查均通过。证据在
+   `checks/ordered-fixes/moved-host-handshake/`（`product-before-01.log`、`product-after-0{1,2,3}.log`、
+   `vendor-before-01.log`、`vendor-after-01.log`、`just-check-01.log`、`relay-static-02.log` 等）。
+5. 未执行：Linux 完整工作区与 Linux Iroh 全库、A／B／C 同源构建与矩阵。没有提交或发布。
+   本地保留 P36 补丁，同时准备向上游提 issue。不依赖 zterm 代码的纯 Iroh 复现：上游逻辑下
+   新 `connect()` 在 10 秒期限内未完成，放宽到 60 秒时约 30 秒自行失败（握手 idle），即旧连接
+   存活期间新连接无法成功；补丁后约 5–7 ms 连上。维护者审阅并确认上游 AI 政策要求的声明后，
+   已提交为 [n0-computer/iroh#4600](https://github.com/n0-computer/iroh/issues/4600)，
+   草稿原文为同目录 `upstream-issue-draft.md`。上游修复发布前保留本地补丁。
+6. 反向假设已否定：客户端（同一身份）被强杀、主机仍保留旧 Direct 选中路径时，新进程仅经
+   Relay 拨号。纯 Iroh 探针在有无 P36 时均约 10 ms 连上，4 秒内 40 次往返最慢约 9 ms，新连接
+   打洞到新端口，主机旧选中路径没有影响新连接。因此 `0020` 的主机→客户端缺包不能由该机制
+   解释。探针为临时代码，未保留。PR [#70](https://github.com/leonfox28/zterm/pull/70) 的 CI 全部通过。
+7. 下一步：补跑上述检查后，在三端针对 P36 前提设计定向行（主机强杀或重启到另一 Relay／端口时，
+   控制端仍持有旧连接再拨号；A／B 互为控制端），并为 R02 冷启动失败继续保留同次 Relay 错误类型、
+   实际 Home Relay 与两种地址来源的现场证据。R01 中“主机换 Relay 或端口后旧连接收不到 P27 重置、
+   首个查询只能超时”只是候选解释，尚未验证。
+
+## 2026-10-11 三端重建与 R02 续查交接
+
+1. 实验根目录移出 `target/`，全新重建 A／B／C（环境 `zterm-md-20261011t084006z`），过程见
+   [环境重建记录](multi-device-lab.md)。修正测试器 T33（新装应用缺 `files/` 导致 C 配对失败）
+   和 T34（桥先写 `ready` 后发布状态导致 `'hosts'` KeyError）。
+2. 首轮 cold 8/8 通过，但两行 Linux 冷启动 12.3／12.6 秒：所需 Relay 的首次 TLS 十秒无进展，
+   以 `dial_deadline` 结束后重拨 0.47 秒即连上。据此实现 P37（3 秒对冲拨号）：受控 socket
+   回归 10.09 秒→3.15–3.16 秒，`just check` 1286 通过、`just android-check` 通过。
+3. P37 同源 cold ×3 两轮：`p37-cold-01` 21/24（其中 1 项为 T34 测试器问题），`p37-cold-02`
+   23/24，审计均零问题。对冲在现场触发并救回过单连接卡死；剩余 R02 失败都与同时刻的
+   Relay 路径故障吻合：某 Relay 成簇不可达（两次尝试都无进展）、连接建立后不转发数据、
+   主机重启后 home relay 在 27 秒内被改选。
+4. 只读探针（Mac 与 VM 同时）：aps1-1 约 9% 失败且有约 1.5 分钟成簇中断，euc1-1／use1-1
+   零星超时，usw1-1 无失败；Mac 与 VM 同时出现，属于共享出口路径。A、B、C 的 home relay
+   均为 `euc1-1`。
+5. 分支：P36 在 PR #70（未合并）；`test/rebuild-multi-device-lab` 与 `fix/r02-hedged-relay-dial`
+   依次叠在其上，均未推送。A／B／C 保持运行；旧 VM 与悬空 AVD 记录待确认后删除。
+6. 下一步需要选择方向：在可靠路径上自建 Relay（产品已支持 SelfHosted 配置）以隔离代理影响；
+   评估主机重启后 home relay 改选的抑制；或主机同时保持备用 Relay 并发布。期限与计时器保持不变。

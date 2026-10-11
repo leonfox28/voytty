@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import shlex
 import tempfile
 import threading
 import subprocess
@@ -245,6 +246,23 @@ class CoordinatorTests(unittest.TestCase):
                 self.assertNotIn(secret, str(raised.exception))
                 self.assertEqual(kind in str(raised.exception), expected)
                 self.assertEqual(list(lab.logdir.iterdir()), [])
+
+    def test_android_ticket_write_does_not_require_an_existing_files_directory(self):
+        suite = md.Suite.__new__(md.Suite)
+        written = []
+        def adb(*command, data=None, private=False):
+            self.assertTrue(private, "pair tickets must stay out of command logs")
+            written.append((command, data))
+        suite.lab = SimpleNamespace(cli=lambda *command, **options: "ticket-text\n", adb=adb)
+        suite.android = SimpleNamespace(command=lambda op: {"snapshot": {}})
+        suite.pair("A", "C")
+        (command, data), = written
+        self.assertEqual(command[:5], ("shell", "run-as", md.PACKAGE, "sh", "-c"))
+        with tempfile.TemporaryDirectory() as app_data:
+            # Run the device-side script as run-as would: in the app's data
+            # directory of a fresh install, before files/ exists.
+            subprocess.run(["sh", "-c", shlex.split(command[5])[0]], input=data, cwd=app_data, check=True)
+            self.assertEqual((Path(app_data) / "files/multi-device-ticket.txt").read_bytes(), b"ticket-text")
 
     def test_failed_pair_cannot_commit_after_its_authorization_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:

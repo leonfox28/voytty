@@ -34,7 +34,12 @@ import traceback
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
-BASE = ROOT / "target/verification/multi-device"
+# The environment holds the emulator's disk and the only record of the owned
+# VMs, so it must survive `cargo clean`; it also stays outside the source tree
+# that `build` archives. Run evidence lives beside it.
+BASE = Path(os.environ.get("ZTERM_MULTI_DEVICE_ROOT")
+            or Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+            / "zterm-verification/multi-device")
 PACKAGE = "io.github.leonfox28.zterm.dev"
 RUNNER = PACKAGE + ".test/androidx.test.runner.AndroidJUnitRunner"
 ACCOUNT = {"A": "zterm-a", "B": "zterm-b"}
@@ -988,8 +993,11 @@ class Suite:
         # Pair tickets are never argv, log entries, or persisted evidence.
         ticket = self.lab.cli(host, "pair", "create", private=True).strip().encode()
         if client == "C":
+            # A freshly installed app has no files/ until something writes
+            # there; the app's own first write can land after this one.
             self.lab.adb("shell", "run-as", PACKAGE, "sh", "-c",
-                         shlex.quote("cat > files/multi-device-ticket.txt"), data=ticket, private=True)
+                         shlex.quote("mkdir -p files && cat > files/multi-device-ticket.txt"),
+                         data=ticket, private=True)
             result = self.android.command("pair")
             if result["snapshot"].get("error"):
                 raise AssertionError(result)
@@ -1959,7 +1967,7 @@ class Suite:
         self.case.mkdir()
         self.metrics = {}
         start = time.monotonic()
-        result = dict(row, status="passed", started=stamp(), evidence=str(self.case.relative_to(ROOT)))
+        result = dict(row, status="passed", started=stamp(), evidence=str(self.case))
         unknown_session = False
         isolation_error = None
         self.pair_cleanup_error = None

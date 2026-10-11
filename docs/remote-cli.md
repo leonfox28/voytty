@@ -325,6 +325,39 @@ After reset, run `zterm setup` to create a different identity and pair again.
 The signed installer, explicit updater, and uninstaller reuse this local
 lifecycle boundary; see [Install, update, and uninstall](install.md).
 
+## Networks with a local proxy or TUN
+
+Every remote connection first reaches the peer through its public Relay over
+TCP/TLS on port 443, then moves to a direct UDP path when NAT traversal
+succeeds. Each endpoint discovers its public address by UDP to the Relays on
+port 7842. Terminal content stays end-to-end encrypted either way; see
+[the Relay trust boundary](relay.md) for the metadata a Relay can observe.
+Because connection setup always uses the Relay, a slow or unreliable route to
+the Relays also delays connections that end up direct.
+
+With a TUN proxy such as a Clash/mihomo-based client:
+
+- Exclude `+.iroh.link` from fake-IP so Iroh's DNS answers stay real.
+- Keep UDP to `iroh.link` direct. Proxying it makes the discovered public
+  address the proxy's, and direct connections then fail.
+- If the direct route to the Relays is unreliable, send only TCP to
+  `iroh.link` through the proxy. In mihomo syntax, ahead of any direct rule:
+
+  ```text
+  AND,((DOMAIN-SUFFIX,iroh.link),(NETWORK,TCP)),<proxy group>
+  DOMAIN-SUFFIX,iroh.link,DIRECT
+  ```
+
+Apply this on every device that runs such a proxy, hosts and controllers
+alike. Typical symptoms of a poor Relay route are first connections that take
+many seconds or end in `deadline_exceeded`, and Relay-only sessions with
+multi-second latency. On one mainland-China network, 0–10% of new direct TLS
+connections to the public Relays failed and the slowest took 2–8 s. With only
+TCP proxied, none failed in a short probe, first connections took 1.2–4.2 s,
+and Relay round trips fell to about 0.2–0.8 s while direct connections still
+formed. These are measurements of one network, not a guarantee; see the
+[lab record](verification/multi-device-lab.md).
+
 ## Transport acceptance boundary
 
 The production default remains `OfficialN0`. The Linux-only
