@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 pub struct EffectiveAccount {
     uid: u32,
     gid: u32,
+    name: String,
     home: PathBuf,
     shell: PathBuf,
 }
@@ -28,6 +29,7 @@ impl EffectiveAccount {
             Ok(Self {
                 uid: uid.as_raw(),
                 gid: user.gid.as_raw(),
+                name: user.name,
                 home: user.dir,
                 shell: user.shell,
             })
@@ -42,10 +44,11 @@ impl EffectiveAccount {
     /// Constructs an explicit account for isolated library/integration tests.
     #[doc(hidden)]
     #[must_use]
-    pub fn for_test(uid: u32, gid: u32, home: PathBuf, shell: PathBuf) -> Self {
+    pub fn for_test(uid: u32, gid: u32, name: String, home: PathBuf, shell: PathBuf) -> Self {
         Self {
             uid,
             gid,
+            name,
             home,
             shell,
         }
@@ -61,6 +64,12 @@ impl EffectiveAccount {
     #[must_use]
     pub const fn gid(&self) -> u32 {
         self.gid
+    }
+
+    /// Login name from the account record.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Absolute account home directory.
