@@ -167,3 +167,30 @@ P37 能救回单个连接卡死，不能解决这种 Relay 整体不可达，原
 结论：路径上同时存在两类问题。零星的单连接卡死可由 P37 对冲救回；成簇的整段不可达期间，
 任何新连接在十五秒内都无法到达该 Relay，若它恰是主机的 home relay，客户端重试无法解决。
 原始数据 `relay-probe-mac-01.jsonl`、`relay-probe-vm-a-01.jsonl`。
+
+### 9. T34 修正后重建与 cold ×3（10:20–10:37 UTC／18:20–18:37）
+
+重建源码 `95aab2f`（含 P36、P37、T33、T34），测试 APK 变为 `8ec870ca…`，preflight 通过
+（`checks/lab-rebuild/build-03.log`）。运行期间在 Mac 上同时运行探针
+（`relay-probe-mac-02.jsonl`），以便与失败同一时刻对照。`run-id p37-cold-02`：
+
+- **23 通过／1 失败**，审计零问题；T34 未再出现。
+- 唯一失败：第 2 轮 A←C Direct（10:33:25 开始），Android 打开主机 13.6 秒后
+  `transport_unavailable`。
+- 慢行集中在 10:33–10:36 且都以 A 为主机（A←B Direct 6.6、A←B Relay 10.3、
+  A←C Relay 13.8、A←C Direct 8.4 秒）；同期以 B 为主机的行都在 1.5–3.4 秒。
+
+同一时刻三方证据：
+
+1. A 在 10:33:07 因路径模式切换按设计重启 daemon，10:33:09 拨 Relay X，TLS 2.36 秒，
+   10:33:12 就绪。
+2. 同一进程在 10:33:34 改选另一个 home relay Y（同进程内 Relay 标签不同，期间没有 X 的
+   失败事件），10:33:35 就绪。查询时 A 发布的 home relay 为 `euc1-1`。
+3. C 在 10:33:29 连上 A 当时发布的 Relay，通过了 TLS 与认证，但始终收不到 pong，
+   10:33:34 以 `relay_unconfirmed_lost`／`ping_timeout` 断开；C 自己的另一条 Relay 连接未受影响。
+4. 探针：aps1-1 的 TLS 在 0.1–3.5 秒间大幅波动，10:32:41 失败；euc1-1 在 10:33:06 起出现
+   12 秒连接超时；use1-1、usw1-1 同期正常。
+
+解释：经 Mac 代理到公共 Relay 的路径质量剧烈波动，主机重启后最初按延迟选出的 home relay
+在数十秒内又被改选，而客户端正连向最初发布的那一个，且那条路径只建立了连接、不转发数据。
+这属于网络路径（问题清单 R06 的边界）叠加 home relay 改选，不是能在本机复现的产品逻辑缺陷。
