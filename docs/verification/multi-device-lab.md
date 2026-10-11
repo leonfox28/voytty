@@ -97,3 +97,31 @@ C 配对失败的原因是测试器问题（问题清单 T33）：运行器经 `
 证据：`$LAB/lab-rebuild-cold-01/`（`pairing.json`、`results.json` 及各行目录）、
 `checks/lab-rebuild/run-cold-01.log`、`ticket-dir-before-01.log`、`ticket-dir-after-01.log`、
 `coordinator-tests-01.log`。
+
+### 6. 修正后重跑 cold 场景（09:11:18–09:13:22 UTC／17:11–17:13）
+
+重新打开 A／B 的详细诊断窗口后执行同一筛选，`--run-id lab-rebuild-cold-02`。产品制品未变
+（运行器只在 Mac 侧执行，修正不影响已安装的二进制与 APK）。
+
+- 配对：C 与 A 1.36 秒、C 与 B 2.03 秒通过；A↔B 沿用上一轮已有配对。
+- 8 行全部通过，审计零问题：
+
+  | 行 | `connect_seconds` |
+  | --- | --- |
+  | A←B Direct／Relay | 12.293／2.831 |
+  | A←C Direct／Relay | 1.808／9.507 |
+  | B←A Direct／Relay | 12.639／2.307 |
+  | B←C Direct／Relay | 1.801／6.903 |
+
+**环境重建完成**：A／B／C 已建立、安装同源候选 `b5ef999`、通过 preflight 并完成全部配对，
+可用于后续定向矩阵。三端保持运行（`--keep-running`）。
+
+两行 Linux Direct 接近十五秒预算，按控制端详细日志逐次拆分 Relay 拨号（脚本
+`checks/lab-rebuild/relay_dials.py`，结果 `relay-dials-cold-01.json`／`relay-dials-cold-02.json`）：
+两行各有一次所需 Relay 的拨号在 TLS 阶段 10 秒无进展，以 `dial_deadline` 结束；随即重拨
+约 0.47 秒连上。其余拨号 TLS 0.09–2.1 秒完成。归因与后续处理记入 [问题清单](multi-device-issues.md) 的 R02。
+
+### 待处理
+
+- 旧 VM `zterm-md-20261003t024103z-a`／`-b`（Stopped，约 20 GB）与悬空的
+  `~/.android/avd/zterm-md-20261003t024103z-c.ini` 尚未删除，等待确认。
