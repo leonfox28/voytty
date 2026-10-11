@@ -113,9 +113,8 @@ probe timeout before reaching a newly discovered address. That also deferred
 starting a new relay's TLS connection. The remote actor now extends the existing
 Initial fanout when an exact-peer lookup adds a new, nonlocal address. Duplicate
 addresses do not cause another send to existing paths. It retains only QUIC v1
-Initial transmits while lookup is pending and no path is selected, at most 16
-transmits / 64 KiB for three seconds. Completion, path selection and expiry clear
-the cache; outgoing tasks retain the existing bound of 16 and their original
+Initial transmits while lookup is pending, at most 16 transmits / 64 KiB for
+three seconds. Lookup completion, an added connection and expiry clear the cache; outgoing tasks retain the existing bound of 16 and their original
 deadline. Normal QUIC timers, connection identity and application requests are
 unchanged. This forwards the same encrypted packets with the same packet numbers;
 it does not retry an application mutation or open another connection.
@@ -132,6 +131,36 @@ request completes at 4.371 s. Keep these regressions when adopting an upstream
 equivalent. They do not explain all historical public-network I/O delays.
 
 Evidence: `target/verification/multi-device/checks/ordered-fixes/fresh-route-initial/`.
+
+## New connections beside another connection's selected path
+
+The remote actor keeps one selected path per peer. Upstream sent every
+mixed-address datagram, which carries only a new outgoing connection's
+handshake, to that path alone. It also skipped address lookup and the Initial
+fanout above while a path was selected. If the peer restarted on another relay
+or port without a close reaching this endpoint, the old connection kept its dead
+path selected until its idle timeout: 30 seconds on a relay path, longer than
+the product's 15-second startup budget. Every new dial to that peer stalled,
+even when the caller supplied the correct new relay.
+
+Handshake datagrams now go to the selected path first and then to every other
+known nonlocal path, which is what upstream already did with no selected path.
+A new connection starts an address lookup unless one is already running, and
+its Initials are replayed to paths that lookup adds. Established connections,
+path selection, holepunching, QUIC timers and product deadlines are unchanged.
+Upstream `main` still pins these datagrams, so there is nothing to adopt yet;
+reported as <https://github.com/n0-computer/iroh/issues/4600>. Remove this
+patch once upstream ships an equivalent fix, after porting these tests.
+
+Three `zterm_new_handshake_` / `zterm_new_connection_` /
+`zterm_initial_fanout_survives_` tests fail before the repair and pass after it.
+The product's `moved_host_` tests kill a relay-only host without a QUIC close,
+restart its identity on another relay and dial with the same 15-second budget.
+With the old connection still open, both the correct-hint and the
+stale-lookup-first variants previously failed at 15.0 seconds and now succeed
+in about 0.31 to 0.33 seconds. The closed-connection control succeeded in about
+0.33 seconds both before and after. These tests establish the pinning defect,
+not which historical R02 timeouts it caused.
 
 ## Fair scheduling of connected relay traffic
 

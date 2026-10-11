@@ -19,7 +19,7 @@ use n0_watcher::Watcher;
 use noq::{Closed, PathStats, PathStatus, WeakConnectionHandle};
 use noq_proto::{PathError, PathEvent as NoqPathEvent, PathId, n0_nat_traversal};
 use rustc_hash::FxHashMap;
-use smallvec::{SmallVec, smallvec};
+use smallvec::SmallVec;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, Level, Span, debug, error, event, info_span, instrument, trace, warn};
@@ -407,6 +407,9 @@ impl RemoteStateActor {
     ) {
         let (path_state_sender, path_state_receiver) = PathStateSender::new();
         self.state.metrics.num_conns_opened.inc();
+        // The handshake that needed the remembered Initials has completed. A
+        // path selected for another connection does not end that fanout.
+        self.state.initial_transmits.clear();
         // Remove any conflicting stable_ids from the local state.
         let conn_id = ConnId(conn.stable_id());
         self.connections.remove(&conn_id);
@@ -689,9 +692,6 @@ impl RemoteStateActor {
         }
 
         self.apply_selected_path();
-        if self.state.selected_path.is_some() {
-            self.state.initial_transmits.clear();
-        }
     }
 
     /// Propagates a change of [`State::selected_path`] to noq.
@@ -821,51 +821,54 @@ impl State {
         // though we might not have a relay transport or ip-capable transport set up.
         // So these errors must not be fatal for this actor (or even this operation).
 
-        if self.selected_path.is_none() && self.address_lookup_stream.is_some() {
+        // Mixed-address sends are handshakes of a new outgoing connection. A
+        // path selected for another, still open connection is not evidence
+        // that this handshake can use it: the peer may have restarted on
+        // another Relay or port while the old connection awaits its idle
+        // timeout. Keep the selected path first, but also try every known path.
+        if self.address_lookup_stream.is_some() {
             self.initial_transmits.remember(&sender, &transmit);
         }
 
-        let targets = if let Some(addr) = self.selected_path.as_ref() {
-            trace!(?addr, "sending datagram to selected path");
+        let selected = self.selected_path.as_ref().map(|path| path.remote());
+        trace!(
+            ?selected,
+            paths = ?self.paths.addrs().collect::<Vec<_>>(),
+            "sending datagram to selected and all known paths",
+        );
+        if selected.is_none() && self.paths.is_empty() {
+            warn!("Cannot send datagrams: No paths to remote endpoint known");
+        }
 
-            // TODO(Frando): We might want to include a local IP here in the future, if we confidently
-            // know that it is the correct one.
-            // See https://github.com/n0-computer/iroh/issues/4280.
-            smallvec![transports::FourTuple::from_remote(addr.remote())]
-        } else {
-            trace!(
-                paths = ?self.paths.addrs().collect::<Vec<_>>(),
-                "sending datagram to all known paths",
-            );
-            if self.paths.is_empty() {
-                warn!("Cannot send datagrams: No paths to remote endpoint known");
+        // TODO(Frando): We might want to include a local IP here in the future, if we confidently
+        // know that it is the correct one.
+        // See https://github.com/n0-computer/iroh/issues/4280.
+        let mut targets: SmallVec<[transports::FourTuple; 8]> = selected
+            .iter()
+            .cloned()
+            .map(transports::FourTuple::from_remote)
+            .collect();
+        for addr in self.paths.addrs() {
+            if selected.as_ref() == Some(addr) {
+                continue;
             }
-
-            let mut targets = SmallVec::new();
-            for addr in self.paths.addrs() {
-                // We never want to send to our local addresses.
-                // The local address set is updated in the main loop so we can use `peek` here.
-                if let transports::Addr::Ip(sockaddr) = addr
-                    && self
-                        .local_direct_addrs
-                        .peek()
-                        .iter()
-                        .any(|a| a.addr == *sockaddr)
-                {
-                    trace!(%sockaddr, "not sending datagram to our own address");
-
-                // TODO(Frando): We might want to include a local IP here in the future, if we confidently
-                // know that it is the correct one.
-                // See https://github.com/n0-computer/iroh/issues/4280.
-                } else {
-                    targets.push(transports::FourTuple::from_remote(addr.clone()));
-                }
+            // We never want to send to our local addresses.
+            // The local address set is updated in the main loop so we can use `peek` here.
+            if let transports::Addr::Ip(sockaddr) = addr
+                && self
+                    .local_direct_addrs
+                    .peek()
+                    .iter()
+                    .any(|a| a.addr == *sockaddr)
+            {
+                trace!(%sockaddr, "not sending datagram to our own address");
+            } else {
+                targets.push(transports::FourTuple::from_remote(addr.clone()));
             }
-            // This message is received *before* a connection is added.  So we do
-            // not yet have a connection to holepunch.  Instead we trigger
-            // holepunching when AddConnection is received.
-            targets
-        };
+        }
+        // This message is received *before* a connection is added.  So we do
+        // not yet have a connection to holepunch.  Instead we trigger
+        // holepunching when AddConnection is received.
 
         queue_datagram(
             sender,
@@ -887,16 +890,16 @@ impl State {
         let added = self.paths.insert_multiple(addrs, Source::App);
         self.send_initials_to_new_paths(added, send_tasks);
         self.paths.resolve_remote(tx);
-        // Start Address Lookup if we have no selected path.
+        // A new connection must not depend on another connection's selected
+        // path, so it looks up current addresses even when one exists.
         self.trigger_address_lookup();
     }
 
     /// Triggers Address Lookup for the remote endpoint, if needed.
     ///
-    /// Does not start Address Lookup if we have a selected path or if Address Lookup is
-    /// currently running.
+    /// Does not start Address Lookup if Address Lookup is currently running.
     fn trigger_address_lookup(&mut self) {
-        if self.selected_path.is_some() || self.address_lookup_stream.is_some() {
+        if self.address_lookup_stream.is_some() {
             return;
         }
         let stream = self.address_lookup.resolve(self.endpoint_id);
@@ -964,9 +967,6 @@ impl State {
         added: Vec<transports::Addr>,
         send_tasks: &mut FuturesUnorderedBounded<Boxed<()>>,
     ) {
-        if self.selected_path.is_some() {
-            return;
-        }
         self.initial_transmits.prune();
         let targets: SmallVec<_> = added
             .into_iter()
@@ -1675,7 +1675,7 @@ mod tests {
         let sends = send_datagram_to_targets(
             Box::new(sender),
             transmit,
-            smallvec![
+            smallvec::smallvec![
                 relay,
                 transports::FourTuple::from_remote(transports::Addr::Ip(
                     receiver.local_addr().unwrap(),

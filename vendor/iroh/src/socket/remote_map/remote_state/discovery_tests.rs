@@ -167,12 +167,13 @@ async fn zterm_initial_fanout_skips_expired_and_local_paths() {
 }
 
 #[tokio::test]
-async fn zterm_initial_fanout_stops_after_lookup_or_path_selection() {
+async fn zterm_initial_fanout_survives_another_selected_path_and_stops_after_lookup() {
     use super::{MAX_DATAGRAM_SEND_TASKS, TransportsSender, transports};
     let mut state = pending_state();
-    let (sender, _receiver) = TransportsSender::with_bounded_relay(4, std::iter::empty());
+    let (sender, mut receiver) = TransportsSender::with_bounded_relay(4, std::iter::empty());
     let mut tasks = n0_future::FuturesUnorderedBounded::new(MAX_DATAGRAM_SEND_TASKS);
     state.initial_transmits.remember(&sender, &initial());
+    // An older connection's selected path does not complete this handshake.
     state.selected_path = Some(transports::FourTuple::from_remote(transports::Addr::Relay(
         "https://selected.invalid".parse().unwrap(),
         state.endpoint_id,
@@ -180,13 +181,13 @@ async fn zterm_initial_fanout_stops_after_lookup_or_path_selection() {
     state.handle_address_lookup_item(
         discovered(
             state.endpoint_id,
-            "unused",
-            TransportAddr::Relay("https://unused.invalid".parse().unwrap()),
+            "moved",
+            TransportAddr::Relay("https://moved.invalid".parse().unwrap()),
         ),
         &mut tasks,
     );
-    assert!(tasks.is_empty());
-    state.selected_path = None;
+    while tasks.next().await.is_some() {}
+    assert_eq!(sent(&mut receiver), 1);
     state.handle_address_lookup_item(None, &mut tasks);
     assert!(state.address_lookup_stream.is_none());
     assert_eq!(state.initial_transmits.expires_at(), None);
@@ -200,6 +201,50 @@ async fn zterm_initial_fanout_stops_after_lookup_or_path_selection() {
         &mut tasks,
     );
     assert!(tasks.is_empty());
+}
+
+fn sent(receiver: &mut (impl n0_future::Stream<Item = ()> + Unpin)) -> usize {
+    let mut count = 0;
+    while let Some(Some(())) = n0_future::future::now_or_never(receiver.next()) {
+        count += 1;
+    }
+    count
+}
+
+#[tokio::test]
+async fn zterm_new_handshake_is_not_pinned_to_another_connections_selected_path() {
+    use super::{MAX_DATAGRAM_SEND_TASKS, Source, TransportsSender, transports};
+    let mut state = pending_state();
+    state.address_lookup_stream = None;
+    let (sender, mut receiver) = TransportsSender::with_bounded_relay(4, std::iter::empty());
+    let mut tasks = n0_future::FuturesUnorderedBounded::new(MAX_DATAGRAM_SEND_TASKS);
+    let relay = |url: &str| transports::Addr::Relay(url.parse().unwrap(), state.endpoint_id);
+    let selected = relay("https://selected.invalid");
+    state.paths.insert_multiple(
+        [selected.clone(), relay("https://current.invalid")].into_iter(),
+        Source::App,
+    );
+    // The peer restarted elsewhere while an older connection keeps this path.
+    state.selected_path = Some(transports::FourTuple::from_remote(selected));
+    state.handle_msg_send_datagram(Box::new(sender), initial(), &mut tasks);
+    while tasks.next().await.is_some() {}
+    // The selected path first, then the other known path; neither twice.
+    assert_eq!(sent(&mut receiver), 2);
+}
+
+#[tokio::test]
+async fn zterm_new_connection_looks_up_addresses_despite_a_selected_path() {
+    use super::{MAX_DATAGRAM_SEND_TASKS, transports};
+    let mut state = pending_state();
+    state.address_lookup_stream = None;
+    state.selected_path = Some(transports::FourTuple::from_remote(transports::Addr::Relay(
+        "https://selected.invalid".parse().unwrap(),
+        state.endpoint_id,
+    )));
+    let mut tasks = n0_future::FuturesUnorderedBounded::new(MAX_DATAGRAM_SEND_TASKS);
+    let (tx, _rx) = tokio::sync::oneshot::channel();
+    state.handle_msg_resolve_remote(Default::default(), tx, &mut tasks);
+    assert!(state.address_lookup_stream.is_some());
 }
 
 async fn first_request(
