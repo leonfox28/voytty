@@ -1119,6 +1119,7 @@ QUIC 对持久重置密钥、CID 不复用及重置 oracle 的约束见
 | T31 | 短断网恢复只断言 Active／inputReady 和主机尺寸，未要求 Android 显示尺寸同步 | [运行器](../../tests/e2e/multi-device.py) 在原 60 秒期限内等待 Android 实际尺寸匹配，再发送连续性输入；[审计](../../tests/e2e/multi-device-audit.py) 按 `host-and-android-surface-v1` 检查尺寸和输入状态，旧证据保留原契约。两种尺寸滞后回归修正前均失败、修正后通过，另验证审计拒绝缺失／错误尺寸和不可输入状态；运行器及主机准备测试 49/49。旧制品 B→C 十轮通过；证据 `checks/ordered-fixes/r03-sync/` |
 | T32 | Android instrumentation 已退出，恢复轮询仍读取遗留状态文件，将观察器故障误报为同步超时 | [运行器](../../tests/e2e/multi-device.py) 的状态断言先确认测试进程存活，退出立即报错；证据采集仍显式保留最后状态。退出码 0／1 两种回归修正前均失败、修正后通过，运行器及主机准备 50/50；`checks/ordered-fixes/r03-relay-cause/coordinator-before.log` 和 `coordinator-after.log`。原 `cause-01/0016` 失败不改写，结合 P33 的 EMFILE 与已收到的快照 ACK 单列归因 |
 | T33 | 重建环境后首次运行，C 的配对票据写入 `files/multi-device-ticket.txt` 失败，四个 Android 行被配对前提阻塞：新装应用在 08:56:07 才首次写入 `files/`，而写票据发生在 08:56:04–05，运行器又不创建目录。旧模拟器的 `files/` 早已存在，因此此前未暴露。改为先 `mkdir -p files` 再写入；新增回归在无 `files/` 的临时应用目录执行设备端脚本，修正前以 `No such file or directory` 失败、修正后通过，协调回归 48/48 | `$LAB/lab-rebuild-cold-01/pairing.json`、`checks/lab-rebuild/ticket-dir-before-01.log`、`ticket-dir-after-01.log`；见 [环境重建记录](multi-device-lab.md) |
+| T34 | `p37-cold-01` 第 2 轮 A←C Direct 以 `'hosts'` 失败：Android 桥在发布首个 `status.json` 之前就写入 `ready`，运行器看到 `ready` 后立即读状态得到空值，`snapshot()` 返回 `{}`，`connect()` 取 `hosts` 时 KeyError。状态文件本身以临时文件加 rename 原子发布，不是读到半个文件。改为先发布状态再写 `ready`，需重建测试 APK | `$LAB/p37-cold-01/0009-cold-A-C-C-direct-2/`；见 [环境重建记录](multi-device-lab.md) |
 
 ## 环境与构建问题
 

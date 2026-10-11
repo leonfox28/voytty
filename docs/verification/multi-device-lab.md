@@ -125,3 +125,45 @@ C 配对失败的原因是测试器问题（问题清单 T33）：运行器经 `
 
 - 旧 VM `zterm-md-20261003t024103z-a`／`-b`（Stopped，约 20 GB）与悬空的
   `~/.android/avd/zterm-md-20261003t024103z-c.ini` 尚未删除，等待确认。
+
+### 7. P37 候选重建与 cold ×3（09:47–10:00 UTC／17:47–18:00）
+
+提交 P37 后重新 `build`：源码 `58adff3`、工作区无改动，A／B 二进制 `1e04d8b6…81878c`、
+调试 APK `29904588…663c33c`，测试 APK 未变，preflight 通过（`checks/lab-rebuild/build-02.log`）。
+续开 A／B 详细诊断后执行 `run --scenario cold --repeat 3 --soak-seconds 0 --keep-running --run-id p37-cold-01`：
+
+- **21 通过／3 失败**，审计零问题（`p37-cold-01/acceptance-audit.json`）。
+- 失败一：第 1 轮 A←B Relay，CLI `deadline_exceeded: timed out opening remote Session tunnel`（R02）。
+- 失败二：第 2 轮 B←C Relay，Android 打开主机 `deadline_exceeded`，会话列表同样超时（R02）。
+- 失败三：第 2 轮 A←C Direct，错误仅为 `'hosts'`，是测试器问题 T34：Android 桥先写 `ready`
+  再发布首个 `status.json`，运行器看到 `ready` 后立即读状态得到空值，`snapshot()` 返回 `{}`，
+  `connect()` 取 `hosts` 时 KeyError。已改为先发布状态再写 `ready`（需重建测试 APK）。不计作产品结果。
+
+Relay 拨号拆分（`checks/lab-rebuild/relay-dials-p37-cold-01.json`）：对冲共触发 12 个拨号周期，
+4 个在该周期内连上（+3.8、+4.1、+6.4、+7.1 秒；前两例为对冲救回，单次尝试将等到 10 秒），
+4 个两次尝试都失败，均为同一 Relay 在同一时段连续不可达（一次以 `tls` 错误结束，其余为
+`dial_deadline`），4 个到行窗口结束仍未结束。两次 R02 失败都发生在这种 Relay 整体不可达的
+时段：对新连接而言该 Relay 数十秒内任何尝试都没有进展，而主机早先建立的 Relay 连接仍在线。
+P37 能救回单个连接卡死，不能解决这种 Relay 整体不可达，原因另行排查。
+
+### 8. Relay 可达性探测（10:07:32–10:17:41 UTC／18:07–18:17）
+
+为区分产品与网络路径，在 Mac 和 A 内同时运行只读探针（`checks/lab-rebuild/relay_probe.sh`）：
+每约 5 秒对四个 n0 Relay 各发一次 HTTPS `GET /`（服务端返回 404），记录 TCP 连接、TLS 完成
+与总耗时，12 秒超时。不创建产品连接，也不读取产品身份。
+
+| Relay | Mac：失败／TLS 中位数／最大 | A：失败／TLS 中位数／最大 |
+| --- | --- | --- |
+| aps1-1 | 6/70／1.19／5.99 秒 | 6/63／1.26／6.91 秒 |
+| use1-1 | 2/70／0.55／4.78 秒 | 3/63／0.55／10.01 秒 |
+| euc1-1 | 2/70／0.40／0.54 秒 | 3/63／0.39／0.54 秒 |
+| usw1-1 | 0/70／0.69／1.50 秒 | 0/63／0.71／1.74 秒 |
+
+- aps1-1 在 10:10:38–10:12:11 连续失败（TCP 连接 12 秒超时与 `SSL_ERROR_SYSCALL`），Mac 与 A
+  同时出现，说明是共享的出口路径（Mac 的代理／出口）而不是 VM 或产品。
+- euc1-1、use1-1 的失败是零星的单次超时，不成簇。
+- 经 n0 DNS 只读查询，A、B、C 发布的 home relay 均为 `euc1-1`，即本实验中所有连接都依赖它。
+
+结论：路径上同时存在两类问题。零星的单连接卡死可由 P37 对冲救回；成簇的整段不可达期间，
+任何新连接在十五秒内都无法到达该 Relay，若它恰是主机的 home relay，客户端重试无法解决。
+原始数据 `relay-probe-mac-01.jsonl`、`relay-probe-vm-a-01.jsonl`。

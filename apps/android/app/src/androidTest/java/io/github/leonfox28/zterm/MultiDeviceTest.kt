@@ -90,6 +90,8 @@ class MultiDeviceTest {
             try { deviceId = app.runtime.initialize(seed, emptyList(), emptyList()) }
             finally { seed.fill(0) }
             app.diagnostics.setEnabled(true)
+            // The runner reads status as soon as it sees ready; publish it first.
+            publish(status, snapshot())
             File(directory, "ready").writeText("ready")
             // The outer runner owns time bounds and process termination. The
             // absolute guard prevents an abandoned test from running forever.
