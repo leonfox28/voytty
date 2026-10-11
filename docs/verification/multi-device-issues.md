@@ -1776,3 +1776,39 @@ P25 的七项 NOQ 回归、P26 的三项真实 TLS 失败复现均已修正，�
    依次叠在其上，均未推送。A／B／C 保持运行；旧 VM 与悬空 AVD 记录待确认后删除。
 6. 下一步需要选择方向：在可靠路径上自建 Relay（产品已支持 SelfHosted 配置）以隔离代理影响；
    评估主机重启后 home relay 改选的抑制；或主机同时保持备用 Relay 并发布。期限与计时器保持不变。
+
+## 2026-10-11 发布 v0.1.39 与 R01 续修交接
+
+1. **已合并并发布。** PR #70（P36、P37、实验根目录迁移、T33、T34 及文档）合并为 `7ef5ca1`；
+   版本 PR #71 合并为 `40837c6`，`v0.1.39` 于 14:47 UTC 发布（immutable，11 个资产）。
+   发布前本地 `just check` 1286 通过、`just android-check` 通过，PR 与 main CI 全绿。
+   上游 issue [n0-computer/iroh#4600](https://github.com/n0-computer/iroh/issues/4600)（P36）仍开放，
+   修复发布前保留 vendor 补丁。
+2. **R02 状态。** 产品侧已做 P36、P37；剩余失败与经 Mac 出口到公共 Relay 的线路质量同时刻吻合，
+   归为网络环境边界，保持开放但不再计划产品改动。用户的 Bettbox 现为 `iroh.link` 的 TCP 走代理、
+   UDP 直连，用户文档见 `docs/remote-cli.md` 的 “Networks with a local proxy or TUN”。
+   之后的实验结果都在这一网络设置下取得，记录时需注明。
+3. **实验环境现状。** 根目录 `$LAB=${XDG_STATE_HOME:-~/.local/state}/zterm-verification/multi-device`；
+   环境 `zterm-md-20261011t084006z`：A `192.168.64.4`、B `192.168.64.5`（另有 user-v2 网段
+   `192.168.104.x`），C 为 `emulator-5586`，AVD 在 `$LAB/environment/avd`。已安装候选 `95aab2f`
+   （产品代码与 v0.1.39 相同，仅缺版本提交）；A↔B、C↔A、C↔B 均已配对；三端仍在运行。
+   开始 R01 实验前先 `multi-device.py build` 安装当前源码，并用 `zterm logs debug on` 续开 A／B 的
+   15 分钟详细诊断窗口。重建过程与注意事项见 [环境重建记录](multi-device-lab.md)。
+4. **环境陷阱。** 会话运行在 herdr 中；herdr 后台服务可能丢失 macOS“本地网络”权限（E10），
+   症状是 C 的 Direct 行只剩 Relay 路径。先在会话里执行
+   `python3 -c "import socket;socket.socket(2,2).sendto(b'x',('10.0.0.1',9))"`：若报
+   `No route to host`，请用户重启 herdr 服务，并在新 herdr 标签页 `adb emu kill` 后执行
+   `multi-device.py start` 重启模拟器；已在运行的进程不会随之恢复。
+5. **R01 起点。** 症状：主机重启后，客户端在复用的旧连接上发出的首个查询超时，随后 P23 的精确
+   闲置清理生效、下一次请求重新拨号成功。历史证据（`restart-extended-01/0034`／`0082`）已随
+   `target/` 丢失。P27 只覆盖“主机以同一身份在同一 Relay／端口重启、旧连接的包仍能到达新实例并
+   收到无状态重置”的情况。**候选解释（未验证）**：主机重启后换了 Relay 或 UDP 端口，旧连接的包到不了
+   新实例，P27 的重置无从送达，首个查询只能等满 5 秒期限。今天 `p37-cold-02` 已观察到主机重启后
+   27 秒内改选 home relay，Direct 模式下端口也会变化。P36 只处理新拨号，不改变旧连接上的首个查询。
+6. **建议的第一步。** 参照 `crates/client/src/iroh_controller.rs` 的 `moved_host_` 夹具（可强杀、
+   不发 QUIC close 的主机）写受控复现：客户端先建立并保留 normal 连接，主机被强杀后分别在
+   ① 同一 Relay、② 另一 Relay、③ Direct 新端口上以同一身份恢复，测首个查询的结果与耗时。
+   若 ②③ 必然超时，再评估方案（例如首个查询无进展时并行建立新连接，但只对幂等读请求，
+   不重放变更）。确认机制后再到三端跑 `--group extended` 中的 `host-daemon-crash`、`host-reboot`
+   等重启类行。期限、计时器和“不重放不确定变更”规则保持不变。
+
