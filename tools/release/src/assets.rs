@@ -851,6 +851,91 @@ mod tests {
     }
 
     #[test]
+    fn complete_unsigned_assembly_roundtrips_and_rejects_mixed_or_modified_inputs() {
+        let temporary = tempfile::tempdir().expect("assembly fixture");
+        let input = temporary.path().join("input");
+        fs::create_dir(&input).expect("fixture inputs");
+        let manifest = fixture_manifest();
+        for artifact in &manifest.artifacts {
+            let binary = input.join(format!("zterm-{}", artifact.target));
+            fs::write(&binary, format!("synthetic binary for {}", artifact.target))
+                .expect("synthetic binary");
+            make_executable(&binary);
+            create_archive_at_epoch(&binary, &input.join(&artifact.filename), 1_700_000_000)
+                .expect("archive fixture binary");
+            let identity = ReleaseSelfCheck {
+                schema: RELEASE_MANIFEST_SCHEMA,
+                product: "zterm".to_owned(),
+                build: artifact.build.clone(),
+            };
+            fs::write(
+                input.join(format!("zterm-{}.identity.json", artifact.target)),
+                serde_json::to_vec(&identity).expect("identity JSON"),
+            )
+            .expect("identity fixture");
+        }
+        let apk = b"synthetic unsigned APK payload";
+        fs::write(input.join(ANDROID_APK_NAME), apk).expect("APK fixture");
+        let metadata = json!({"schema": 1, "product": "zterm", "version": manifest.version,
+            "source_commit": manifest.source_commit, "package": "io.github.leonfox28.zterm",
+            "abi": "arm64-v8a", "min_sdk": 26, "target_sdk": 36, "version_code": 1,
+            "certificate_sha256": zterm_core::release::android::CERTIFICATE.trim(), "signed": false,
+            "length": apk.len(), "sha256": sha256_hex(apk)});
+        fs::write(
+            input.join(ANDROID_METADATA_NAME),
+            serde_json::to_vec(&metadata).expect("Android metadata JSON"),
+        )
+        .expect("Android metadata fixture");
+
+        let assemble = |output: &Path| {
+            prepare(
+                &input,
+                output,
+                &manifest.tag,
+                &manifest.source_commit,
+                &manifest.released_at,
+            )
+        };
+        let first = temporary.path().join("first");
+        let second = temporary.path().join("second");
+        assemble(&first).expect("complete unsigned assembly");
+        verify(&first, false).expect("verify the complete generated inventory");
+        assemble(&second).expect("repeat assembly from identical inputs");
+        for name in expected_inventory(false).expect("unsigned inventory") {
+            assert_eq!(
+                fs::read(first.join(&name)).expect("first asset"),
+                fs::read(second.join(&name)).expect("second asset"),
+                "unsigned assembly must be deterministic: {name}"
+            );
+        }
+        assert!(
+            assemble(&first).is_err(),
+            "existing output must not be replaced"
+        );
+
+        fs::write(first.join(ANDROID_APK_NAME), b"modified payload").expect("tamper APK");
+        assert!(verify(&first, false).is_err());
+        fs::write(second.join(INSTALLER_NAME), b"#!/bin/sh\nexit 0\n").expect("tamper installer");
+        assert!(verify(&second, false).is_err());
+
+        let artifact = &manifest.artifacts[0];
+        let wrong_identity = ReleaseSelfCheck {
+            schema: RELEASE_MANIFEST_SCHEMA,
+            product: "zterm".to_owned(),
+            build: ReleaseBuildIdentity {
+                source_commit: "f".repeat(40),
+                ..artifact.build.clone()
+            },
+        };
+        fs::write(
+            input.join(format!("zterm-{}.identity.json", artifact.target)),
+            serde_json::to_vec(&wrong_identity).expect("mixed identity"),
+        )
+        .expect("replace fixture identity");
+        assert!(assemble(&temporary.path().join("mixed-source")).is_err());
+    }
+
+    #[test]
     fn installer_is_derived_from_the_manifest_inventory() {
         let manifest = fixture_manifest();
         let raw = serde_json::to_vec(&manifest).expect("manifest JSON");
@@ -985,6 +1070,9 @@ mod tests {
         let source_commit = "0123456789abcdef0123456789abcdef01234567";
         let version = env!("CARGO_PKG_VERSION");
         let tag = format!("v{version}");
+        let classification = ReleaseClassification::from_version(
+            &Version::parse(version).expect("workspace version"),
+        );
         let artifacts = PUBLISHED_RELEASE_TARGETS
             .iter()
             .map(|target| {
@@ -1005,7 +1093,7 @@ mod tests {
                         wire_major: WIRE_MAJOR,
                         state_schema: STATE_SCHEMA_VERSION,
                         release_key_id: RELEASE_KEY_ID.to_owned(),
-                        classification: ReleaseClassification::Stable,
+                        classification,
                     },
                 }
             })
@@ -1015,7 +1103,7 @@ mod tests {
             product: "zterm".to_owned(),
             version: version.to_owned(),
             tag,
-            classification: ReleaseClassification::Stable,
+            classification,
             source_commit: source_commit.to_owned(),
             released_at: "2026-08-24T12:00:00Z".to_owned(),
             wire_major: WIRE_MAJOR,

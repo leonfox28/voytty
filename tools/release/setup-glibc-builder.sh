@@ -16,7 +16,7 @@ sed -i \
     /etc/apt/sources.list
 apt-get -o Acquire::Check-Valid-Until=false update
 DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
-    binutils build-essential ca-certificates curl file git pkg-config
+    binutils build-essential ca-certificates curl file git jq pkg-config
 
 git config --global --get-all safe.directory | grep -Fx "$GITHUB_WORKSPACE" >/dev/null \
     || fail "the workflow must trust only the exact checkout before builder setup"

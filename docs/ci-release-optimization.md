@@ -9,9 +9,9 @@
 | 阶段 | 运行内容 | 说明 |
 | --- | --- | --- |
 | 编辑中 | `cargo clippy -p <crate>`、`cargo test -p <crate> <filter>` | 只覆盖正在改的 crate |
-| commit 前 | `just check-fast` | source policy、`ci-policy`、workspace Clippy |
-| push 前 | `just check`；改了 `crates/android` 或 `apps/android` 时加 `just android-check` | 组合 `ci-policy`、`ci-unix true`、`ci-dependencies`、`relay-static`，与 CI 共用 recipe |
-| PR CI | policy、dependencies、relay、Rust 三平台、Android、三个 native 候选（只构建不上传）、`CI gate` | 同一 PR 的新提交会取消旧运行 |
+| commit 前 | 受影响的检查；可选 `just check-fast` | 不要求每个 commit 重跑 workspace；`check-fast` 保留为较全面的检查入口 |
+| push 前 | 产品/测试/构建/CI 改动跑 `just check`；Android 及其共享依赖、UniFFI、构建工具变化加 `just android-check`；纯文档可只跑 `just ci-policy` | 组合 `ci-policy`、`ci-unix true`、`ci-dependencies`、`relay-static`，与 CI 共用 recipe |
+| PR CI | policy、dependencies、`CI gate` 始终运行；非纯文档另跑 relay、Rust 三平台、Android、三个 native 候选（只构建不上传） | 同一 PR 的新提交会取消旧运行；分类不确定时跑全量 |
 | main push | PR CI 的全部内容，加上传 native 与 Android 候选、组装 unsigned candidate | main 运行从不被取消；编译缓存只由 main 保存 |
 | 发布 | `just release-prepare VERSION`（可直接在 feature PR 上运行，省一轮 CI），再 `just release VERSION PR` | tag 复用 main 的 exact-SHA candidate；签名需 `release` 环境审批 |
 
@@ -59,8 +59,9 @@
   藏起来，所以不稳定测试逐个定位修复。
 - **PR 的 native 构建不上传。** 带 source commit 的二进制能通过
   `require_official_distribution_build`，这项检查保护 `update` 和 `uninstall`，未审查的
-  PR 二进制不能离开 runner。因此 PR 不覆盖归档和 manifest 组装：policy 中的
-  `tests/release/candidate-fixture.sh` 仍覆盖这部分，真实组装在 main 上进行。
+  PR 二进制不能离开 runner。`tests/release/candidate-fixture.sh` 仅覆盖候选查询与筛选，
+  不覆盖组装；2026-10-11 补充的 Rust 集成测试使用合成输入执行完整 unsigned 组装，
+  真实跨平台候选的集中组装仍在 main 上进行。
 - **main 的 Android 候选冷编译。** 编译缓存只给 PR 恢复，与 native 候选一样，发布产物
   不使用编译缓存。本地对比中，恢复构建与冷构建的 `libzterm_android.so` 逐字节一致；
   以后若想让 main 也用缓存，可以参考这一结果。
@@ -101,21 +102,26 @@ PR CI 用时（#64 到 #66 各次运行的范围）：
 | native 候选（新增，并行） | 只在 main 上运行 | 3:42–5:28 |
 | PR 整体 | 约 16 分钟 | 约 8–9 分钟 |
 
-## 剩余事项
+## 后续事项及当前状态
 
 1. **不稳定测试 `two_daemon_owners_reuse_endpoint_for_pair_and_normal_confirmation`**
    （`crates/daemon/tests/two_daemon_transport.rs:423`，Linux arm64，PR #66 首次运行）。
    `wait_for_primary` 等待的是 `peer_observation`，而断言读取的 `observe().snapshot()`
-   连接计数是单独发布的，可能滞后。
+   连接计数是单独发布的，可能滞后。2026-10-11 已改为在原 deadline 内等待该
+   snapshot 的 watch 通知，保留所有计数断言。
 2. **pairing 日志计数断言**，已记录在
-   [session-continuity.md](verification/session-continuity.md)。
+   [session-continuity.md](verification/session-continuity.md)。当前代码已将该断言隔离到
+   子进程，原记录保留为历史失败证据。
 3. **缓存 `target/noq-tests` 与 `target/iroh-tests`。** 两者每个平台合计约 2–2.5 分钟，
-   仍在冷编译。预计可省 1–1.5 分钟，未实测。
+   原先仍在冷编译。2026-10-11 已添加独立依赖缓存，裁剪时使用各自 manifest；
+   三平台 hosted 收益需待合并后 main 填充缓存再实测。
 4. **评估 nextest。** 它能并行运行测试二进制，需先确认现有测试兼容。
-5. **纯文档 PR 跳过重型 job**，main 仍跑全量。
+5. **纯文档 PR 跳过重型 job**，2026-10-11 已实现保守白名单与配套 gate 测试；
+   `docs/relay.md` 是测试输入，仍跑全量。main 和手动运行始终跑全量。
 6. **补 AGENTS.md。** 它在移除 Trellis 时一并删除了，目前 agent 分支没有关于 push 前
-   检查和发布入口的说明。
-7. **每周定时运行 `just ci-dependencies`**，让新的 RUSTSEC 公告不再随机打断无关 PR。
+   检查和发布入口的说明。2026-10-11 已恢复简短入口与检查边界。
+7. **每周定时运行 `just ci-dependencies`**，2026-10-11 已增加独立定时 workflow，
+   提前发现新 RUSTSEC 公告；PR/main 仍保留阻断检查，因此新公告仍可能使 PR 失败。
    可选用 Dependabot 跟踪已 pin 的 action 和 crate。
 8. **`actions/upload-artifact` 的 Node.js 20 弃用警告。** 当前 pin 的版本基于 Node.js 20，
    运行时会出现这条警告。
@@ -131,3 +137,43 @@ PR CI 用时（#64 到 #66 各次运行的范围）：
   继续恢复上一次保存的条目。看到这条 warning 时检查体积，必要时调整上限或提高 key 版本。
 - 版本提交会改变 `Cargo.lock`，所以每次发布后 main 会用新 key 重新保存编译缓存，旧条目
   由 GitHub 按 LRU 淘汰。
+
+## 2026-10-11：进一步缩短运行时间
+
+- 纯文档白名单为根目录 `README.md`、`AGENTS.md` 和 `docs/**/*.md`，排除
+  `docs/relay.md`。比较整个 PR 测试合并树与 base，使用 NUL 分隔且关闭重命名折叠，
+  防止只看最后一次提交或漏掉移入 docs 的源码删除。缺历史、无法分类则跑全量。
+- 稳定 `CI gate` 根据明确分类要求每个 job 为 success 或预期的 skipped；分类器、
+  policy、dependencies 始终必须成功。回归测试覆盖失败、取消、缺失、意外跳过、
+  文档/源码混合改动和 main 错误分类。
+- Native 与 Android 统一采用“main 冷构建后保存裁剪依赖、PR 可恢复”的模式。
+  native 缓存不含 workspace/patched vendor 包、测试或正式产品二进制，PR 仍执行
+  glibc/macOS 下限、自检和 CLI 默认路径检查。main 只查询 cache key，从不恢复这些
+  发布编译缓存。
+- noq/iroh 独立测试 target 的第三方依赖加入缓存，key 绑定各自 manifest/lockfile、
+  编译器、OS 和架构；测试范围没有减少，patched 包仍重编。
+- Rust workspace 测试新增完整合成候选组装，覆盖 archive、prepare、unsigned verify、
+  确定性、禁止覆盖、APK/installer 篡改和混合源码身份。复用现有测试编译，不新增 job。
+- 此轮未引入自动测试重试，也未放宽发布候选冷构建、签名和安装验证要求。
+  新缓存首次需要 main 填充；不能把缓存未命中的首轮 CI 当作稳定收益。
+
+本地恢复验证使用独立 checkout（基线 `7507f19`）、CI 相同的关闭 incremental/
+dev debuginfo 设置，先冷编译，再裁剪、归档、更新源码 mtime、恢复到相同路径并重编。
+下列为编译耗时，vendor 使用 `--no-run`，不计测试执行；缓存为 gzip 大小，GitHub
+实际采用的压缩格式与网络速度不同，不应直接作为 hosted CI 提速比例。
+
+| 编译目标 | 冷构建 | 恢复后构建 | 编译 crate 数（冷 / 恢复） | 压缩缓存 | 本地解包 |
+| --- | --- | --- | --- | --- | --- |
+| noq 测试 | 16.77 s | 4.70 s | 125 / 1 | 92.66 MiB | 0.76 s |
+| Iroh 测试 | 29.97 s | 13.60 s | 332 / 4 | 215.01 MiB | 1.53 s |
+| macOS arm64 native | 约 103 s | 46.17 s | 358 / 12 | 264.80 MiB | 1.78 s |
+
+Native 冷构建耗时取 Cargo 的 `1m 43s` 日志，其余构建/解包为实测 wall time。
+Native 冷构建与恢复后 SHA-256 均为
+`ea801349961fac0d5dc669976cc80301bd1d7c5ceab3e897219c4fb9a3a262be`。
+三份本机缓存合计约 572 MiB；三平台实际体积和 hosted critical path 仍需观察。
+
+恢复实验同时发现 Cargo 1.98 对显式 `--target-dir` 清理要求 `CACHEDIR.TAG`，而部分
+目录缓存不包含这个文件。裁剪现在通过 `CARGO_TARGET_DIR` 定位已知缓存根，仍仅让
+Cargo 清理 metadata 找出的 path 包；新增真实 Cargo fixture 覆盖缺 marker 的恢复
+场景、多个 profile、path 包清除和第三方库保留。

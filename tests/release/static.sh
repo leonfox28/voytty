@@ -61,8 +61,10 @@ environment_gates=$(grep -Fc 'environment: release' "$workflow" || true)
 android_job=$(sed -n '/^  android:/,/^  candidate:/p' "$ci_workflow")
 printf '%s\n' "$android_job" | grep -Fq 'tools/android/release.py prepare' \
     || fail "Android CI must inspect the exact release candidate"
-grep -Fq "ANDROID_RESULT: \${{ needs.android.result }}" "$ci_workflow" \
-    || fail "Android must participate in the stable CI gate"
+grep -Fq "CI_NEEDS: \${{ toJSON(needs) }}" "$ci_workflow" \
+    || fail "all job results must participate in the stable CI gate"
+grep -Fq 'run: python3 tools/ci/workflow-policy.py gate' "$ci_workflow" \
+    || fail "CI must use the tested fail-closed gate policy"
 for android_asset in SHA256SUMS.sig zterm-android-arm64.apk zterm-android.json; do
     grep -Fq "release-output/$android_asset" "$workflow" \
         || fail "publication is missing $android_asset"
@@ -212,6 +214,11 @@ for native_job in "$macos_build_job" "$linux_build_job"; do
     if printf '%s\n' "$native_job" | grep -Fq 'zterm-release-tool'; then
         fail "native jobs must not build the private release tool"
     fi
+    printf '%s\n' "$native_job" | grep -Fq "lookup-only: \${{ github.event_name != 'pull_request' }}" \
+        || fail "main native candidates must never restore compiled dependencies"
+    printf '%s\n' "$native_job" | grep -A2 -F -- '- name: Bound the cold main native dependency cache' \
+        | grep -Fq "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" \
+        || fail "only cold main native dependencies may become shared caches"
 done
 if grep -Fq 'build-native.sh' "$workflow"; then
     fail "tag publication must reuse the verified main candidate, not rebuild the product"
@@ -247,9 +254,9 @@ main_release_gates=$(grep -Fxc \
     "$ci_workflow" || true)
 [ "$main_release_gates" -eq 1 ] \
     || fail "native builders run on every event; only candidate assembly is main-only"
-for native_result in 'needs.candidates-macos.result' 'needs.candidates-linux.result'; do
-    grep -Fq "$native_result" "$ci_workflow" \
-        || fail "the CI gate must require every native build: $native_result"
+for native_job in candidates-macos candidates-linux; do
+    sed -n '/^  gate:/,$p' "$ci_workflow" | grep -Fxq "      - $native_job" \
+        || fail "the CI gate must require every native build: $native_job"
 done
 rust_job=$(sed -n '/^  rust:/,/^  candidates-macos:/p' "$ci_workflow")
 [ "$(printf '%s\n' "$rust_job" | grep -Ec '^[[:space:]]{10}- label:')" -eq 3 ] \
@@ -305,7 +312,7 @@ grep -Fq 'name: CI gate' "$ci_workflow" \
     || fail "CI lacks the stable branch-protection gate"
 grep -Fq 'if: always()' "$ci_workflow" \
     || fail "CI gate must aggregate failed, cancelled, and skipped owners"
-[ "$(grep -Fc 'timeout-minutes:' "$ci_workflow")" -eq 9 ] \
+[ "$(grep -Fc 'timeout-minutes:' "$ci_workflow")" -eq 10 ] \
     || fail "every CI job must have an explicit timeout"
 grep -Fq 'actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7' "$ci_workflow" \
     || fail "CI must use the pinned cache owner"

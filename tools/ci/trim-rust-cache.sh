@@ -10,7 +10,9 @@ set -eu
 # Arguments name cached layouts under target/: a profile directory such as
 # debug or release, or TRIPLE/release for a cross-compiled release.
 [ "$#" -gt 0 ] || set -- debug
-packages=$(cargo +1.98.0 metadata --locked --format-version 1 \
+manifest=${ZTERM_CACHE_MANIFEST_PATH:-Cargo.toml}
+target_dir=$(CDPATH='' cd -- "${ZTERM_CACHE_TARGET_DIR:-target}" && pwd)
+packages=$(cargo +1.98.0 metadata --locked --manifest-path "$manifest" --format-version 1 \
     | jq -r '.packages[] | select(.source == null) | "\(.name)@\(.version)"')
 maximum_kib=2621440
 size=0
@@ -24,13 +26,18 @@ for layout in "$@"; do
     for package in $packages; do
         # Word splitting yields the fixed flags chosen above.
         # shellcheck disable=SC2086
-        cargo +1.98.0 clean --package "$package" $clean_flags
+        # A partial dependency-cache restore omits CACHEDIR.TAG. Cargo 1.98
+        # requires that marker for explicit --target-dir, even for -p cleanup.
+        # Select the known cache root through Cargo's environment instead; only
+        # the metadata-selected path packages are cleaned, never the whole root.
+        CARGO_TARGET_DIR="$target_dir" cargo +1.98.0 clean --manifest-path "$manifest" \
+            --package "$package" $clean_flags
     done
-    if [ -d "target/$layout/deps" ]; then
-        find "target/$layout/deps" -type f -perm -u+x \
+    if [ -d "$target_dir/$layout/deps" ]; then
+        find "$target_dir/$layout/deps" -type f -perm -u+x \
             ! -name '*.so' ! -name '*.dylib' -delete
     fi
-    for directory in "target/$layout/deps" "target/$layout/build" "target/$layout/.fingerprint"; do
+    for directory in "$target_dir/$layout/deps" "$target_dir/$layout/build" "$target_dir/$layout/.fingerprint"; do
         if [ -d "$directory" ]; then
             size=$((size + $(du -sk "$directory" | awk '{print $1}')))
         fi

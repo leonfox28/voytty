@@ -21,6 +21,23 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  changes:
+    name: Classify the exact PR changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.scope.outputs.full }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Default to full checks unless only allowlisted documentation changed
+        id: scope
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 tools/ci/workflow-policy.py classify
+
   policy:
     name: Policy and portable checks
     runs-on: ubuntu-24.04
@@ -29,6 +46,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check source checkout policy
+        run: sh tests/source-policy.sh
       - name: Install exact Rust toolchain
         run: >-
           rustup toolchain install 1.98.0 --profile minimal
@@ -52,6 +71,8 @@ jobs:
         run: echo "Reproduce with just ci-policy after just doctor." >> "$GITHUB_STEP_SUMMARY"
 
   rust:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     name: Rust / ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
@@ -102,6 +123,28 @@ jobs:
           key: ci-compiled-v3-rust-1.98.0-nodebug-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ci-compiled-v3-rust-1.98.0-nodebug-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore noq test dependencies
+        id: compiled-noq
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            target/noq-tests/debug/deps
+            target/noq-tests/debug/build
+            target/noq-tests/debug/.fingerprint
+          key: ci-compiled-noq-v1-rust-1.98.0-nodebug-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/noq-proto/Cargo.lock', 'vendor/noq-proto/Cargo.toml') }}
+          restore-keys: |
+            ci-compiled-noq-v1-rust-1.98.0-nodebug-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore iroh test dependencies
+        id: compiled-iroh
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            target/iroh-tests/debug/deps
+            target/iroh-tests/debug/build
+            target/iroh-tests/debug/.fingerprint
+          key: ci-compiled-iroh-v1-rust-1.98.0-nodebug-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/iroh/Cargo.lock', 'vendor/iroh/Cargo.toml') }}
+          restore-keys: |
+            ci-compiled-iroh-v1-rust-1.98.0-nodebug-${{ runner.os }}-${{ runner.arch }}-
       - uses: ./.github/actions/setup-ci-tools
         with:
           profile: rust
@@ -121,6 +164,38 @@ jobs:
             target/debug/build
             target/debug/.fingerprint
           key: ${{ steps.compiled.outputs.cache-primary-key }}
+      - name: Bound the main noq test dependency cache
+        id: trim-noq
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.compiled-noq.outputs.cache-hit != 'true'
+        env:
+          ZTERM_CACHE_MANIFEST_PATH: vendor/noq-proto/Cargo.toml
+          ZTERM_CACHE_TARGET_DIR: target/noq-tests
+        run: sh tools/ci/trim-rust-cache.sh
+      - name: Save main noq test dependencies
+        if: steps.trim-noq.outputs.cacheable == 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            target/noq-tests/debug/deps
+            target/noq-tests/debug/build
+            target/noq-tests/debug/.fingerprint
+          key: ${{ steps.compiled-noq.outputs.cache-primary-key }}
+      - name: Bound the main iroh test dependency cache
+        id: trim-iroh
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.compiled-iroh.outputs.cache-hit != 'true'
+        env:
+          ZTERM_CACHE_MANIFEST_PATH: vendor/iroh/Cargo.toml
+          ZTERM_CACHE_TARGET_DIR: target/iroh-tests
+        run: sh tools/ci/trim-rust-cache.sh
+      - name: Save main iroh test dependencies
+        if: steps.trim-iroh.outputs.cacheable == 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            target/iroh-tests/debug/deps
+            target/iroh-tests/debug/build
+            target/iroh-tests/debug/.fingerprint
+          key: ${{ steps.compiled-iroh.outputs.cache-primary-key }}
       - name: Explain reproduction on failure
         if: failure()
         run: echo 'Reproduce on the matching Unix host with just ci-unix ${{ matrix.docs }}.' >> "$GITHUB_STEP_SUMMARY"
@@ -129,6 +204,8 @@ jobs:
   # them: these builds embed a source commit, so they pass the official
   # distribution check, and unreviewed PR binaries must not leave the runner.
   candidates-macos:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     name: Release candidate / ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -155,6 +232,18 @@ jobs:
           key: cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore native dependencies only for PR checks
+        id: compiled-native
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          lookup-only: ${{ github.event_name != 'pull_request' }}
+          path: |
+            target/release/deps
+            target/release/build
+            target/release/.fingerprint
+          key: ci-compiled-native-v1-rust-1.98.0-macos13-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'tools/release/build-native.sh', 'tools/release/setup-glibc-builder.sh') }}
+          restore-keys: |
+            ci-compiled-native-v1-rust-1.98.0-macos13-${{ matrix.target }}-
       - name: Build and inspect the shipped binary boundary
         env:
           RELEASE_TARGET: ${{ matrix.target }}
@@ -175,11 +264,26 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 7
+      - name: Bound the cold main native dependency cache
+        id: trim-native
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.compiled-native.outputs.cache-hit != 'true'
+        run: sh tools/ci/trim-rust-cache.sh release
+      - name: Save cold main native dependencies for PR checks
+        if: steps.trim-native.outputs.cacheable == 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            target/release/deps
+            target/release/build
+            target/release/.fingerprint
+          key: ${{ steps.compiled-native.outputs.cache-primary-key }}
       - name: Explain reproduction on failure
         if: failure()
         run: echo "Reproduce on the exact native host with RELEASE_TARGET=${{ matrix.target }} sh tools/release/build-native.sh release-input with explicit ZTERM_SOURCE_COMMIT and SOURCE_DATE_EPOCH." >> "$GITHUB_STEP_SUMMARY"
 
   candidates-linux:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     name: Release candidate / ${{ matrix.target }} / glibc 2.28
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
@@ -223,6 +327,18 @@ jobs:
           key: cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore native dependencies only for PR checks
+        id: compiled-native
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          lookup-only: ${{ github.event_name != 'pull_request' }}
+          path: |
+            target/release/deps
+            target/release/build
+            target/release/.fingerprint
+          key: ci-compiled-native-v1-rust-1.98.0-debian10-glibc228-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'tools/release/build-native.sh', 'tools/release/setup-glibc-builder.sh') }}
+          restore-keys: |
+            ci-compiled-native-v1-rust-1.98.0-debian10-glibc228-${{ matrix.target }}-
       - name: Build and inspect the shipped binary boundary
         env:
           RELEASE_TARGET: ${{ matrix.target }}
@@ -243,6 +359,19 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 7
+      - name: Bound the cold main native dependency cache
+        id: trim-native
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.compiled-native.outputs.cache-hit != 'true'
+        run: sh tools/ci/trim-rust-cache.sh release
+      - name: Save cold main native dependencies for PR checks
+        if: steps.trim-native.outputs.cacheable == 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            target/release/deps
+            target/release/build
+            target/release/.fingerprint
+          key: ${{ steps.compiled-native.outputs.cache-primary-key }}
       - name: Explain reproduction on failure
         if: failure()
         run: echo "Reproduce in the pinned Debian container with RELEASE_TARGET=${{ matrix.target }} sh tools/release/build-native.sh release-input with explicit ZTERM_SOURCE_COMMIT and SOURCE_DATE_EPOCH." >> "$GITHUB_STEP_SUMMARY"
@@ -276,6 +405,8 @@ jobs:
         run: echo "Reproduce with just ci-dependencies." >> "$GITHUB_STEP_SUMMARY"
 
   relay:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     name: Official relay bundle
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -310,6 +441,8 @@ jobs:
         run: echo "Reproduce on Docker-capable Linux with just ci-relay." >> "$GITHUB_STEP_SUMMARY"
 
   android:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     name: Android arm64 APK and lint
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -551,6 +684,7 @@ jobs:
     name: CI gate
     if: always()
     needs:
+      - changes
       - policy
       - android
       - rust
@@ -562,39 +696,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Require every event-owned evidence result
-        shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref }}
-          ANDROID_RESULT: ${{ needs.android.result }}
-          POLICY_RESULT: ${{ needs.policy.result }}
-          RUST_RESULT: ${{ needs.rust.result }}
-          NATIVE_MACOS_RESULT: ${{ needs.candidates-macos.result }}
-          NATIVE_LINUX_RESULT: ${{ needs.candidates-linux.result }}
-          CANDIDATE_RESULT: ${{ needs.candidate.result }}
-          DEPENDENCY_RESULT: ${{ needs.dependencies.result }}
-          RELAY_RESULT: ${{ needs.relay.result }}
-        run: |
-          set -euo pipefail
-          failed=false
-          for result in "$ANDROID_RESULT" "$POLICY_RESULT" "$RUST_RESULT" \
-            "$NATIVE_MACOS_RESULT" "$NATIVE_LINUX_RESULT" "$DEPENDENCY_RESULT" "$RELAY_RESULT"; do
-            if [ "$result" != success ]; then failed=true; fi
-          done
-          if [ "$EVENT_NAME" = push ] && [ "$REF_NAME" = refs/heads/main ]; then
-            if [ "$CANDIDATE_RESULT" != success ]; then failed=true; fi
-          else
-            if [ "$CANDIDATE_RESULT" != skipped ]; then failed=true; fi
-          fi
-          {
-            echo '## CI ownership summary'
-            echo "- Android: $ANDROID_RESULT (APK, lint, identity and 16 KB)"
-            echo "- policy: $POLICY_RESULT (just ci-policy)"
-            echo "- Rust matrix: $RUST_RESULT (just ci-unix)"
-            echo "- dependencies: $DEPENDENCY_RESULT (just ci-dependencies)"
-            echo "- relay: $RELAY_RESULT (just ci-relay)"
-            echo "- native builds: macOS $NATIVE_MACOS_RESULT, Linux glibc 2.28 $NATIVE_LINUX_RESULT (build-native.sh, floors, self-check, no-argument CLI)"
-            echo "- unsigned release candidate assembly (main only): $CANDIDATE_RESULT"
-          } >> "$GITHUB_STEP_SUMMARY"
-          [ "$failed" = false ] || exit 1
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 tools/ci/workflow-policy.py gate
