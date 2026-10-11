@@ -162,6 +162,40 @@ in about 0.31 to 0.33 seconds. The closed-connection control succeeded in about
 0.33 seconds both before and after. These tests establish the pinning defect,
 not which historical R02 timeouts it caused.
 
+## Hedged relay dial
+
+A relay dial made one `connect()` attempt bounded by the 10-second
+`CONNECT_TIMEOUT`. Behind a transparent proxy, that attempt's TLS handshake can
+receive nothing while a fresh connection to the same relay completes in well under
+a second. Every new connection that needed the relay then waited for the dead
+attempt's deadline before a retry could even start. Upstream `main` dials the
+same way.
+
+If an attempt has not connected after `DIAL_HEDGE_DELAY` (3 s), one concurrent
+attempt to the same relay starts. The first success wins and drops the other; a
+failure waits for the remaining attempt; an error before the hedge is returned as
+before. The original attempt is never cancelled for being slow. `CONNECT_TIMEOUT`
+still bounds both attempts, and backoff, datagram expiry and QUIC timers are
+unchanged. Each attempt has its own `relay_dial` span for diagnostics.
+
+A losing attempt that already authenticated briefly registers the same endpoint
+ID. The pinned iroh-relay 1.3.0 server keeps the newer connection active, demotes
+the older one, and promotes it back with a `Healthy` notice when the newer one
+disconnects; the client only logs relay health notices.
+
+Five socket-free `zterm_relay_dial_` tests on a paused clock cover a stalled first
+attempt, no hedge for a fast attempt, an early error without a hedge, a slow but
+progressing first attempt that still wins, and one failed attempt waiting for the
+other. The socket-based `stalled_first_relay_tls_is_hedged_before_the_dial_deadline`
+proxies a real TLS relay but leaves the first TCP connection unforwarded. Its first
+request took 10.09 s with the single attempt and 3.15–3.16 s with the hedge over
+four runs. On the rebuilt three-device lab, two of eight cold Linux connections had
+exactly this pattern: the needed relay's first TLS handshake made no progress until
+`dial_deadline` at 10 s, then the redial connected in about 0.47 s, for 12.3 s and
+12.6 s in total. Evidence:
+`$ZTERM_MULTI_DEVICE_ROOT/checks/ordered-fixes/hedged-relay-dial/` and
+`checks/lab-rebuild/relay-dials-cold-02.json`.
+
 ## Fair scheduling of connected relay traffic
 
 The connected actor used a biased select with outbound datagrams ahead of
