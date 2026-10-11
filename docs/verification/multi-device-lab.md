@@ -194,3 +194,56 @@ P37 能救回单个连接卡死，不能解决这种 Relay 整体不可达，原
 解释：经 Mac 代理到公共 Relay 的路径质量剧烈波动，主机重启后最初按延迟选出的 home relay
 在数十秒内又被改选，而客户端正连向最初发布的那一个，且那条路径只建立了连接、不转发数据。
 这属于网络路径（问题清单 R06 的边界）叠加 home relay 改选，不是能在本机复现的产品逻辑缺陷。
+
+### 10. 区分代理 TUN 与直连线路（11:38–11:53 UTC／19:38–19:53）
+
+用户确认 Bettbox 对 `iroh.link` 走直连、不用 fake-ip，默认 DNS 为 1.1.1.1／8.8.8.8 DoH。
+核对：四个 Relay 域名经 Bettbox、经 8.8.8.8 和 A 内解析的 IP 完全一致，DNS 无问题；但去往
+这些 IP 的路由都进入 Bettbox 的 utun5（由它在本机完成 TCP 握手后再自行直连），默认路由才是 en5。
+
+同时运行两路探针 15 分钟：经 Bettbox（默认路由）与绑定 en5 绕过 Bettbox。
+
+| Relay | 经 Bettbox 失败 | 绕过 Bettbox 失败 | 绕过时 TCP 连接 >1 秒（SYN 重传） |
+| --- | --- | --- | --- |
+| use1-1 | 4/96 | 6/87 | 10/87 |
+| usw1-1 | 0/96 | 0/87 | 13/87 |
+| euc1-1 | 10/96 | 9/87 | 0/87 |
+| aps1-1 | 4/96 | 4/87 | 25/87 |
+
+- 绕过 Bettbox 的失败率与经过它时相当，失败时刻有一部分重合（13 次两边 10 秒内都失败，
+  11 次只在经 Bettbox 时失败，13 次只在绕过时失败）。问题在本地网络到这些 Relay 的直连线路
+  （运营商／国际出口的丢包与阻断），不是 Bettbox 的规则或 DNS。三端共用的 home relay
+  `euc1-1` 此期间约 10% 的新连接失败。
+- 用户提供的 Bettbox 日志在 19:48:29 记录 `dial tcp 87.99.151.110:443: i/o timeout`（直连到 use1-1
+  无应答），与此一致。经 Bettbox 时产品只能看到 TLS 无进展或被重置，看不到外层连接失败。
+- 同一日志中对 `euc1-1:80` 的 `connection refused` 来自 Iroh 每次网络探测中的 captive portal
+  检查（`http://<relay>/generate_204`）；绕过 Bettbox 同样被拒绝，说明 Relay 不提供 80 端口。
+  Relay 连接只用 443，这些条目不影响连接。
+- 原始数据：`relay-probe-tun-03.jsonl`、`relay-probe-en5-03.jsonl`、对比 `relay-probe-compare-03.txt`。
+
+### 11. Relay 走代理对比与 herdr 本地网络权限（12:20–13:45 UTC／20:20–21:45）
+
+用户在 Bettbox 的 `personal-proxy` 规则集加入 `AND,((DOMAIN-SUFFIX,iroh.link),(NETWORK,TCP))`，
+使 Relay 的 TCP 443 走 `📲 个人服务` 代理组，UDP（7842 地址发现及直连打洞）仍按 `personal`
+规则直连。Bettbox 连接列表确认：TCP 443 经新加坡节点，UDP 7842 为 DIRECT。
+
+**探针（3 分钟，经新加坡节点）**：四个 Relay 均 0/31 失败，TLS 中位数 0.10–0.56 秒、最大
+0.31–0.85 秒；同一方法的直连基线为 0–10% 失败、最大 1.9–7.9 秒（`relay-probe-proxy-04.jsonl`）。
+
+**环境事故 E10**：其间 C 的两行 Direct 连续两轮保持单一 Relay 路径（`proxy-cold-01`、
+`proxy-cold-c-direct-02`），切回直连后仍复现（`direct-cold-c-direct-03`），说明与代理规则无关。
+排查结果：本会话及其启动的进程（含 08:40 启动的模拟器）对任何局域网地址发包都返回
+`No route to host`，且看不到 ARP 邻居；绕过命令沙箱无变化；同一命令在普通 Ghostty 标签页成功、
+在 herdr 标签页失败。herdr 服务脱离 Ghostty 由 launchd 托管，macOS 按 herdr 自身判定“本地网络”
+权限；该权限在 10:36–12:34 UTC 之间失效（原因未确认，系统设置中无 herdr 条目、也未弹窗）。
+用户重启 herdr 服务后新标签页恢复，但已在运行的进程不会恢复；由用户在新 herdr 标签页
+`adb emu kill` 后执行 `multi-device.py start` 重启模拟器即恢复。之后：
+
+- `proxy-cold-c-direct-04`：C 的两行 Direct 通过，连接 1.76／2.32 秒，0.02–0.03 秒内切到直连。
+  确认 Relay 只让 TCP 走代理不影响直连。
+- `proxy-cold-05`（cold ×1，Relay 走代理）：**8/8 通过**，审计零问题，连接 1.23–4.19 秒，
+  无 Relay 拨号失败。Relay 路径 RTT 中位数 199–755 ms，此前直连 Relay 时同类行为 478–2582 ms。
+
+样本量小（各一轮），只作为方向性证据。今后若 C 的 Direct 行突然只剩 Relay 路径，先在本会话
+检查 `python3 -c "import socket;socket.socket(2,2).sendto(b'x',('10.0.0.1',9))"` 是否报
+`No route to host`，再排查产品。
