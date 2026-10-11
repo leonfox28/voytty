@@ -18,17 +18,24 @@ access to build and reach official-n0. Linux uses real per-account daemons and
 CLI PTYs. Android uses `MultiDeviceTest`'s opt-in private mailbox with the real
 Application repository and Activity.
 
+The lab root defaults to `${XDG_STATE_HOME:-~/.local/state}/zterm-verification/multi-device`
+and can be overridden with `ZTERM_MULTI_DEVICE_ROOT`. It holds the environment
+record, the emulator's disk, the venv and all run evidence, so it is deliberately
+outside `target/` (which `cargo clean` deletes) and outside the source tree that
+`build` archives. The commands below use `$LAB` for that directory.
+
 ```sh
-python3 -m venv target/verification/multi-device/venv
-target/verification/multi-device/venv/bin/pip install -r tests/e2e/requirements-multi-device.txt
-target/verification/multi-device/venv/bin/python tests/e2e/multi-device.py create
-target/verification/multi-device/venv/bin/python tests/e2e/multi-device.py build
-target/verification/multi-device/venv/bin/python tests/e2e/multi-device.py preflight
-target/verification/multi-device/venv/bin/python tests/e2e/multi-device.py run --group extended --repeat 1 --soak-seconds 0 --keep-running
-target/verification/multi-device/venv/bin/python tests/e2e/multi-device.py run --group core --repeat 10 --soak-seconds 3600 --seed 20261003
+LAB=${ZTERM_MULTI_DEVICE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/zterm-verification/multi-device}
+python3 -m venv "$LAB/venv"
+"$LAB/venv/bin/pip" install -r tests/e2e/requirements-multi-device.txt
+"$LAB/venv/bin/python" tests/e2e/multi-device.py create
+"$LAB/venv/bin/python" tests/e2e/multi-device.py build
+"$LAB/venv/bin/python" tests/e2e/multi-device.py preflight
+"$LAB/venv/bin/python" tests/e2e/multi-device.py run --group extended --repeat 1 --soak-seconds 0 --keep-running
+"$LAB/venv/bin/python" tests/e2e/multi-device.py run --group core --repeat 10 --soak-seconds 3600 --seed 20261003
 ```
 
-The default environment is `target/verification/multi-device/environment/`.
+The default environment is `$LAB/environment/`.
 Use another `--environment` and even `--port` for a separate lab. Every adb
 invocation uses the recorded serial. `matrix` prints the expanded rows with the
 same group, scenario, host, path and controller filters as `run`;
@@ -60,8 +67,8 @@ For ten repetitions of the connection/recovery/concurrency core and one of each
 extended process, lifecycle, authorization and upload case, run:
 
 ```sh
-target/verification/multi-device/venv/bin/python tests/e2e/multi-device.py run --group extended --repeat 1 --soak-seconds 0 --keep-running
-target/verification/multi-device/venv/bin/python tests/e2e/multi-device.py run --group core --repeat 10 --soak-seconds 3600 --seed 20261003
+"$LAB/venv/bin/python" tests/e2e/multi-device.py run --group extended --repeat 1 --soak-seconds 0 --keep-running
+"$LAB/venv/bin/python" tests/e2e/multi-device.py run --group core --repeat 10 --soak-seconds 3600 --seed 20261003
 ```
 
 `--group all` remains the default. One complete repetition has 234 rows: 146
@@ -109,8 +116,8 @@ them when that argument is absent; it never selects a personal machine name.
 After the three-device runner has paired C with the owned hosts, run them with:
 
 ```sh
-target/verification/multi-device/venv/bin/python tests/e2e/multi-device-hosts.py \
-  --output target/verification/multi-device/checks/android-hosts-01.json
+"$LAB/venv/bin/python" tests/e2e/multi-device-hosts.py \
+  --output "$LAB/checks/android-hosts-01.json"
 adb -s emulator-5586 shell am instrument -w -r \
   -e class io.github.leonfox28.zterm.TerminalUiTest#gesturesCopyOverlayAndActivityRetention,io.github.leonfox28.zterm.TerminalUiTest#childMouseAndAlternateScrollUseTouchWithoutStealingLongPress \
   -e hostName multi-device-A \
@@ -155,7 +162,7 @@ three devices before expiry (for example, at 12 minutes), using a new evidence
 filename each time:
 
 ```sh
-python3 tests/e2e/multi-device-diagnostics.py --output target/verification/multi-device/checks/detail-renew-01.json
+python3 tests/e2e/multi-device-diagnostics.py --output "$LAB/checks/detail-renew-01.json"
 ```
 
 The helper requires the recorded VMs/emulator to already be running and the
@@ -291,7 +298,7 @@ Tickets only cross private files or stdin and are excluded from evidence.
 Inside a disposable Linux guest, `sh tests/e2e/handshake-delay.sh 10` exercises
 reverse authorization confirmation with 60 ms loopback delay. This is a separate
 transport regression, not part of the official-n0 three-device matrix. Run
-`target/verification/multi-device/venv/bin/python tests/e2e/multi_device_test.py`
+`"$LAB/venv/bin/python" tests/e2e/multi_device_test.py`
 for coordinator-only regressions. After a matrix finishes, run
 `python3 tests/e2e/multi-device-audit.py RUN_ID` to audit coverage, path evidence,
 timing bounds, original-shell continuity, unique command execution and unknown

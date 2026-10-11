@@ -21,6 +21,9 @@ P01–P35 已提交到 `main`（`1f4b180`）；2026-10-11 新增的 P36 在分�
 原始证据根目录为 `target/verification/multi-device/`；下文 `checks/...` 和运行编号均相对于此目录。
 2026-10-11 核对时本机该目录已不存在（`target/` 于 2026-10-10 17:08 重建，晚于 P01–P35
 提交），此前各轮引用的原始证据无法在本机复查；文字记录保留，历史结论不因此改写。
+此后实验根目录移到 `${XDG_STATE_HOME:-~/.local/state}/zterm-verification/multi-device/`
+（可用 `ZTERM_MULTI_DEVICE_ROOT` 覆盖），新证据的 `checks/...` 相对该目录，P36 证据已移入；
+重建过程见 [三端测试环境重建记录](multi-device-lab.md)。
 详细时间线见 [验收报告](multi-device.md) 和 [历史过程](multi-device-history.md)，操作入口见
 [运行说明](../../tests/e2e/README.md)。
 

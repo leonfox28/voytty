@@ -6,6 +6,7 @@ Writes acceptance-audit.json next to each run's unchanged raw evidence.
 """
 import collections
 import hashlib
+import importlib.util
 import json
 import math
 import re
@@ -13,8 +14,13 @@ from pathlib import Path
 import statistics
 import sys
 
+spec = importlib.util.spec_from_file_location('multi_device', Path(__file__).with_name('multi-device.py'))
+md = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(md)
+base = md.BASE
+# Older runs recorded evidence relative to the repository; current runs record
+# absolute paths, which this join leaves unchanged.
 workspace = Path(__file__).resolve().parents[2]
-base = workspace / 'target/verification/multi-device'
 if len(sys.argv) < 2:
     sys.exit('usage: multi-device-audit.py RUN_ID [RUN_ID ...]')
 exit_status = 0
@@ -22,7 +28,7 @@ keys = ('scenario', 'host', 'old', 'new', 'path', 'iteration')
 for name in sys.argv[1:]:
     root = base / name
     if root.parent.resolve() != base.resolve():
-        sys.exit('run IDs must name one directory below target/verification/multi-device')
+        sys.exit(f'run IDs must name one directory below {base}')
     data = json.loads((root / 'results.json').read_text())
     planned = json.loads((root / 'matrix.json').read_text())
     results = data['results']
