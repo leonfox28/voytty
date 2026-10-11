@@ -77,16 +77,45 @@ fn run_unix_gate() -> Result<(), String> {
 
 #[cfg(unix)]
 fn hosted_profile_is_independent_of_parent_terminal() -> Result<(), String> {
-    for (label, term, colorterm) in [
-        ("ghostty", Some("xterm-ghostty"), Some("truecolor")),
-        ("kitty", Some("xterm-kitty"), Some("24bit")),
-        ("tmux", Some("screen-256color"), None),
-        ("unset", None, None),
+    // A daemon started inside one of these must not make its hosted shells
+    // look nested; a host-login variable such as TMPDIR still passes through.
+    let temporary = std::env::temp_dir();
+    let tmpdir = temporary
+        .to_str()
+        .ok_or("temporary directory is not UTF-8")?;
+    for (label, term, colorterm, markers) in [
+        (
+            "ghostty",
+            Some("xterm-ghostty"),
+            Some("truecolor"),
+            &[("TERM_PROGRAM", "ghostty")][..],
+        ),
+        (
+            "kitty",
+            Some("xterm-kitty"),
+            Some("24bit"),
+            &[("KITTY_WINDOW_ID", "1")][..],
+        ),
+        (
+            "tmux",
+            Some("screen-256color"),
+            None,
+            &[("TMUX", "/tmp/tmux-501/default,1,0"), ("TMUX_PANE", "%1")][..],
+        ),
+        (
+            "herdr",
+            Some("xterm-256color"),
+            Some("truecolor"),
+            &[("HERDR_ENV", "1"), ("HERDR_PANE_ID", "pane-1")][..],
+        ),
+        ("unset", None, None, &[][..]),
     ] {
         let executable = current_executable()?;
         let mut command = Command::new(executable);
         command
             .arg("--hosted-profile-probe")
+            .env("TMPDIR", tmpdir)
+            .envs(markers.iter().copied())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         match term {
@@ -106,7 +135,8 @@ fn hosted_profile_is_independent_of_parent_terminal() -> Result<(), String> {
             }
         }
         let mut child = command.spawn().map_err(display_error)?;
-        let deadline = Instant::now() + DEADLINE;
+        // Outlast the probe's own output deadline so its observed tail is reported.
+        let deadline = Instant::now() + DEADLINE * 2;
         loop {
             if let Some(status) = child.try_wait().map_err(display_error)? {
                 let output = child.wait_with_output().map_err(display_error)?;
@@ -116,7 +146,7 @@ fn hosted_profile_is_independent_of_parent_terminal() -> Result<(), String> {
                         String::from_utf8_lossy(&output.stderr)
                     ));
                 }
-                require_contains(&output.stdout, b"HOSTED_PROFILE:xterm-256color:truecolor")?;
+                require_contains(&output.stdout, hosted_profile_line(tmpdir).as_bytes())?;
                 break;
             }
             if Instant::now() >= deadline {
@@ -129,21 +159,36 @@ fn hosted_profile_is_independent_of_parent_terminal() -> Result<(), String> {
             thread::sleep(Duration::from_millis(10));
         }
     }
-    println!("PTY_CASE=hosted_profile,parent_variants=4,term=xterm-256color");
+    println!(
+        "PTY_CASE=hosted_profile,parent_variants=5,term=xterm-256color,starter_markers=dropped"
+    );
     Ok(())
 }
 
 #[cfg(unix)]
+fn hosted_profile_line(tmpdir: &str) -> String {
+    format!("HOSTED_PROFILE:xterm-256color:truecolor:[]:{tmpdir}")
+}
+
+#[cfg(unix)]
 fn hosted_profile_probe() -> Result<(), String> {
+    let expected = hosted_profile_line(&std::env::var("TMPDIR").map_err(display_error)?);
     let mut session = PtyHost::new()
         .spawn_current_account_login_shell(PtySize::default(), None)
         .map_err(display_error)?;
     let reader = session.take_reader().map_err(display_error)?;
     let output = OutputDrain::start(reader);
     session
-        .write_input(b"printf 'HOSTED_PROFILE:%s:%s\\n' \"$TERM\" \"$COLORTERM\"; exit\n")
+        .write_input(
+            concat!(
+                "printf 'HOSTED_PROFILE:%s:%s:[%s%s%s%s%s%s]:%s\\n' \"$TERM\" \"$COLORTERM\" ",
+                "\"$TERM_PROGRAM\" \"$KITTY_WINDOW_ID\" \"$TMUX\" \"$TMUX_PANE\" ",
+                "\"$HERDR_ENV\" \"$HERDR_PANE_ID\" \"$TMPDIR\"; exit\n",
+            )
+            .as_bytes(),
+        )
         .map_err(display_error)?;
-    output.wait_for(b"HOSTED_PROFILE:xterm-256color:truecolor", DEADLINE)?;
+    output.wait_for(expected.as_bytes(), DEADLINE)?;
     let status = wait_for_exit(&mut session, DEADLINE)?;
     if !status.success() {
         return Err(format!(
@@ -151,8 +196,8 @@ fn hosted_profile_probe() -> Result<(), String> {
         ));
     }
     let bytes = output.finish(DEADLINE)?;
-    require_contains(&bytes, b"HOSTED_PROFILE:xterm-256color:truecolor")?;
-    println!("HOSTED_PROFILE:xterm-256color:truecolor");
+    require_contains(&bytes, expected.as_bytes())?;
+    println!("{expected}");
     Ok(())
 }
 

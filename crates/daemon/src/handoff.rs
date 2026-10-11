@@ -1,4 +1,9 @@
-//! One-shot update owner, detached from the terminal it may terminate.
+//! One-shot lifecycle owner, detached from the terminal it may terminate.
+//!
+//! Stop, restart, and update all stop the running daemon, which ends its
+//! Sessions and possibly the terminal that asked. The frontend keeps
+//! confirmation and progress; after an explicit handoff this child owns the
+//! stop, any release activation, and any replacement start.
 //!
 //! Only this module decodes the private parent/child control protocol. Candidate
 //! preparation and activation remain in their existing distribution/runtime owners.
@@ -21,29 +26,46 @@ use zterm_platform::user_state::UserPaths;
 
 use crate::distribution::{PreparedRelease, ReleaseSelection};
 use crate::error::DaemonError;
-use crate::operations::{LocalRuntime, UpdateResult, UpdateStage};
-use crate::service::SessionImpact;
+use crate::operations::{LifecycleStage, LocalRuntime, UpdateResult};
+use crate::service::{DaemonReadiness, SessionImpact};
 
-/// Hidden entry used only by the one-shot update launcher.
-pub const INTERNAL_UPDATE_ARGUMENT: &str = "--internal-update";
+/// Hidden entry used only by the one-shot lifecycle launcher.
+pub const INTERNAL_HANDOFF_ARGUMENT: &str = "--internal-handoff";
 const MAX_CONTROL_BYTES: usize = 64 * 1024;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 const READY_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(crate) trait UpdateInteraction {
-    fn progress(&mut self, stage: UpdateStage);
+pub(crate) trait HandoffInteraction {
+    fn progress(&mut self, stage: LifecycleStage);
     fn confirm(&mut self, impact: &SessionImpact) -> Result<(), DaemonError>;
-    fn handoff(&mut self, prepared: &PreparedRelease) -> Result<(), DaemonError>;
+    /// Transfers ownership; only an update hands over a verified release.
+    fn handoff(&mut self, release: Option<&PreparedRelease>) -> Result<(), DaemonError>;
     fn committed(&mut self);
+}
+
+/// Lifecycle command the frontend asks the detached owner to run.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+enum Command {
+    Stop,
+    Restart,
+    Update { version: Option<String> },
+}
+
+impl Command {
+    const fn noun(&self) -> &'static str {
+        match self {
+            Self::Stop => "stop",
+            Self::Restart => "restart",
+            Self::Update { .. } => "update",
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 enum Request {
-    Begin {
-        version: Option<String>,
-        approved: bool,
-    },
+    Begin { command: Command, approved: bool },
     Approve,
     Cancel,
     Continue,
@@ -53,11 +75,20 @@ enum Request {
 #[serde(deny_unknown_fields)]
 enum Event {
     Ready,
-    Progress(UpdateStage),
+    Progress(LifecycleStage),
     Confirm(SessionImpact),
     Handoff,
     Accepted,
-    Complete(Result<UpdateResult, Failure>),
+    Complete(Result<Completed, Failure>),
+}
+
+/// Result of each command; its frontend accepts only the matching variant.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+enum Completed {
+    Stopped(Option<SessionImpact>),
+    Restarted(DaemonReadiness),
+    Updated(UpdateResult),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -88,14 +119,14 @@ impl Failure {
 fn channel_error() -> DaemonError {
     DaemonError::new(
         DomainErrorKind::OperationOutcomeUnknown,
-        "Update control connection closed or failed. If the update was accepted, it may still be running; check zterm --version, zterm status and zterm logs before retrying.",
+        "Lifecycle control connection closed or failed. If the operation was accepted, it may still be running; check zterm --version, zterm status and zterm logs before retrying.",
     )
 }
 
 fn cancelled() -> DaemonError {
     DaemonError::new(
         DomainErrorKind::Cancelled,
-        "Update cancelled before interruption approval or execution handoff.",
+        "Cancelled before interruption approval or execution handoff.",
     )
 }
 
@@ -179,20 +210,20 @@ impl Channel {
 // A child that never became ready cannot mutate and may be terminated.
 // Once ready, let channel EOF/cancellation unwind its owned staging normally;
 // after Continue, the child must also finish any accepted mutation independently.
-struct UpdaterChild {
+struct OwnerChild {
     child: Option<Child>,
     continued: bool,
     ready: bool,
 }
 
-impl Drop for UpdaterChild {
+impl Drop for OwnerChild {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
             if !self.ready {
                 let _ = child.kill();
             }
             let _ = std::thread::Builder::new()
-                .name("zterm-update-reap".into())
+                .name("zterm-handoff-reap".into())
                 .spawn(move || {
                     let _ = child.wait();
                 });
@@ -200,24 +231,94 @@ impl Drop for UpdaterChild {
     }
 }
 
-pub(crate) fn run_frontend(
+/// Stops through the detached owner; `None` means it was already stopped.
+pub(crate) fn stop(
+    executable: &Path,
+    paths: &UserPaths,
+    approved: bool,
+    confirm: impl FnMut(&SessionImpact) -> Result<(), DaemonError>,
+    progress: impl FnMut(LifecycleStage),
+) -> Result<Option<SessionImpact>, DaemonError> {
+    match run_frontend(
+        executable,
+        paths,
+        Command::Stop,
+        approved,
+        confirm,
+        progress,
+    )? {
+        Completed::Stopped(impact) => Ok(impact),
+        _ => Err(channel_error()),
+    }
+}
+
+/// Restarts through the detached owner and returns the new daemon's readiness.
+pub(crate) fn restart(
+    executable: &Path,
+    paths: &UserPaths,
+    approved: bool,
+    confirm: impl FnMut(&SessionImpact) -> Result<(), DaemonError>,
+    progress: impl FnMut(LifecycleStage),
+) -> Result<DaemonReadiness, DaemonError> {
+    match run_frontend(
+        executable,
+        paths,
+        Command::Restart,
+        approved,
+        confirm,
+        progress,
+    )? {
+        Completed::Restarted(readiness) => Ok(readiness),
+        _ => Err(channel_error()),
+    }
+}
+
+/// Prepares, activates, and starts one release through the detached owner.
+pub(crate) fn update(
     executable: &Path,
     paths: &UserPaths,
     version: Option<&str>,
     approved: bool,
-    mut confirm: impl FnMut(&SessionImpact) -> Result<(), DaemonError>,
-    mut progress: impl FnMut(UpdateStage),
+    confirm: impl FnMut(&SessionImpact) -> Result<(), DaemonError>,
+    progress: impl FnMut(LifecycleStage),
 ) -> Result<UpdateResult, DaemonError> {
-    let (child, stream) =
-        spawn_isolated_command(executable, paths.home(), INTERNAL_UPDATE_ARGUMENT).map_err(
-            |_| {
-                DaemonError::new(
-                    DomainErrorKind::UpdateRejected,
-                    "Unable to start the independent updater; the daemon has not been stopped.",
-                )
-            },
-        )?;
-    let mut child = UpdaterChild {
+    let command = Command::Update {
+        version: version.map(str::to_owned),
+    };
+    match run_frontend(executable, paths, command, approved, confirm, progress)? {
+        Completed::Updated(result) => Ok(result),
+        _ => Err(channel_error()),
+    }
+}
+
+fn run_frontend(
+    executable: &Path,
+    paths: &UserPaths,
+    command: Command,
+    approved: bool,
+    mut confirm: impl FnMut(&SessionImpact) -> Result<(), DaemonError>,
+    mut progress: impl FnMut(LifecycleStage),
+) -> Result<Completed, DaemonError> {
+    let noun = command.noun();
+    let refused = if matches!(command, Command::Update { .. }) {
+        DomainErrorKind::UpdateRejected
+    } else {
+        DomainErrorKind::Cancelled
+    };
+    let (child, stream) = spawn_isolated_command(
+        executable,
+        paths.home(),
+        INTERNAL_HANDOFF_ARGUMENT,
+    )
+    .map_err(|_| {
+        DaemonError::new(
+            refused,
+            format!(
+                "Unable to start the independent {noun} process; nothing was stopped or installed."
+            ),
+        )
+    })?;
+    let mut child = OwnerChild {
         child: Some(child),
         continued: false,
         ready: false,
@@ -236,10 +337,7 @@ pub(crate) fn run_frontend(
             .stream
             .set_read_timeout(None)
             .map_err(|_| channel_error())?;
-        channel.send(&Request::Begin {
-            version: version.map(str::to_owned),
-            approved,
-        })?;
+        channel.send(&Request::Begin { command, approved })?;
         loop {
             match channel.receive()? {
                 Event::Progress(stage) => progress(stage),
@@ -251,7 +349,7 @@ pub(crate) fn run_frontend(
                     channel.send(&Request::Approve)?;
                 }
                 Event::Handoff if !child.continued => {
-                    progress(UpdateStage::Continuing);
+                    progress(LifecycleStage::Continuing);
                     child.continued = true;
                     channel.send(&Request::Continue)?;
                 }
@@ -263,24 +361,38 @@ pub(crate) fn run_frontend(
     })();
     result.map_err(|error: DaemonError| {
         if !child.continued && error.kind() == DomainErrorKind::OperationOutcomeUnknown {
-            DaemonError::new(DomainErrorKind::Cancelled, "Update control failed before execution handoff; this updater did not stop the daemon or change the installed binary.")
+            DaemonError::new(
+                DomainErrorKind::Cancelled,
+                format!(
+                    "The {noun} control connection failed before execution handoff; nothing was stopped or installed."
+                ),
+            )
         } else {
             error
         }
     })
 }
 
-/// Runs the hidden one-shot updater. It never obtains terminal input directly.
-pub fn run_internal_update() -> Result<(), DaemonError> {
-    let paths = crate::lifecycle::production_user_paths()?;
+/// Runs the hidden one-shot lifecycle owner. It never obtains terminal input directly.
+pub fn run_internal_handoff() -> Result<(), DaemonError> {
+    run_owner(&LocalRuntime::current()?)
+}
+
+/// Serves the hidden entry for a task-private runtime in multi-process tests.
+#[doc(hidden)]
+pub fn run_internal_handoff_for_test(runtime: &LocalRuntime) -> Result<(), DaemonError> {
+    run_owner(runtime)
+}
+
+fn run_owner(runtime: &LocalRuntime) -> Result<(), DaemonError> {
+    let paths = runtime.paths();
     let stream = take_isolated_channel(paths.uid()).map_err(|_| channel_error())?;
-    let runtime = LocalRuntime::current()?;
     let tokio = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| channel_error())?;
     let uid = paths.uid();
-    tokio.block_on(run_worker(&runtime, &paths, stream, |version| async move {
+    tokio.block_on(run_worker(runtime, stream, |version| async move {
         let executable = std::env::current_exe().map_err(|_| channel_error())?;
         crate::distribution::validate_managed_executable(&executable, uid)?;
         crate::distribution::prepare_update(ReleaseSelection::parse(version.as_deref())?).await
@@ -289,7 +401,6 @@ pub fn run_internal_update() -> Result<(), DaemonError> {
 
 async fn run_worker<F, Fut>(
     runtime: &LocalRuntime,
-    paths: &UserPaths,
     stream: UnixStream,
     prepare: F,
 ) -> Result<(), DaemonError>
@@ -299,52 +410,32 @@ where
 {
     let mut worker = Worker {
         channel: Channel::new(stream),
-        paths,
+        paths: runtime.paths(),
         version: None,
-        log_enabled: crate::diagnostics::configured(paths),
-        diagnostics: crate::diagnostics::recorder(paths),
+        log_enabled: false,
+        diagnostics: Recorder::default(),
         operation: Operation::default(),
         accepted: false,
         committed: false,
     };
     worker.channel.send(&Event::Ready)?;
-    let Request::Begin { version, approved } = worker.channel.receive()? else {
+    let Request::Begin { command, approved } = worker.channel.receive()? else {
         return Err(cancelled());
     };
-    let result = async {
-        worker.progress(UpdateStage::Preparing);
-        let prepared = prepare(version).await?;
-        worker.progress(UpdateStage::Verified {
-            version: prepared.version().to_owned(),
-        });
-        runtime
-            .apply_prepared_update(prepared, approved, &mut worker)
+    let result = match command {
+        Command::Stop => runtime
+            .apply_stop(approved, &mut worker)
             .await
-    }
-    .await;
-    let record = match &result {
-        Ok(result) => DiagnosticEvent::new(Kind::UpdateCompleted)
-            .outcome(Outcome::Success)
-            .release_version(&result.installed_version)
-            .daemon_started(result.daemon_started),
-        Err(error) => DiagnosticEvent::new(Kind::UpdateCompleted)
-            .level(if error.kind() == DomainErrorKind::Cancelled {
-                Level::Info
-            } else {
-                Level::Warn
-            })
-            .error(error.kind())
-            .outcome(if worker.committed {
-                Outcome::PartialCompletion
-            } else if error.kind() == DomainErrorKind::Cancelled {
-                Outcome::Cancelled
-            } else {
-                Outcome::Failed
-            }),
-    }
-    .committed(worker.committed)
-    .operation(&worker.operation);
-    let _ = worker.log(record, true);
+            .map(Completed::Stopped),
+        Command::Restart => runtime
+            .apply_restart(approved, &mut worker)
+            .await
+            .map(Completed::Restarted),
+        Command::Update { version } => worker
+            .update(runtime, version, approved, prepare)
+            .await
+            .map(Completed::Updated),
+    };
     let _ = worker
         .channel
         .send(&Event::Complete(result.clone().map_err(Into::into)));
@@ -383,17 +474,68 @@ impl Worker<'_> {
         }
         Ok(())
     }
+
+    /// Only updates record their stages and outcome in the daemon log.
+    async fn update<F, Fut>(
+        &mut self,
+        runtime: &LocalRuntime,
+        version: Option<String>,
+        approved: bool,
+        prepare: F,
+    ) -> Result<UpdateResult, DaemonError>
+    where
+        F: FnOnce(Option<String>) -> Fut,
+        Fut: std::future::Future<Output = Result<PreparedRelease, DaemonError>>,
+    {
+        self.log_enabled = crate::diagnostics::configured(self.paths);
+        self.diagnostics = crate::diagnostics::recorder(self.paths);
+        let result = async {
+            self.progress(LifecycleStage::Preparing);
+            let prepared = prepare(version).await?;
+            self.progress(LifecycleStage::Verified {
+                version: prepared.version().to_owned(),
+            });
+            runtime
+                .apply_prepared_update(prepared, approved, &mut *self)
+                .await
+        }
+        .await;
+        let record = match &result {
+            Ok(result) => DiagnosticEvent::new(Kind::UpdateCompleted)
+                .outcome(Outcome::Success)
+                .release_version(&result.installed_version)
+                .daemon_started(result.daemon_started),
+            Err(error) => DiagnosticEvent::new(Kind::UpdateCompleted)
+                .level(if error.kind() == DomainErrorKind::Cancelled {
+                    Level::Info
+                } else {
+                    Level::Warn
+                })
+                .error(error.kind())
+                .outcome(if self.committed {
+                    Outcome::PartialCompletion
+                } else if error.kind() == DomainErrorKind::Cancelled {
+                    Outcome::Cancelled
+                } else {
+                    Outcome::Failed
+                }),
+        }
+        .committed(self.committed)
+        .operation(&self.operation);
+        let _ = self.log(record, true);
+        result
+    }
 }
 
-impl UpdateInteraction for Worker<'_> {
-    fn progress(&mut self, stage: UpdateStage) {
+impl HandoffInteraction for Worker<'_> {
+    fn progress(&mut self, stage: LifecycleStage) {
         let code = match &stage {
-            UpdateStage::Preparing => Stage::Preparing,
-            UpdateStage::Verified { .. } => Stage::Verified,
-            UpdateStage::Continuing => Stage::Continuing,
-            UpdateStage::Stopping => Stage::Stopping,
-            UpdateStage::Activating => Stage::Activating,
-            UpdateStage::Starting => Stage::Starting,
+            LifecycleStage::Preparing => Stage::Preparing,
+            LifecycleStage::Verified { .. } => Stage::Verified,
+            LifecycleStage::Continuing => Stage::Continuing,
+            LifecycleStage::Stopping => Stage::Stopping,
+            LifecycleStage::Activating => Stage::Activating,
+            LifecycleStage::Starting => Stage::Starting,
         };
         let _ = self.log(DiagnosticEvent::new(Kind::UpdateStage).stage(code), false);
         let _ = self.channel.send(&Event::Progress(stage));
@@ -415,27 +557,29 @@ impl UpdateInteraction for Worker<'_> {
         );
     }
 
-    fn handoff(&mut self, prepared: &PreparedRelease) -> Result<(), DaemonError> {
-        self.version = Some(prepared.version().to_owned());
-        self.log_enabled = match fs::symlink_metadata(self.paths.state_root()) {
-            Ok(_) => crate::diagnostics::configured(self.paths),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(_) => {
-                return Err(DaemonError::new(
-                    DomainErrorKind::PathUnsafe,
-                    "Unable to inspect update state.",
-                ));
-            }
-        };
-        if self.log_enabled {
-            zterm_platform::diagnostics::Store::new(self.paths.clone())
-                .preflight()
-                .map_err(|_| {
-                    DaemonError::new(
+    fn handoff(&mut self, release: Option<&PreparedRelease>) -> Result<(), DaemonError> {
+        if let Some(prepared) = release {
+            self.version = Some(prepared.version().to_owned());
+            self.log_enabled = match fs::symlink_metadata(self.paths.state_root()) {
+                Ok(_) => crate::diagnostics::configured(self.paths),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(_) => {
+                    return Err(DaemonError::new(
                         DomainErrorKind::PathUnsafe,
-                        "Unable to open the update outcome log.",
-                    )
-                })?;
+                        "Unable to inspect update state.",
+                    ));
+                }
+            };
+            if self.log_enabled {
+                zterm_platform::diagnostics::Store::new(self.paths.clone())
+                    .preflight()
+                    .map_err(|_| {
+                        DaemonError::new(
+                            DomainErrorKind::PathUnsafe,
+                            "Unable to open the update outcome log.",
+                        )
+                    })?;
+            }
         }
         self.log(
             DiagnosticEvent::new(Kind::UpdateStage).stage(Stage::AwaitingHandoff),

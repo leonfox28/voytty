@@ -107,6 +107,17 @@ Alacritty, tmux, or another terminal, that outer application only interprets
 Zterm's allowlisted ANSI. It does not contain, share, or nest the daemon's
 Alacritty model object or its PTY.
 
+The rest of the login environment is built like a fresh login, not copied from
+whichever process started the daemon. `HOME`, `SHELL`, `USER`, and `LOGNAME`
+come from the account database. Only host-login variables pass through from the
+daemon: `PATH`, `LANG`, `LANGUAGE`, `LC_*`, `TZ`, `TMPDIR`, `XDG_RUNTIME_DIR`,
+the XDG base directories, `DBUS_SESSION_BUS_ADDRESS`, `SSH_AUTH_SOCK`,
+`DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, and `__CF_USER_TEXT_ENCODING`. A
+daemon started or updated from inside tmux, Herdr, an SSH connection, or another
+terminal therefore never hands markers such as `TMUX`, `HERDR_ENV`,
+`TERM_PROGRAM`, or `SSH_CONNECTION` to new sessions; everything else comes from
+the login shell's own profile.
+
 ## Trust and architecture boundary
 
 The local adapter reuses the daemon's Unix socket and authorizes the peer's

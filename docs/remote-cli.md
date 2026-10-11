@@ -79,6 +79,9 @@ for English `[y/N]` confirmation because those Sessions and PTYs will end.
 Detached Sessions also need confirmation; connections without Sessions do not.
 A newly admitted Session encountered by the stop request is presented in the
 same invocation before it can be ended. `restart` explicitly starts a daemon.
+Like `update`, both may be run inside a remote or local zterm Session: after
+confirmation a one-shot process independent of that terminal completes the
+stop and any restart while the Session ends. Reconnect after a restart.
 
 Confirmation accepts `y` or `yes`, ignoring case and surrounding whitespace.
 Empty input, EOF, or another answer cancels. `-y`/`--yes` skips the prompt;

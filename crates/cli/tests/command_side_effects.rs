@@ -242,7 +242,7 @@ fn foreground_daemon_entry_is_hidden_and_exclusive() {
     assert!(cli.has_internal_entry());
     for other in [
         "--internal-daemon",
-        "--internal-update",
+        "--internal-handoff",
         "--internal-release-self-check",
         "status",
     ] {

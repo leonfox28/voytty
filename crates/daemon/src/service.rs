@@ -46,7 +46,7 @@ use crate::session::{SessionService, SessionSummary, ShutdownOutcome};
 use crate::store::StoreHandle;
 
 /// Protocol version projected by readiness and status.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ProtocolStatus {
     /// Product wire major.
     pub wire_major: u32,
@@ -57,7 +57,7 @@ pub struct ProtocolStatus {
 }
 
 /// Successful local readiness projection.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DaemonReadiness {
     /// Supported protocol values.
     pub protocol: ProtocolStatus,

@@ -13,6 +13,32 @@ const HOSTED_TERM: &str = "xterm-256color";
 #[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
 const HOSTED_COLORTERM: &str = "truecolor";
 
+/// Daemon variables that describe this host login rather than whichever
+/// terminal, multiplexer, or connection started the daemon; `LC_*` is also
+/// kept. Starter markers such as `TMUX` would make every hosted shell look
+/// nested, so they are dropped and the login profile rebuilds the rest.
+#[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
+const INHERITED_LOGIN_VARIABLES: &[&str] = &[
+    "PATH",
+    "LANG",
+    "LANGUAGE",
+    "TZ",
+    "TMPDIR",
+    "XDG_RUNTIME_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_CONFIG_DIRS",
+    "XDG_DATA_HOME",
+    "XDG_DATA_DIRS",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "SSH_AUTH_SOCK",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "__CF_USER_TEXT_ENCODING",
+];
+
 #[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
 use crate::account::{AccountError, EffectiveAccount};
 
@@ -294,6 +320,7 @@ impl PtyHost {
     ///
     /// If `working_directory` is absent, the account home is used. The account
     /// database, not daemon environment variables or cwd, supplies all defaults.
+    /// Only host-login variables pass through from the daemon environment.
     pub fn spawn_current_account_login_shell(
         &self,
         size: PtySize,
@@ -304,7 +331,7 @@ impl PtyHost {
         #[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
         {
             let account = EffectiveAccount::current().map_err(account_error)?;
-            let builder = login_shell_builder(&account, working_directory)?;
+            let builder = login_shell_builder(&account, working_directory, std::env::vars_os())?;
             self.spawn_builder(builder, size)
         }
 
@@ -720,6 +747,7 @@ fn account_error(error: AccountError) -> PtyError {
 fn login_shell_builder(
     account: &EffectiveAccount,
     requested_cwd: Option<&Path>,
+    daemon_environment: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Result<CommandBuilder, PtyError> {
     validate_directory(account.home(), PtyPathKind::HomeDirectory)?;
     validate_executable(account.shell(), PtyPathKind::LoginShell)?;
@@ -727,12 +755,27 @@ fn login_shell_builder(
     validate_directory(cwd, PtyPathKind::WorkingDirectory)?;
 
     let mut builder = CommandBuilder::new_default_prog();
+    // The builder starts from the whole daemon environment.
+    builder.env_clear();
+    for (key, value) in daemon_environment {
+        if is_inherited_login_variable(&key) {
+            builder.env(key, value);
+        }
+    }
     builder.env("HOME", account.home());
     builder.env("SHELL", account.shell());
+    builder.env("USER", account.name());
+    builder.env("LOGNAME", account.name());
     builder.env("TERM", HOSTED_TERM);
     builder.env("COLORTERM", HOSTED_COLORTERM);
     builder.cwd(cwd);
     Ok(builder)
+}
+
+#[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
+fn is_inherited_login_variable(key: &std::ffi::OsStr) -> bool {
+    key.to_str()
+        .is_some_and(|key| key.starts_with("LC_") || INHERITED_LOGIN_VARIABLES.contains(&key))
 }
 
 #[cfg(test)]
@@ -768,11 +811,19 @@ mod tests {
     #[test]
     fn login_builder_uses_effective_account_defaults() -> Result<(), PtyError> {
         let account = EffectiveAccount::current().map_err(account_error)?;
-        let builder = login_shell_builder(&account, None)?;
+        let builder = login_shell_builder(&account, None, std::iter::empty())?;
 
         assert!(builder.is_default_prog());
         assert_eq!(builder.get_env("HOME"), Some(account.home().as_os_str()));
         assert_eq!(builder.get_env("SHELL"), Some(account.shell().as_os_str()));
+        assert_eq!(
+            builder.get_env("USER"),
+            Some(std::ffi::OsStr::new(account.name()))
+        );
+        assert_eq!(
+            builder.get_env("LOGNAME"),
+            Some(std::ffi::OsStr::new(account.name()))
+        );
         assert_eq!(
             builder.get_env("TERM"),
             Some(std::ffi::OsStr::new(HOSTED_TERM))
@@ -784,6 +835,83 @@ mod tests {
         assert_eq!(
             builder.get_cwd().map(OsString::as_os_str),
             Some(account.home().as_os_str())
+        );
+        Ok(())
+    }
+
+    #[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
+    #[test]
+    fn login_builder_drops_starter_terminal_environment() -> Result<(), PtyError> {
+        let account = EffectiveAccount::current().map_err(account_error)?;
+        let daemon_environment = [
+            // Markers from the terminal, multiplexer, or connection that started the daemon.
+            ("HERDR_ENV", "1"),
+            ("HERDR_PANE_ID", "pane-1"),
+            ("TMUX", "/tmp/tmux-501/default,1,0"),
+            ("TMUX_PANE", "%1"),
+            ("STY", "1.pts-0.host"),
+            ("TERM_PROGRAM", "ghostty"),
+            ("SSH_CONNECTION", "192.0.2.1 50000 192.0.2.2 22"),
+            ("SHLVL", "3"),
+            ("PWD", "/elsewhere"),
+            ("LC", "not-a-locale-category"),
+            // Account and terminal profile values are authoritative.
+            ("HOME", "/elsewhere"),
+            ("SHELL", "/bin/false"),
+            ("USER", "starter"),
+            ("LOGNAME", "starter"),
+            ("TERM", "screen-256color"),
+            ("COLORTERM", "24bit"),
+            // Host login variables.
+            ("PATH", "/usr/bin:/bin"),
+            ("LANG", "zh_CN.UTF-8"),
+            ("LC_CTYPE", "UTF-8"),
+            ("TMPDIR", "/tmp/zterm-user/"),
+            ("XDG_RUNTIME_DIR", "/run/user/501"),
+            ("SSH_AUTH_SOCK", "/tmp/agent.sock"),
+        ]
+        .map(|(key, value)| (OsString::from(key), OsString::from(value)));
+        let builder = login_shell_builder(&account, None, daemon_environment)?;
+
+        let environment = builder
+            .iter_full_env_as_str()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        // Names first: a regression must not print inherited test-process values.
+        assert_eq!(
+            environment.keys().copied().collect::<Vec<_>>(),
+            [
+                "COLORTERM",
+                "HOME",
+                "LANG",
+                "LC_CTYPE",
+                "LOGNAME",
+                "PATH",
+                "SHELL",
+                "SSH_AUTH_SOCK",
+                "TERM",
+                "TMPDIR",
+                "USER",
+                "XDG_RUNTIME_DIR",
+            ]
+        );
+        let home = account.home().to_str().expect("UTF-8 test account home");
+        let shell = account.shell().to_str().expect("UTF-8 test account shell");
+        assert_eq!(
+            environment,
+            std::collections::BTreeMap::from([
+                ("COLORTERM", HOSTED_COLORTERM),
+                ("HOME", home),
+                ("LANG", "zh_CN.UTF-8"),
+                ("LC_CTYPE", "UTF-8"),
+                ("LOGNAME", account.name()),
+                ("PATH", "/usr/bin:/bin"),
+                ("SHELL", shell),
+                ("SSH_AUTH_SOCK", "/tmp/agent.sock"),
+                ("TERM", HOSTED_TERM),
+                ("TMPDIR", "/tmp/zterm-user/"),
+                ("USER", account.name()),
+                ("XDG_RUNTIME_DIR", "/run/user/501"),
+            ])
         );
         Ok(())
     }
@@ -838,11 +966,12 @@ mod tests {
         let invalid_account = EffectiveAccount::for_test(
             account.uid(),
             account.gid(),
+            account.name().to_owned(),
             account.home().to_path_buf(),
             missing_shell.clone(),
         );
         assert_eq!(
-            login_shell_builder(&invalid_account, None).err(),
+            login_shell_builder(&invalid_account, None, std::iter::empty()).err(),
             Some(PtyError::InvalidPath {
                 kind: PtyPathKind::LoginShell,
                 path: missing_shell,
@@ -853,7 +982,7 @@ mod tests {
         let missing_cwd =
             std::env::temp_dir().join(format!("zterm-missing-login-cwd-{}", std::process::id()));
         assert_eq!(
-            login_shell_builder(&account, Some(&missing_cwd)).err(),
+            login_shell_builder(&account, Some(&missing_cwd), std::iter::empty()).err(),
             Some(PtyError::InvalidPath {
                 kind: PtyPathKind::WorkingDirectory,
                 path: missing_cwd,

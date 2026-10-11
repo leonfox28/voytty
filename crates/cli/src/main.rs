@@ -7,9 +7,9 @@ use clap::Parser;
 
 fn main() -> ExitCode {
     let cli = zterm_cli::Cli::parse();
-    if cli.internal_update() {
+    if cli.internal_handoff() {
         #[cfg(unix)]
-        return match zterm_daemon::update::run_internal_update() {
+        return match zterm_daemon::handoff::run_internal_handoff() {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => ExitCode::FAILURE,
         };
