@@ -86,10 +86,9 @@ fn main() {
         .build()
         .expect("test runtime");
     let state = TestState::new();
-    let executable = std::env::current_exe().expect("harness executable");
-    let launcher = DaemonLauncher::for_test(
-        executable,
-        daemon_harness::terminal_child_argument(&state.paths),
+    let launcher = daemon_harness::launcher(
+        &state.paths,
+        &daemon_harness::terminal_child_argument(&state.paths),
     );
     let runtime = LocalRuntime::for_test(state.paths.clone(), launcher);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -113,10 +112,13 @@ fn run_terminal_child_if_requested() -> bool {
         .split_once(':')
         .expect("terminal child mode and task-private paths");
     let paths = daemon_harness::decode_paths(encoded_paths).expect("terminal child paths");
-    let runtime = LocalRuntime::for_test(
-        paths,
-        DaemonLauncher::for_test("/does/not/exist".into(), "--must-not-run".to_owned()),
-    );
+    // Stop needs its detached lifecycle owner; every other mode must not launch.
+    let launcher = if mode == "stop-confirm" {
+        daemon_harness::launcher(&paths, &daemon_harness::terminal_child_argument(&paths))
+    } else {
+        DaemonLauncher::for_test("/does/not/exist".into(), "--must-not-run".to_owned())
+    };
+    let runtime = LocalRuntime::for_test(paths, launcher);
     let _diagnostics = runtime.install_diagnostics();
     let arguments = match mode {
         "connect" | "screen-switch" | "scroll" | "copy" | "enhanced-prefix"

@@ -37,6 +37,14 @@ Detached Sessions count as live work. The daemon atomically checks Session
 admission before accepting an unapproved idle stop, so a concurrent creation
 cannot be ended based on an earlier empty observation.
 
+Stop, restart, and update share one hidden one-shot lifecycle owner. The CLI
+keeps confirmation and progress, then hands the stop, any activation, and any
+replacement start to that child, which runs in its own process session with no
+terminal. A command typed into a hosted Session therefore completes after the
+stop ends that Session's PTY: stop still receives its acknowledgement and
+retires the daemon, and restart still starts the replacement. Losing the CLI
+before the handoff stops nothing.
+
 `logs` reads recent records once and never starts the daemon. Key lifecycle,
 Session, network, connection and pairing events are saved by default. Each key
 and optional detail lane rotates at runtime with 4 MiB current + one 4 MiB archive.

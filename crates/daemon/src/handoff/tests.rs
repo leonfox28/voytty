@@ -15,8 +15,9 @@ use zterm_platform::local_unix::{DaemonLock, bind_owned_daemon_socket, detach_cu
 use zterm_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
 use zterm_platform::user_state::{UserPaths, open_append};
 
-const FIXTURE_ROOT: &str = "ZTERM_UPDATE_FIXTURE_ROOT";
-const FIXTURE_ROLE: &str = "ZTERM_UPDATE_FIXTURE_ROLE";
+const FIXTURE_ROOT: &str = "ZTERM_HANDOFF_FIXTURE_ROOT";
+const FIXTURE_ROLE: &str = "ZTERM_HANDOFF_FIXTURE_ROLE";
+const FIXTURE_VERSION: &str = "ZTERM_HANDOFF_FIXTURE_VERSION";
 
 fn paths(root: &Path) -> UserPaths {
     UserPaths::for_test(
@@ -72,7 +73,7 @@ fn executable_script(root: &Path, updated: bool) -> String {
     };
     let binary = std::env::current_exe().expect("test binary");
     format!(
-        "#!/bin/sh\nset -eu\ncase \"$1\" in\n--internal-release-self-check) {post_check}printf '%s\\n' '{json}'; exit 0;;\n--internal-release-verify) exit 0;;\n--fixture-daemon) {startup}role=daemon;;\n--fixture-update) role=foreground;;\n--internal-update) role=worker;;\n*) exit 2;;\nesac\nexec env {FIXTURE_ROOT}={} {FIXTURE_ROLE}=\"$role\" ZTERM_UPDATE_FIXTURE_VERSION={} {} --exact update::tests::fixture_process --nocapture\n",
+        "#!/bin/sh\nset -eu\ncase \"$1\" in\n--internal-release-self-check) {post_check}printf '%s\\n' '{json}'; exit 0;;\n--internal-release-verify) exit 0;;\n--fixture-daemon) {startup}role=daemon;;\n--fixture-update) role=foreground;;\n--fixture-restart) role=restart-foreground;;\n--fixture-stop) role=stop-foreground;;\n--internal-handoff) role=worker;;\n*) exit 2;;\nesac\nexec env {FIXTURE_ROOT}={} {FIXTURE_ROLE}=\"$role\" {FIXTURE_VERSION}={} {} --exact handoff::tests::fixture_process --nocapture\n",
         quote(root),
         if updated {
             "9.1.0"
@@ -91,6 +92,13 @@ fn fixture_process() {
     match std::env::var(FIXTURE_ROLE).expect("fixture role").as_str() {
         "daemon" => {
             detach_current_process().expect("detach fixture daemon");
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(root.join("daemon-starts"))
+                .expect("daemon start counter")
+                .write_all(b"1")
+                .expect("one daemon start");
             let paths = paths(&root);
             let setup = validate_committed_setup(&paths).expect("setup");
             let lock = DaemonLock::try_acquire(&paths)
@@ -107,6 +115,10 @@ fn fixture_process() {
                 move |size, _| {
                     let command = if cwd.join("hold-session").exists() {
                         ExplicitPtyCommand::new("/bin/sleep", &cwd).arg("30")
+                    } else if cwd.join("restart-from-session").exists() {
+                        ExplicitPtyCommand::new(cwd.join("zterm"), &cwd).arg("--fixture-restart")
+                    } else if cwd.join("stop-from-session").exists() {
+                        ExplicitPtyCommand::new(cwd.join("zterm"), &cwd).arg("--fixture-stop")
                     } else {
                         ExplicitPtyCommand::new(cwd.join("zterm"), &cwd).arg("--fixture-update")
                     };
@@ -117,8 +129,7 @@ fn fixture_process() {
                 },
             );
             let mut service = DaemonService::with_sessions(setup, 17, sessions);
-            service.version_override =
-                Some(std::env::var("ZTERM_UPDATE_FIXTURE_VERSION").expect("version"));
+            service.version_override = Some(std::env::var(FIXTURE_VERSION).expect("version"));
             run_owned_daemon_listener_for_test(
                 &paths,
                 lock,
@@ -131,7 +142,7 @@ fn fixture_process() {
             .expect("daemon runs");
         }
         "foreground" => {
-            let result = run_frontend(
+            let result = update(
                 &root.join("zterm"),
                 &paths(&root),
                 None,
@@ -145,6 +156,27 @@ fn fixture_process() {
 
             fs::write(root.join("foreground-result"), format!("{result:?}"))
                 .expect("result marker");
+        }
+        "restart-foreground" => {
+            let result = block_on(runtime(&root).restart_with_callbacks(
+                true,
+                |_| panic!("-y must not prompt"),
+                |_| {},
+            ));
+            fs::write(
+                root.join("restart-foreground-result"),
+                format!("{result:?}"),
+            )
+            .expect("restart result marker");
+        }
+        "stop-foreground" => {
+            let result = block_on(runtime(&root).stop_with_callbacks(
+                true,
+                |_| panic!("-y must not prompt"),
+                |_| {},
+            ));
+            fs::write(root.join("stop-foreground-result"), format!("{result:?}"))
+                .expect("stop result marker");
         }
         "worker" => {
             let paths = paths(&root);
@@ -165,45 +197,40 @@ fn fixture_process() {
                 channel.send(&Event::Accepted).expect("accepted");
                 return;
             }
-            let result = block_on(run_worker(
-                &runtime(&root),
-                &paths,
-                stream,
-                |version| async {
-                    if root.join("fail-prepare").exists() {
-                        return Err(DaemonError::new(
-                            DomainErrorKind::ReleaseSignatureInvalid,
-                            "UPDATE_PREPARATION_SECRET_SENTINEL",
-                        ));
-                    }
-                    fs::write(
-                        root.join("selected-version"),
-                        version.unwrap_or_else(|| "latest".into()),
-                    )
-                    .expect("selection");
-                    fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(root.join("prepare-count"))
-                        .expect("preparation counter")
-                        .write_all(b"1")
-                        .expect("one preparation");
-                    let prepared = crate::distribution::tests::prepare_update_fixture(
-                        &executable_script(&root, true),
-                    );
-                    fs::write(
-                        root.join("staged-directory"),
-                        prepared
-                            .candidate()
-                            .parent()
-                            .expect("staging parent")
-                            .as_os_str()
-                            .as_encoded_bytes(),
-                    )
-                    .expect("staging owner");
-                    Ok(prepared)
-                },
-            ));
+            let result = block_on(run_worker(&runtime(&root), stream, |version| async {
+                if root.join("fail-prepare").exists() {
+                    return Err(DaemonError::new(
+                        DomainErrorKind::ReleaseSignatureInvalid,
+                        "UPDATE_PREPARATION_SECRET_SENTINEL",
+                    ));
+                }
+                fs::write(
+                    root.join("selected-version"),
+                    version.unwrap_or_else(|| "latest".into()),
+                )
+                .expect("selection");
+                fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(root.join("prepare-count"))
+                    .expect("preparation counter")
+                    .write_all(b"1")
+                    .expect("one preparation");
+                let prepared = crate::distribution::tests::prepare_update_fixture(
+                    &executable_script(&root, true),
+                );
+                fs::write(
+                    root.join("staged-directory"),
+                    prepared
+                        .candidate()
+                        .parent()
+                        .expect("staging parent")
+                        .as_os_str()
+                        .as_encoded_bytes(),
+                )
+                .expect("staging owner");
+                Ok(prepared)
+            }));
             fs::write(root.join("worker-result"), format!("{result:?}")).expect("worker result");
         }
         role => panic!("unknown fixture role {role}"),
@@ -301,6 +328,97 @@ fn update_completes_after_its_originating_pty_ends() {
     );
 }
 
+fn daemon_starts(root: &Path) -> usize {
+    fs::read(root.join("daemon-starts")).map_or(0, |starts| starts.len())
+}
+
+#[test]
+fn restart_completes_after_its_originating_pty_ends() {
+    let fixture = Fixture::new();
+    let root = fixture.root.path();
+    fs::write(root.join("restart-from-session"), b"restart").expect("restart origin mode");
+    block_on(async {
+        runtime(root)
+            .ensure_configured_daemon()
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{error}; daemon log: {:?}",
+                    fs::read_to_string(paths(root).daemon_log())
+                )
+            });
+        let client = LocalClient::new(paths(root).socket().to_owned());
+        // The fixture PTY runs `restart -y` itself; stopping ends that PTY.
+        let _ = client
+            .create_session(
+                &zterm_core::SessionName::new("restart-origin").expect("name"),
+                None,
+                None,
+            )
+            .await;
+        let deadline = Instant::now() + Duration::from_secs(12);
+        loop {
+            if daemon_starts(root) == 2
+                && let Ok(status) = client.status().await
+                && status.active_session_count == 0
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "restart did not start a replacement daemon after its PTY ended; daemon_starts={}, status={:?}, foreground_result={:?}",
+                daemon_starts(root),
+                client
+                    .status()
+                    .await
+                    .map(|status| status.active_session_count),
+                fs::read_to_string(root.join("restart-foreground-result"))
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+}
+
+#[test]
+fn stop_completes_after_its_originating_pty_ends() {
+    let fixture = Fixture::new();
+    let root = fixture.root.path();
+    fs::write(root.join("stop-from-session"), b"stop").expect("stop origin mode");
+    block_on(async {
+        runtime(root)
+            .ensure_configured_daemon()
+            .await
+            .expect("fixture daemon");
+        let client = LocalClient::new(paths(root).socket().to_owned());
+        // The fixture PTY runs `daemon stop -y` itself; stopping ends that PTY.
+        let _ = client
+            .create_session(
+                &zterm_core::SessionName::new("stop-origin").expect("name"),
+                None,
+                None,
+            )
+            .await;
+        let deadline = Instant::now() + Duration::from_secs(12);
+        loop {
+            let status = client.status().await;
+            if status
+                .as_ref()
+                .is_err_and(|error| error.kind() == DomainErrorKind::DaemonStopped)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "stop did not end the daemon after its PTY ended; status={:?}, foreground_result={:?}",
+                status.map(|status| status.active_session_count),
+                fs::read_to_string(root.join("stop-foreground-result"))
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+    assert_eq!(daemon_starts(root), 1);
+}
+
 fn hold_session(root: &Path) {
     fs::write(root.join("hold-session"), b"hold").expect("idle PTY mode");
     block_on(async {
@@ -338,7 +456,7 @@ fn assert_unchanged(root: &Path, original: &[u8]) {
 }
 
 fn direct_update(root: &Path) -> Result<UpdateResult, DaemonError> {
-    run_frontend(
+    update(
         &root.join("zterm"),
         &paths(root),
         Some("v9.1.0"),
@@ -377,7 +495,7 @@ fn cancelled_confirmation_preserves_sessions_and_installation() {
     let root = fixture.root.path();
     hold_session(root);
     let original = fs::read(root.join("zterm")).expect("old binary");
-    let error = run_frontend(
+    let error = update(
         &root.join("zterm"),
         &paths(root),
         None,
@@ -406,20 +524,17 @@ fn cancelled_confirmation_preserves_sessions_and_installation() {
     );
 }
 
-fn child_at_handoff(root: &Path, approved: bool) -> (Child, Channel) {
+fn child_at_handoff(root: &Path, command: Command, approved: bool) -> (Child, Channel) {
     let (child, stream) =
-        spawn_isolated_command(&root.join("zterm"), root, INTERNAL_UPDATE_ARGUMENT)
-            .expect("updater launch");
+        spawn_isolated_command(&root.join("zterm"), root, INTERNAL_HANDOFF_ARGUMENT)
+            .expect("lifecycle owner launch");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("bounded fixture reads");
     let mut channel = Channel::new(stream);
     assert!(matches!(channel.receive().expect("ready"), Event::Ready));
     channel
-        .send(&Request::Begin {
-            version: None,
-            approved,
-        })
+        .send(&Request::Begin { command, approved })
         .expect("begin");
     loop {
         match channel.receive().expect("prepare events") {
@@ -436,7 +551,7 @@ fn wait_for_child(child: &mut Child) {
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("updater did not exit after control cancellation");
+            panic!("lifecycle owner did not exit after control cancellation");
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -444,14 +559,79 @@ fn wait_for_child(child: &mut Child) {
 
 #[test]
 fn lost_frontend_before_handoff_does_not_stop_approved_sessions() {
+    for command in [
+        Command::Stop,
+        Command::Restart,
+        Command::Update { version: None },
+    ] {
+        let fixture = Fixture::new();
+        let root = fixture.root.path();
+        hold_session(root);
+        let original = fs::read(root.join("zterm")).expect("old binary");
+        let (mut child, channel) = child_at_handoff(root, command, true);
+        drop(channel);
+        wait_for_child(&mut child);
+        assert_unchanged(root, &original);
+        assert_eq!(daemon_starts(root), 1);
+    }
+}
+
+#[test]
+fn cancelled_stop_and_restart_confirmation_preserves_sessions() {
+    for restarting in [false, true] {
+        let fixture = Fixture::new();
+        let root = fixture.root.path();
+        hold_session(root);
+        let original = fs::read(root.join("zterm")).expect("binary");
+        let confirm = |impact: &SessionImpact| {
+            assert_eq!(impact.active_session_names, ["retained-work"]);
+            Err(cancelled())
+        };
+        let result = if restarting {
+            restart(&root.join("zterm"), &paths(root), false, confirm, |_| {}).map(|_| ())
+        } else {
+            stop(&root.join("zterm"), &paths(root), false, confirm, |_| {}).map(|_| ())
+        };
+        assert_eq!(
+            result.expect_err("cancel lifecycle command").kind(),
+            DomainErrorKind::Cancelled
+        );
+        assert_unchanged(root, &original);
+        assert_eq!(daemon_starts(root), 1);
+    }
+}
+
+#[test]
+fn external_restart_reports_actual_stages_and_replacement_readiness() {
     let fixture = Fixture::new();
     let root = fixture.root.path();
-    hold_session(root);
-    let original = fs::read(root.join("zterm")).expect("old binary");
-    let (mut child, channel) = child_at_handoff(root, true);
-    drop(channel);
-    wait_for_child(&mut child);
-    assert_unchanged(root, &original);
+    for (starts, expected) in [
+        (
+            1,
+            vec![LifecycleStage::Continuing, LifecycleStage::Starting],
+        ),
+        (
+            2,
+            vec![
+                LifecycleStage::Continuing,
+                LifecycleStage::Stopping,
+                LifecycleStage::Starting,
+            ],
+        ),
+    ] {
+        let mut stages = Vec::new();
+        let ready = restart(
+            &root.join("zterm"),
+            &paths(root),
+            false,
+            |_| panic!("idle restart must not prompt"),
+            |stage| stages.push(stage),
+        )
+        .expect("restart");
+        assert_eq!(ready.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(stages, expected);
+        assert_eq!(daemon_starts(root), starts);
+    }
 }
 
 #[test]
@@ -460,7 +640,7 @@ fn late_session_still_requires_approval_after_handoff() {
     let root = fixture.root.path();
     block_on(runtime(root).ensure_configured_daemon()).expect("idle daemon");
     let original = fs::read(root.join("zterm")).expect("old binary");
-    let (mut child, mut channel) = child_at_handoff(root, false);
+    let (mut child, mut channel) = child_at_handoff(root, Command::Update { version: None }, false);
     hold_session(root);
     channel
         .send(&Request::Continue)
@@ -526,14 +706,14 @@ fn superseded_updater_cannot_replace_a_newer_activation() {
     let fixture = Fixture::new();
     let root = fixture.root.path();
     let replacement = executable_script(root, true);
-    let error = run_frontend(
+    let error = update(
         &root.join("zterm"),
         &paths(root),
         None,
         false,
         |_| panic!("idle"),
         |stage| {
-            if stage == UpdateStage::Continuing {
+            if stage == LifecycleStage::Continuing {
                 fs::write(root.join("other-update"), &replacement).expect("competing update");
                 fs::set_permissions(root.join("other-update"), fs::Permissions::from_mode(0o700))
                     .expect("mode");
@@ -576,7 +756,7 @@ fn failed_child_launch_leaves_daemon_and_sessions_untouched() {
     let root = fixture.root.path();
     hold_session(root);
     let original = fs::read(root.join("zterm")).expect("old binary");
-    run_frontend(
+    update(
         &root.join("missing-updater"),
         &paths(root),
         None,
@@ -604,7 +784,7 @@ fn yes_approval_ends_sessions_without_reading_input() {
     let fixture = Fixture::new();
     let root = fixture.root.path();
     hold_session(root);
-    let result = run_frontend(
+    let result = update(
         &root.join("zterm"),
         &paths(root),
         None,

@@ -261,12 +261,12 @@ pub struct UpdateResult {
     pub daemon_started: bool,
 }
 
-/// Actual update transaction boundaries, rendered by the invoking frontend.
+/// Actual stop, restart, and update boundaries, rendered by the invoking frontend.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum UpdateStage {
-    /// Candidate download and authentication are beginning.
+pub enum LifecycleStage {
+    /// Update candidate download and authentication are beginning.
     Preparing,
-    /// All candidate authentication checks completed.
+    /// All update candidate authentication checks completed.
     Verified {
         /// Authenticated target version.
         version: String,
@@ -349,14 +349,14 @@ async fn finish_update_startup<
 >(
     observed: Result<ObservedState, DaemonError>,
     installed: &zterm_core::release::ReleaseManifest,
-    progress: &mut impl FnMut(UpdateStage),
+    progress: &mut impl FnMut(LifecycleStage),
     ensure: impl FnOnce() -> F,
 ) -> Result<bool, DaemonError> {
     let result = async {
         match observed? {
             ObservedState::NotConfigured => Ok(false),
             ObservedState::Running(_) | ObservedState::ConfiguredStopped(_) => {
-                progress(UpdateStage::Starting);
+                progress(LifecycleStage::Starting);
                 let ready = ensure().await?;
                 if ready.version != installed.version
                     || ready.protocol.wire_major != installed.wire_major
@@ -444,6 +444,12 @@ impl LocalRuntime {
             paths: crate::lifecycle::production_user_paths()?,
             launcher: DaemonLauncher::current()?,
         })
+    }
+
+    /// Product paths owned by this runtime.
+    #[must_use]
+    pub(crate) const fn paths(&self) -> &UserPaths {
+        &self.paths
     }
 
     /// Creates a task-private runtime with an explicit launcher.
@@ -571,14 +577,14 @@ impl LocalRuntime {
         exact_tag: Option<&str>,
         approved: bool,
         confirm: impl FnMut(&SessionImpact) -> Result<(), DaemonError>,
-        progress: impl FnMut(UpdateStage),
+        progress: impl FnMut(LifecycleStage),
     ) -> Result<UpdateResult, DaemonError> {
         #[cfg(unix)]
         {
             let executable = self.launcher.executable();
             crate::distribution::validate_managed_executable(executable, self.paths.uid())?;
             crate::distribution::ReleaseSelection::parse(exact_tag)?;
-            crate::update::run_frontend(
+            crate::handoff::update(
                 executable,
                 &self.paths,
                 exact_tag,
@@ -594,47 +600,61 @@ impl LocalRuntime {
         }
     }
 
+    /// Stops in the detached owner after the frontend hands over ownership.
+    #[cfg(unix)]
+    pub(crate) async fn apply_stop(
+        &self,
+        approved: bool,
+        interaction: &mut impl crate::handoff::HandoffInteraction,
+    ) -> Result<Option<SessionImpact>, DaemonError> {
+        let running = self.running_impact().await?;
+        self.hand_off_and_stop(running, approved, None, interaction)
+            .await
+    }
+
+    /// Restarts in the detached owner, whose replacement start survives the
+    /// end of the invoking terminal.
+    #[cfg(unix)]
+    pub(crate) async fn apply_restart(
+        &self,
+        approved: bool,
+        interaction: &mut impl crate::handoff::HandoffInteraction,
+    ) -> Result<DaemonReadiness, DaemonError> {
+        if matches!(self.observe().await?, ObservedState::NotConfigured) {
+            return Err(not_setup_for_command());
+        }
+        let running = self.running_impact().await?;
+        self.hand_off_and_stop(running, approved, None, interaction)
+            .await?;
+        interaction.progress(LifecycleStage::Starting);
+        self.ensure().await
+    }
+
     #[cfg(unix)]
     pub(crate) async fn apply_prepared_update(
         &self,
         prepared: crate::distribution::PreparedRelease,
-        mut approved: bool,
-        interaction: &mut impl crate::update::UpdateInteraction,
+        approved: bool,
+        interaction: &mut impl crate::handoff::HandoffInteraction,
     ) -> Result<UpdateResult, DaemonError> {
         let executable = self.launcher.executable();
         let client = LocalClient::new(self.paths.socket());
-        let (daemon_running, impact) = match client.status().await {
+        let running = match client.status().await {
             Ok(status) => {
                 require_update_daemon_compatible(
                     &status.version,
                     status.protocol.wire_major,
                     status.protocol.state_schema,
                 )?;
-                (true, client.update_preflight().await?)
+                Some(client.update_preflight().await?)
             }
-            Err(error) if error.kind() == DomainErrorKind::DaemonStopped => (
-                false,
-                SessionImpact {
-                    active_session_count: 0,
-                    active_session_names: Vec::new(),
-                    stopping: false,
-                    interruption_required: false,
-                },
-            ),
+            Err(error) if error.kind() == DomainErrorKind::DaemonStopped => None,
             Err(error) => return Err(error),
         };
-        require_interruption_approval(&impact, &mut approved, &mut |impact| {
-            interaction.confirm(impact)
-        })?;
-        interaction.handoff(&prepared)?;
-        let ended = if daemon_running {
-            interaction.progress(UpdateStage::Stopping);
-            self.stop_with_confirmation(approved, |impact| interaction.confirm(impact))
-                .await?
-                .map_or_else(Vec::new, |impact| impact.active_session_names)
-        } else {
-            Vec::new()
-        };
+        let ended = self
+            .hand_off_and_stop(running, approved, Some(&prepared), interaction)
+            .await?
+            .map_or_else(Vec::new, |impact| impact.active_session_names);
 
         let state_present = managed_root_exists(&self.paths)?;
         let lifecycle = if state_present {
@@ -652,7 +672,7 @@ impl LocalRuntime {
         };
 
         crate::distribution::verify_updater_executable(executable)?;
-        interaction.progress(UpdateStage::Activating);
+        interaction.progress(LifecycleStage::Activating);
         let mut source = fs::File::open(prepared.candidate()).map_err(|_| {
             DaemonError::new(
                 DomainErrorKind::ReleaseArtifactInvalid,
@@ -1292,31 +1312,102 @@ impl LocalRuntime {
 
     /// Stops the daemon if running; without approval live work is preserved.
     pub async fn stop(&self, approved: bool) -> Result<Option<SessionImpact>, DaemonError> {
-        self.stop_with_confirmation(approved, confirmation_required)
+        self.stop_with_callbacks(approved, confirmation_required, |_| {})
             .await
     }
 
-    /// Keeps an admission race in the same invocation's confirmation flow.
-    pub async fn stop_with_confirmation(
+    /// Stops through the detached lifecycle owner, so a stop typed into a
+    /// hosted Session completes after that Session's PTY ends.
+    pub async fn stop_with_callbacks(
         &self,
-        mut approved: bool,
-        mut confirm: impl FnMut(&SessionImpact) -> Result<(), DaemonError>,
+        approved: bool,
+        confirm: impl FnMut(&SessionImpact) -> Result<(), DaemonError>,
+        progress: impl FnMut(LifecycleStage),
     ) -> Result<Option<SessionImpact>, DaemonError> {
+        #[cfg(unix)]
+        {
+            // An already stopped daemon needs no owner process.
+            if self.running_impact().await?.is_none() {
+                return Ok(None);
+            }
+            crate::handoff::stop(
+                self.launcher.executable(),
+                &self.paths,
+                approved,
+                confirm,
+                progress,
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (approved, confirm, progress);
+            Err(unsupported_command_platform())
+        }
+    }
+
+    /// Stops when needed, then explicitly ensures one configured daemon.
+    pub async fn restart(&self, approved: bool) -> Result<DaemonReadiness, DaemonError> {
+        self.restart_with_callbacks(approved, confirmation_required, |_| {})
+            .await
+    }
+
+    /// Restarts through the detached lifecycle owner, so the replacement still
+    /// starts when stopping ends the invoking terminal, such as a hosted Session.
+    pub async fn restart_with_callbacks(
+        &self,
+        approved: bool,
+        confirm: impl FnMut(&SessionImpact) -> Result<(), DaemonError>,
+        progress: impl FnMut(LifecycleStage),
+    ) -> Result<DaemonReadiness, DaemonError> {
+        if matches!(self.observe().await?, ObservedState::NotConfigured) {
+            return Err(not_setup_for_command());
+        }
+        #[cfg(unix)]
+        {
+            crate::handoff::restart(
+                self.launcher.executable(),
+                &self.paths,
+                approved,
+                confirm,
+                progress,
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (approved, confirm, progress);
+            Err(unsupported_command_platform())
+        }
+    }
+
+    /// Obtains any required approval, hands mutation ownership to the detached
+    /// owner, then stops a daemon that was running. Work admitted after the
+    /// observation is presented in the same invocation before it can be ended.
+    #[cfg(unix)]
+    async fn hand_off_and_stop(
+        &self,
+        running: Option<SessionImpact>,
+        mut approved: bool,
+        release: Option<&crate::distribution::PreparedRelease>,
+        interaction: &mut impl crate::handoff::HandoffInteraction,
+    ) -> Result<Option<SessionImpact>, DaemonError> {
+        if let Some(impact) = &running {
+            require_interruption_approval(impact, &mut approved, &mut |impact| {
+                interaction.confirm(impact)
+            })?;
+        }
+        interaction.handoff(release)?;
+        if running.is_none() {
+            return Ok(None);
+        }
+        interaction.progress(LifecycleStage::Stopping);
         let client = LocalClient::new(self.paths.socket());
-        let mut impact = match client.update_preflight().await {
-            Ok(impact) => impact,
-            Err(error) if error.kind() == DomainErrorKind::DaemonStopped => return Ok(None),
-            Err(error) => return Err(error),
-        };
         loop {
-            require_interruption_approval(&impact, &mut approved, &mut confirm)?;
-            impact = match client.stop(approved).await {
+            let impact = match client.stop(approved).await {
                 Ok(impact) => impact,
                 Err(error) if error.kind() == DomainErrorKind::DaemonStopped => return Ok(None),
                 Err(error) => return Err(error),
             };
             if impact.stopping {
-                #[cfg(unix)]
                 wait_until_stopped(&self.paths).await?;
                 return Ok(Some(impact));
             }
@@ -1328,29 +1419,23 @@ impl LocalRuntime {
             }
             // The server found work admitted after the observation. No shutdown
             // began; display that impact before granting interruption authority.
+            require_interruption_approval(&impact, &mut approved, &mut |impact| {
+                interaction.confirm(impact)
+            })?;
         }
     }
 
-    /// Stops when needed, then explicitly ensures one configured daemon.
-    pub async fn restart(&self, approved: bool) -> Result<DaemonReadiness, DaemonError> {
-        self.restart_with_confirmation(approved, confirmation_required)
+    /// Current Session impact, or `None` when no daemon is listening.
+    #[cfg(unix)]
+    async fn running_impact(&self) -> Result<Option<SessionImpact>, DaemonError> {
+        match LocalClient::new(self.paths.socket())
+            .update_preflight()
             .await
-    }
-
-    /// Restarts with frontend-owned conditional confirmation.
-    pub async fn restart_with_confirmation(
-        &self,
-        approved: bool,
-        confirm: impl FnMut(&SessionImpact) -> Result<(), DaemonError>,
-    ) -> Result<DaemonReadiness, DaemonError> {
-        match self.observe().await? {
-            ObservedState::NotConfigured => return Err(not_setup_for_command()),
-            ObservedState::ConfiguredStopped(_) => {}
-            ObservedState::Running(_) => {
-                self.stop_with_confirmation(approved, confirm).await?;
-            }
+        {
+            Ok(impact) => Ok(Some(impact)),
+            Err(error) if error.kind() == DomainErrorKind::DaemonStopped => Ok(None),
+            Err(error) => Err(error),
         }
-        self.ensure().await
     }
 
     /// Returns a bounded recent log tail without starting a daemon.
@@ -2198,7 +2283,7 @@ mod tests {
                 .expect("configured update starts")
             );
             assert_eq!(starts, 1);
-            assert_eq!(stages, [UpdateStage::Starting]);
+            assert_eq!(stages, [LifecycleStage::Starting]);
         }
         assert!(
             !finish_update_startup(

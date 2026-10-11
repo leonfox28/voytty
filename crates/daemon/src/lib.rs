@@ -18,6 +18,8 @@ pub mod device_directory;
 pub mod diagnostics;
 pub mod distribution;
 pub mod error;
+#[cfg(unix)]
+pub mod handoff;
 pub mod identity;
 pub mod lifecycle;
 pub mod local_ipc;
@@ -38,8 +40,6 @@ mod session_wire;
 pub mod store;
 pub mod terminal_driver;
 pub mod transport;
-#[cfg(unix)]
-pub mod update;
 
 /// Static workspace build information.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

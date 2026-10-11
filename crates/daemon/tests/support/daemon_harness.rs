@@ -9,6 +9,7 @@ const CHILD_PREFIX: &str = "--zterm-test-daemon=";
 const FOREGROUND_CHILD_PREFIX: &str = "--zterm-test-foreground-daemon=";
 const TERMINAL_CHILD_PREFIX: &str = "--zterm-test-terminal-daemon=";
 const SLOW_SOCKET_CHILD_PREFIX: &str = "--zterm-test-slow-socket-daemon=";
+const HANDOFF_OWNER_PREFIX: &str = "--zterm-test-handoff-owner=";
 /// Longer than one readiness probe, well inside the launch budget.
 const SLOW_SOCKET_DELAY: std::time::Duration = std::time::Duration::from_millis(750);
 
@@ -37,6 +38,34 @@ pub fn slow_socket_child_argument(paths: &UserPaths) -> String {
     format!("{SLOW_SOCKET_CHILD_PREFIX}{}", encode_paths(paths))
 }
 
+/// Launcher for `daemon_argument` whose executable also serves the hidden
+/// lifecycle handoff entry. That entry carries no paths, so the script binds it
+/// to these task-private paths; every other argument reaches this harness.
+#[allow(dead_code)]
+pub fn launcher(
+    paths: &UserPaths,
+    daemon_argument: &str,
+) -> zterm_daemon::lifecycle::DaemonLauncher {
+    use std::os::unix::fs::PermissionsExt;
+
+    let harness = std::env::current_exe().expect("harness executable");
+    let quote = |value: &str| format!("'{}'", value.replace('\'', "'\"'\"'"));
+    let harness = quote(harness.to_str().expect("UTF-8 harness path"));
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = {} ]; then exec {harness} {}; fi\nexec {harness} \"$@\"\n",
+        zterm_daemon::handoff::INTERNAL_HANDOFF_ARGUMENT,
+        quote(&format!("{HANDOFF_OWNER_PREFIX}{daemon_argument}")),
+    );
+    let executable = paths.home().with_file_name("zterm-launcher");
+    // Rename keeps a launcher another process is executing whole.
+    let staged = executable.with_extension(format!("{}.tmp", std::process::id()));
+    std::fs::write(&staged, script).expect("launcher script");
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o700))
+        .expect("launcher mode");
+    std::fs::rename(&staged, &executable).expect("launcher publication");
+    zterm_daemon::lifecycle::DaemonLauncher::for_test(executable, daemon_argument.to_owned())
+}
+
 /// Encodes task-private paths for another test-only child role.
 pub fn encode_paths(paths: &UserPaths) -> String {
     format!(
@@ -48,11 +77,16 @@ pub fn encode_paths(paths: &UserPaths) -> String {
     )
 }
 
-/// Runs the daemon child when the custom harness executable received its child argument.
+/// Runs the daemon or lifecycle owner child when the custom harness
+/// executable received its child argument.
 pub fn run_child_if_requested() -> bool {
     let Some(argument) = std::env::args().nth(1) else {
         return false;
     };
+    if let Some(daemon_argument) = argument.strip_prefix(HANDOFF_OWNER_PREFIX) {
+        run_handoff_owner(daemon_argument);
+        return true;
+    }
     let (encoded, deterministic_terminal, foreground, slow_socket) =
         if let Some(encoded) = argument.strip_prefix(CHILD_PREFIX) {
             (encoded, false, false, false)
@@ -109,6 +143,33 @@ pub fn run_child_if_requested() -> bool {
         std::process::exit(1);
     }
     true
+}
+
+fn run_handoff_owner(daemon_argument: &str) {
+    let paths = [
+        CHILD_PREFIX,
+        FOREGROUND_CHILD_PREFIX,
+        TERMINAL_CHILD_PREFIX,
+        SLOW_SOCKET_CHILD_PREFIX,
+    ]
+    .into_iter()
+    .find_map(|prefix| daemon_argument.strip_prefix(prefix))
+    .ok_or_else(|| "unknown daemon argument".to_owned())
+    .and_then(decode_paths)
+    .unwrap_or_else(|detail| {
+        eprintln!("invalid handoff owner paths: {detail}");
+        std::process::exit(2);
+    });
+    let runtime = zterm_daemon::operations::LocalRuntime::for_test(
+        paths,
+        zterm_daemon::lifecycle::DaemonLauncher::for_test(
+            std::env::current_exe().expect("harness executable"),
+            daemon_argument.to_owned(),
+        ),
+    );
+    if zterm_daemon::handoff::run_internal_handoff_for_test(&runtime).is_err() {
+        std::process::exit(1);
+    }
 }
 
 fn terminal_fixture_sessions(

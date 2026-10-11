@@ -14,8 +14,6 @@ use zterm_daemon::bootstrap::{bootstrap, validate_committed_setup};
 #[cfg(unix)]
 use zterm_daemon::config::{ValidatedInfrastructure, validate_setup_input};
 #[cfg(unix)]
-use zterm_daemon::lifecycle::DaemonLauncher;
-#[cfg(unix)]
 use zterm_daemon::local_ipc::LocalClient;
 #[cfg(unix)]
 use zterm_daemon::operations::LocalRuntime;
@@ -51,7 +49,7 @@ async fn detached_lifecycle() {
     let argument = daemon_harness::child_argument(&state.paths);
     let local_runtime = LocalRuntime::for_test(
         state.paths.clone(),
-        DaemonLauncher::for_test(executable.clone(), argument.clone()),
+        daemon_harness::launcher(&state.paths, &argument),
     );
 
     local_runtime
