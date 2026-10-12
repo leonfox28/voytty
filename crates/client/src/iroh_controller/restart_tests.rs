@@ -327,6 +327,10 @@ impl Client {
     }
 
     async fn list(&self) -> Result<DecodedFrame, ClientError> {
+        self.list_within(crate::protocol::DEFAULT_DEADLINE).await
+    }
+
+    async fn list_within(&self, deadline: Duration) -> Result<DecodedFrame, ClientError> {
         self.controller
             .request(SessionUnaryRequest {
                 target: ResolvedSessionTarget::device(self.remote),
@@ -338,7 +342,7 @@ impl Client {
                     }),
                 }
                 .encode_to_vec(),
-                deadline: crate::protocol::DEFAULT_DEADLINE,
+                deadline,
                 startup_deadline: crate::protocol::REMOTE_STARTUP_DEADLINE,
                 mutation_or_lease_retry: false,
             })
@@ -527,6 +531,97 @@ async fn first_query_on_a_high_rtt_kept_connection_recovers_when_host_returns_on
     first_query_after_host_returns(Return::OtherRelay, Duration::from_millis(380)).await;
 }
 
+/// A terminal attachment keeps its own stream on the kept connection. When
+/// the host returns on another Relay, nothing on that connection is ever
+/// acknowledged again, so the attachment is as unreachable as the request.
+/// The first query must still recover in its budget, and the attachment must
+/// learn of the failure then instead of at the QUIC idle timeout.
+#[tokio::test]
+async fn first_query_on_a_kept_connection_with_an_attachment_recovers_when_host_returns_on_another_relay()
+ {
+    let (old_server, old_relay) = spawn_relay().await;
+    let (new_server, new_relay) = spawn_relay().await;
+    let client = Client::new(&[&old_relay, &new_relay], false).await;
+    let old_host = KillableHost::spawn(
+        client.secret.clone(),
+        old_relay.clone(),
+        false,
+        Duration::ZERO,
+    )
+    .await;
+    client.list().await.expect("original query");
+    let peer = client
+        .controller
+        .peer(client.remote, None)
+        .expect("known host");
+    let mut attachment = client
+        .controller
+        .service_stream(
+            client.remote,
+            &peer,
+            Instant::now() + crate::protocol::DEFAULT_DEADLINE,
+        )
+        .await
+        .expect("attachment stream on the kept connection");
+    old_host.kill().await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    *client
+        .advertised
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = new_relay.clone();
+    let new_host = KillableHost::spawn(
+        client.secret.clone(),
+        new_relay.clone(),
+        false,
+        Duration::ZERO,
+    )
+    .await;
+    assert!(
+        !client.kept().await.closed,
+        "the query must meet an apparently open connection"
+    );
+
+    let started = Instant::now();
+    let first = client.list().await;
+    let elapsed = started.elapsed();
+    let attachment_failure = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Err(error) = attachment.read().await {
+                break error;
+            }
+        }
+    })
+    .await;
+    let next = client.list().await;
+    let accepted = new_host.served.accepted.load(Ordering::SeqCst);
+    let queries = new_host.served.queries.load(Ordering::SeqCst);
+    eprintln!(
+        "attachment: first={elapsed:?} {:?}; attachment={:?}; accepted={accepted} queries={queries}",
+        first.as_ref().err().map(ClientError::kind),
+        attachment_failure.as_ref().map(ClientError::kind),
+    );
+    drop(attachment);
+    new_host.kill().await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), client.controller.shutdown()).await;
+    old_server.shutdown().await.expect("old relay shutdown");
+    new_server.shutdown().await.expect("new relay shutdown");
+    first.expect("first query on the kept connection");
+    assert!(elapsed < crate::protocol::DEFAULT_DEADLINE, "{elapsed:?}");
+    assert_eq!(
+        attachment_failure
+            .expect("the attachment sees its connection retired")
+            .kind(),
+        DomainErrorKind::TransportUnavailable,
+        "a retryable failure lets the attachment reconnect"
+    );
+    next.expect("next query");
+    assert_eq!(
+        accepted, 1,
+        "one fresh connection, reused by the next query"
+    );
+    assert_eq!(queries, 2, "both queries reach the returned host");
+}
+
 /// A live host acknowledges the request even while its service takes longer
 /// than the acknowledgement window, so the kept connection is not replaced.
 #[tokio::test]
@@ -554,6 +649,68 @@ async fn slow_live_host_keeps_its_connection_past_the_acknowledgement_window() {
     assert!(elapsed >= reply_delay, "{elapsed:?}");
     assert_eq!(accepted, 1, "the kept connection is not replaced");
     assert_eq!(queries, 2, "neither request is sent twice");
+}
+
+/// A request that fails only because a live host answers after its deadline
+/// was still acknowledged. The attachment sharing that connection keeps it.
+#[tokio::test]
+async fn late_answer_beside_an_attachment_keeps_the_attachment_connection() {
+    let (server, relay) = spawn_relay().await;
+    let client = Client::new(&[&relay], false).await;
+    let host = KillableHost::spawn(
+        client.secret.clone(),
+        relay,
+        false,
+        Duration::from_millis(2500),
+    )
+    .await;
+    client.list().await.expect("original query");
+    let peer = client
+        .controller
+        .peer(client.remote, None)
+        .expect("known host");
+    let mut attachment = client
+        .controller
+        .service_stream(
+            client.remote,
+            &peer,
+            Instant::now() + crate::protocol::DEFAULT_DEADLINE,
+        )
+        .await
+        .expect("attachment stream on the kept connection");
+    let late = client.list_within(Duration::from_secs(2)).await;
+    let closed = client
+        .controller
+        .connection_info(client.remote)
+        .await
+        .expect("observation")
+        .is_none_or(|kept| kept.closed);
+    let attachment_failure = tokio::time::timeout(Duration::from_millis(1500), async {
+        loop {
+            if let Err(error) = attachment.read().await {
+                break error;
+            }
+        }
+    })
+    .await;
+    let accepted = host.served.accepted.load(Ordering::SeqCst);
+    eprintln!(
+        "late answer beside attachment: {:?}; closed={closed} attachment={:?}; accepted={accepted}",
+        late.as_ref().err().map(ClientError::kind),
+        attachment_failure.as_ref().map(ClientError::kind),
+    );
+    drop(attachment);
+    host.kill().await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), client.controller.shutdown()).await;
+    server.shutdown().await.expect("relay shutdown");
+    assert_eq!(
+        late.expect_err("the answer misses the shorter deadline")
+            .kind(),
+        DomainErrorKind::DeadlineExceeded
+    );
+    assert!(!closed, "the attachment's connection is kept");
+    assert!(attachment_failure.is_err(), "the attachment stays readable");
+    assert_eq!(accepted, 1, "no replacement connection was greeted");
 }
 
 /// A live host whose acknowledgement arrives after half the window, but
