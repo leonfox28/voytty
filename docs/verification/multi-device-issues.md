@@ -29,6 +29,17 @@ P01–P35 已提交到 `main`（`1f4b180`）；2026-10-11 新增的 P36 在分�
 
 ## 当前续修状态
 
+**2026-10-12 续修 R08，新增 P39：诊断 flush 不再持写入锁做 fsync，R08 关闭。**
+R08 的写入失败已定位：`Store::flush` 持 `writer.lock` 对日志文件和目录做 fsync（macOS 为
+`F_FULLFSYNC`），磁盘有负载时一次要数百毫秒；该锁是 5 ms 轮询的非阻塞锁，刚释放的进程又能
+立即拿到，其他写入进程等满一秒 `LOCK_WAIT` 后放弃，记录丢失，下一次 flush 返回 false。8 个
+用例副本并行互为负载时，原用例 120 次失败 85 次，写入错误全部是等锁 `WouldBlock`。修正后锁内
+只打开文件句柄，释放后再同步：同一负载 **120/120**、12 个副本 **120/120** 通过，最慢 append
+261 ms。锁等待期限和测试断言未改。updater 交接前的持久记录屏障用的是同一 flush，失败会使更新报错，
+见 [P39](#p39诊断-flush-持写入锁做-fsync其他写入进程等锁超时)。
+
+### 上轮 R01／P38（保留历史）
+
 **2026-10-12 续修 R01，新增 P38：主机换 Relay 重启后，保留连接上的首个请求不再耗尽期限。**
 受控复现确认了 R01 的一种机制：主机被强杀后以同一身份在另一 Relay 上恢复时，控制端保留的
 旧连接的包只到旧 Relay，P27 的重置无从送达，首个列表查询 **5.003 秒 DeadlineExceeded**；
@@ -1095,6 +1106,41 @@ normal 连接，首个列表查询沿用原五秒期限。修正前 ① 约 0.33
 防火墙与 netem 计数）、`relay-switch-summary-01.json`、`high-rtt-margin-01.txt` 及
 `high-rtt-summary-01.json`。
 
+### P39：诊断 flush 持写入锁做 fsync，其他写入进程等锁超时
+
+R08 的用例 `cooperating_processes_rotate_complete_records_on_one_stable_lock` 由三个子进程
+共用一个日志目录，各写 40 条记录、每条后 `flush(3 s)`。`Recorder::flush` 只在写入线程报告
+失败时提前返回 false：上次屏障后有 append 失败，或 sink 自身 flush 出错。
+[diagnostics.rs](../../crates/platform/src/diagnostics.rs) 的 append 与 `Store::flush` 都先取
+`writer.lock`；取锁是非阻塞尝试加 5 ms 轮询，最多等 `LOCK_WAIT` 一秒，超时返回
+`WouldBlock "diagnostic writer busy"`。`Store::flush` 原先持锁对现有日志文件和目录依次 fsync，
+Rust 在 macOS 上用 `F_FULLFSYNC`。锁不排队：持有者释放后立即开始下一条记录就能再次拿到，
+轮询方要正好落在空隙里才能进入。
+
+临时探针（不提交）包装子进程的 sink，记录失败及超过 200 ms 的 append／flush。无负载单次运行
+已有一个子进程 0.29 秒内完成全部 40 轮，另一个的 append 等锁 259 ms。随后用 8 个用例副本并行
+互为磁盘负载（各自独立目录和锁，只共享磁盘），每个副本 15 次：120 次失败 85 次；94 个 sink
+错误全是等满约 1.00 秒的 `WouldBlock`，append 66 个、`Store::flush` 自身取锁 28 个，没有其他
+错误类型。成功的 flush（含等锁）中位 422 ms、p90 797 ms。2026-10-12 `just check` 中的失败发生在
+本机同时运行三端 VM 和模拟器时，与这一机制吻合；那次运行没有探针，无法逐条对应。
+
+修正：`Store::flush` 只在持锁期间打开现有日志文件，释放锁后再同步这些句柄和目录。持锁期间
+不会轮转，取得的就是当时存放记录的 inode；之后的轮转只改名，同步的仍是同一份数据，归档
+被下一次轮转删除属于既有保留策略。这与 `snapshots()` 锁内只取句柄的做法一致。锁等待期限、
+轮询间隔、记录上限和该用例的断言均未改。修正后同一 8 副本负载 **120/120**，没有 sink 错误或
+超过 200 ms 的 append，最慢 flush 218 ms；12 副本、每个 10 次 **120/120**，最慢 append 261 ms、
+flush 312 ms。
+
+产品影响：updater 记录 `AwaitingHandoff`、`Accepted` 阶段后 `flush(2 s)`
+（[handoff.rs](../../crates/daemon/src/handoff.rs)），返回 false 时更新报 “Unable to record the
+update outcome.”；daemon、前台进程和 updater 同时写日志时，原实现可能因磁盘负载使这一屏障
+失败。剩余边界：锁仍不排队，持锁时间本身因负载超过一秒时仍会丢记录；这属于文档声明的尽力而为
+日志语义，本轮没有复现。证据在
+`checks/diagnostic-flush-r08/`：`probe-instrumentation.patch`、`fix.diff`、`run-probe.sh`、
+`probe-01`（修正前）、`probe-02`／`probe-03`（修正后）及 `summary.json`。本机无额外负载的
+`just check` 1290 通过（`just-check-01.log`）；Android 不依赖 `zterm-platform`，未运行
+`just android-check`。
+
 ## 隔离修复候选的首次证据（2026-10-06 历史）
 
 以下保留当时尚未合入的证据与边界；2026-10-08 的正式实现见 P27／P28。
@@ -1175,7 +1221,7 @@ QUIC 对持久重置密钥、CID 不复用及重置 oracle 的约束见
 | R05：CLI 正常 detach／daemon 关闭超时尚未全部对应根因 | `0029` 业务流已 quiesce，随后 ClosingEndpoint 超过五秒；受控约 2 秒 RTT 且无关闭回应时，已确认可卡在 `wait_all_draining` 直到 11.565 秒的协议计时器。现场没有唯一归因证据 | P28 修复半关闭隧道；P29 修复关闭取消／并发时提前返回及 Drop 遗漏任务取消，六项回归通过。慢链路无回应仍须如实保留五秒失败，不放宽期限，不跳过协议等待，不把强制结束算正常完成；继续捕获现场具体关闭等待与回应路径 |
 | R06：公共 Relay 慢传输及跨 NAT 地址发现限制 | 独立临时身份探针的两次 128 KiB 传输为 16.805／46.774 秒，第一轮 5.022 秒只收到 24,214 字节；普通双 NAT 的 official-n0 自动发现仍选 Relay。不能把慢传输直接判为服务端限速 | P15 减少画面传输量；注入候选 Direct、强制 TCP Relay、受控 QAD Direct 有各自补充通过证据。保留 official-n0，未部署替代 Relay；真实跨物理网络自动 Direct 不在本轮已证明范围。证据 `checks/public-relay-probe-01/`、`checks/pair-deadline-network-gate-analysis.json` |
 | R07：重置库缺陷已修正，现场关联仍待验证 | P25 已确认活动路径令牌登记、路由及校验缺陷，七项前失败后通过，完整库 436 项通过；原不充分探针保留 | P25／P26 同源断网／接管 80/80，随后完整扩展 72/88；P27 已处理完整 Endpoint 重启的密钥／CID 配置，补齐非零路径真实重置回归。接收字节增长仍不能识别包类型，不能把全部 R01／R02 认定同因 |
-| R08：诊断并发 flush 测试失败没有唯一解释 | 历史 `checks/rust-tests-8.log` 中日志并发轮转用例首次失败，单独及 10 次复测通过，串行调度完整 workspace 通过。2026-10-12 P38 推送前的 `just check` 再次失败于同一用例：写入子进程在 1.15 秒内 `flush(3 s)` 返回 false。该函数提前返回 false 只能来自写入线程报告的结果（上次屏障后有写入失败或 sink flush 出错），所以是一次写入失败，不是等待超时。当时本机同时运行三端 VM 与模拟器；单独复跑 6 次通过（各约 0.5 秒） | 原失败仍保留，未修改产品写入期限或该断言。后续完整检查通过不消除这次不确定性；下一步定位三进程并发轮转时的写入失败路径。证据 `checks/diagnostic-flush-repeat.json`、`checks/diagnostic-flush-2026-10-12/just-check-01.log` |
+| R08：诊断并发 flush 测试失败没有唯一解释（**已定位，P39 修正，关闭**） | 历史 `checks/rust-tests-8.log` 中日志并发轮转用例首次失败，单独及 10 次复测通过，串行调度完整 workspace 通过。2026-10-12 P38 推送前的 `just check` 再次失败于同一用例：写入子进程在 1.15 秒内 `flush(3 s)` 返回 false。该函数提前返回 false 只能来自写入线程报告的结果（上次屏障后有写入失败或 sink flush 出错），所以是一次写入失败，不是等待超时。当时本机同时运行三端 VM 与模拟器；单独复跑 6 次通过（各约 0.5 秒） | 原失败保留。临时探针在 8 个用例副本并行互为磁盘负载时复现 85/120 次失败，sink 错误全部是等满一秒 `LOCK_WAIT` 的 `WouldBlock`：`Store::flush` 持 `writer.lock` 做 fsync，非排队的轮询锁让其他写入进程等锁超时。P39 改为锁内只取句柄、释放后同步，同负载 120/120、12 副本 120/120 通过；锁等待期限和断言未改。旧失败那次没有探针，按同一机制解释。证据 `checks/diagnostic-flush-repeat.json`、`checks/diagnostic-flush-2026-10-12/just-check-01.log`、`checks/diagnostic-flush-r08/`，见 [P39](#p39诊断-flush-持写入锁做-fsync其他写入进程等锁超时) |
 | R09：当前完整验收尚未通过 | 当前 `2d86a806`（含 P35）Linux 工作区 817 通过／9 忽略，R03 定向验收通过；此前 R02 45/52 及稳定性准备失败仍保留，本轮 B Direct 又有 1 次注入前初连超时 | 当前完整核心 1460 项和完整扩展 88 项未执行，R03 定向一小时不能替代完整三端稳定性。A／B／C 已停止，无故障规则残留；最新证据见 `checks/ordered-fixes/r03-frame-window/` 和文末交接 |
 | R10：旧路径高 RTT 时，P38 的窗口与重试串行相加超出五秒期限 | 三端 A↔B 定向检查中，旧连接 RTT 557 ms 时首个请求 3.97 秒成功；754–760 ms 时窗口达 2.5 秒上限，新连接再用 1.42–1.86 秒，请求在 5.01 秒 `deadline_exceeded`，下一次请求成功。不加延迟时主机新 Relay 路径 RTT 已有 490–686 ms | 结果与 P38 之前相同，P38 按现状合入。后续可考虑窗口内无确认时提前在后台建立新连接，使窗口与建连并行；或缩短窗口／上限，但会增加慢主机被误判、请求重发的风险。先在本机补带延迟的受控复现再改，期限、计时器与重试次数不变。证据见 [P38](#p38主机换-relay-重启后保留连接上的首个请求耗尽五秒期限) 的高 RTT 余量 |
 
@@ -1213,7 +1259,7 @@ QUIC 对持久重置密钥、CID 不复用及重置 oracle 的约束见
 | T24 | SettingsUiTest 将返回首页清理也塞入 1 秒设置断言窗口，保存会话恢复遇阻时失败 | 分开清理等待和设置断言，设置断言原 1 秒不变；空状态／受阻恢复对照各 10 次，20/20 通过并还原应用状态；`checks/settings-restore-before-01/`、`checks/settings-restore-after-01/results.json` |
 | T25 | 长运行只续开 Linux 详细日志，Android 15 分钟到期遗漏失败时证据 | 新增 [diagnostics helper](../../tests/e2e/multi-device-diagnostics.py) 显式续开三端有限窗口，以 Android 自身时钟／应用 UID 写控制标记，不启动实例、不重启应用、不请求 peer；停止状态拒绝和运行中续开均验证。已缺失日志不能补回 |
 | T26 | vendor 协议 token 计算表达式被扫描器当成硬编码凭据 | 区分字符串字面量与运行时表达式，继续扫描 vendor、真实凭据格式、配置／shell 未引号赋值，新增拒绝夹具；`checks/noq-vendor-secret-*.log` |
-| T27 | 并行 tracing 全局 callsite 竞争导致既有配对日志断言偶发计数 0 | 将日志断言隔离到子进程，保留恰好一次及票据不泄露断言；[local_pair_ipc.rs](../../crates/daemon/tests/local_pair_ipc.rs)。不同于 R08 尚未解释的 flush 失败 |
+| T27 | 并行 tracing 全局 callsite 竞争导致既有配对日志断言偶发计数 0 | 将日志断言隔离到子进程，保留恰好一次及票据不泄露断言；[local_pair_ipc.rs](../../crates/daemon/tests/local_pair_ipc.rs)。不同于 R08 的等锁失败（P39） |
 | T28 | 模拟器重启后 adb root 短暂连接关闭、主动停止 instrumentation 被误报崩溃 | 在有界窗口确认实际 UID 就绪，区分主动停止与意外退出；`android-reboot-final-01` 无同类管理失败，其 3 项产品失败仍保留 |
 | T29 | 重启后 Relay 规则恢复、双栈部分失败和清理错误可能漏清其他设备／地址族 | 恢复范围仅所属测试链；一项清理失败仍尝试其他设备和地址族，管理规则检查、故障日志及 EOF guard 有对应回归；原 45 项运行器／审计检查通过 |
 | T30 | 独立 Android 验收在 VM 重启后直接开始，产品 daemon 仍为 Stopped；基础网络预检不保证产品主机已启动 | 新增 [本地主机准备工具](../../tests/e2e/multi-device-hosts.py)，通过显式 local 查询启动已配置 daemon，并记录前后状态、等待 Online；不重启活跃服务、不创建会话、不预热控制端。三项回归及完整运行器 48 项通过。`cold-start-fix/host-readiness-analysis-02.json` 区分前提错误与修正后仍存在的真实握手失败，原日志不改写 |
