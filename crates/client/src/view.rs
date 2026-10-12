@@ -1112,6 +1112,15 @@ async fn handle_terminal_driver_command(
             return TerminalDriverCommandResult::Continue;
         }
     }
+    // A frontend cache invalidation can ask again while the previous window
+    // response is still in flight. That local rejection writes no frame, so
+    // it must not end an otherwise healthy attachment.
+    if let TerminalDriverCommand::RequestHistoryWindow { query } = &command
+        && let Err(error) = client.check_history_window_request(*query)
+    {
+        let _ = response.send(Err(error));
+        return TerminalDriverCommandResult::Continue;
+    }
     let success = match command {
         TerminalDriverCommand::SnapshotApplied { .. } => {
             TerminalDriverCommandResult::SnapshotApplied
@@ -2190,6 +2199,84 @@ mod tests {
         ));
         drop(writer);
         server.await.expect("local driver server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn overlapping_history_window_request_is_rejected_without_ending_the_driver() {
+        let (prepared, mut daemon, _, attachment_id) = terminal_test_view(false);
+        let server = tokio::spawn(async move {
+            let mut decoder = FrameDecoder::new();
+            let mut queued = VecDeque::new();
+            let initial = read_terminal_test_frame(&mut daemon, &mut decoder, &mut queued).await;
+            assert_eq!(initial.kind, WireKind::TerminalSnapshotApplied);
+            let request = read_terminal_test_frame(&mut daemon, &mut decoder, &mut queued).await;
+            assert_eq!(request.kind, WireKind::TerminalHistoryWindowRequest);
+            // The rejected overlap writes nothing; the next frame is input.
+            let input = read_terminal_test_frame(&mut daemon, &mut decoder, &mut queued).await;
+            assert_eq!(input.kind, WireKind::TerminalInput);
+            daemon
+                .write_all(
+                    &encode_message(
+                        WireKind::TerminalLeaseLost,
+                        0,
+                        0,
+                        &v2::TerminalLeaseLost {
+                            attachment_id: Some(attachment_id.into()),
+                            generation: 7,
+                        },
+                    )
+                    .expect("bounded lease-lost marker"),
+                )
+                .await
+                .expect("write lease-lost marker");
+            daemon
+        });
+
+        let view = prepared
+            .acknowledge_initial()
+            .await
+            .expect("exact initial acknowledgement");
+        let (mut events, writer) = view.split();
+        assert!(matches!(
+            events.read_event().await.expect("initial state"),
+            Some(TerminalViewEvent::TransportState(
+                TerminalViewTransportState::Active
+            ))
+        ));
+        let query = TerminalHistoryWindowQuery {
+            anchor: zterm_core::terminal::TerminalHistoryWindowAnchor {
+                epoch: Revision::new(1),
+                revision: Revision::new(2),
+                max_offset_from_bottom: 12,
+                viewport: zterm_core::terminal::TerminalSize::new(4, 10),
+            },
+            target_offset_from_bottom: 0,
+            older_margin_rows: 8,
+            newer_margin_rows: 0,
+        };
+        writer
+            .request_history_window(query)
+            .await
+            .expect("first bounded window request");
+        // A frontend whose cache was invalidated may ask again before the
+        // first response arrives. The rejection is local and leaves the
+        // attachment intact.
+        let error = writer
+            .request_history_window(query)
+            .await
+            .expect_err("only one window response may be outstanding");
+        assert_eq!(error.kind(), DomainErrorKind::ResourceExhausted);
+        writer
+            .write_input(b"x".to_vec())
+            .await
+            .expect("the attachment still accepts input");
+        assert!(matches!(
+            events.read_event().await.expect("post-rejection marker"),
+            Some(TerminalViewEvent::LeaseLost { generation: 7 })
+        ));
+        drop(writer);
+        let _daemon = server.await.expect("history overlap server");
     }
 
     #[cfg(unix)]
