@@ -4842,6 +4842,70 @@ mod unix {
         }
 
         #[test]
+        fn live_prefetch_after_sync_resume_discards_the_overlapped_response() {
+            let physical = TerminalSize::new(4, 10);
+            let layout = ChromeLayout::new(physical, ActiveScreen::Main);
+            let live = TerminalScrollMetrics {
+                epoch: Revision::new(2),
+                revision: Revision::new(7),
+                offset_from_bottom: 0,
+                max_offset_from_bottom: 10,
+                viewport_rows: layout.child.rows,
+            };
+            let mut viewport = ViewportController::with_layout(layout, Some(live));
+            let first = viewport
+                .prefetch_live()
+                .expect("live history issues one prefetch");
+            assert!(
+                viewport.prefetch_live().is_none(),
+                "one prefetch is pending"
+            );
+
+            // A sync marker and its replacement snapshot arrive while the
+            // first response is still in flight.
+            viewport.observe_sync_required();
+            viewport.observe_snapshot(Some(TerminalScrollMetrics {
+                revision: Revision::new(8),
+                ..live
+            }));
+            assert_eq!(viewport.finish_resume(), Some(Vec::new()));
+            viewport
+                .prefetch_live()
+                .expect("the resumed live view asks again");
+            // The terminal driver rejects that overlap locally; the frontend
+            // defers it. The late first response must then be dropped rather
+            // than treated as unsolicited.
+            viewport.window_cache.defer_pending_request();
+            let shape = first.response_shape(first.anchor).expect("valid query");
+            let rows = (0..shape.row_count)
+                .map(|index| {
+                    test_row(
+                        first.anchor.viewport.columns,
+                        &index.to_string(),
+                        TerminalStyle::default(),
+                    )
+                })
+                .collect();
+            assert!(matches!(
+                viewport.apply_view_history_window(TerminalSurfaceHistoryWindowResult::Frame(
+                    TerminalSurfaceHistoryWindowFrame {
+                        colors: Default::default(),
+                        disposition: shape.disposition,
+                        anchor: first.anchor,
+                        target_offset_from_bottom: shape.target_offset_from_bottom,
+                        first_row_from_live_top: shape.first_row_from_live_top,
+                        rows,
+                    },
+                )),
+                Ok(ViewportEffect::None)
+            ));
+            assert!(
+                viewport.prefetch_live().is_some(),
+                "a later prefetch is admitted again"
+            );
+        }
+
+        #[test]
         fn composed_frame_owns_live_gutter_status_and_alternate_layout() {
             let physical = TerminalSize::new(4, 12);
             let main_layout = ChromeLayout::new(physical, ActiveScreen::Main);

@@ -934,10 +934,10 @@ impl SessionClient {
         .map(|_| ())
     }
 
-    /// Requests one stateless bounded history window. Exactly one such request
-    /// may be outstanding per view.
-    pub(crate) async fn request_history_window(
-        &mut self,
+    /// Checks the local admission rules of [`Self::request_history_window`]
+    /// without writing a frame.
+    pub(crate) fn check_history_window_request(
+        &self,
         query: TerminalHistoryWindowQuery,
     ) -> Result<(), DaemonError> {
         if self.pending_history_window.is_some() {
@@ -950,6 +950,16 @@ impl SessionClient {
                 "terminal history window query is outside the allowed range",
             ));
         }
+        Ok(())
+    }
+
+    /// Requests one stateless bounded history window. Exactly one such request
+    /// may be outstanding per view.
+    pub(crate) async fn request_history_window(
+        &mut self,
+        query: TerminalHistoryWindowQuery,
+    ) -> Result<(), DaemonError> {
+        self.check_history_window_request(query)?;
         let request_id = self
             .send(
                 WireKind::TerminalHistoryWindowRequest,
