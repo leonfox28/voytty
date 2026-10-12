@@ -301,6 +301,16 @@ daemon-issued operation lease, operation ID, target, and encoded bytes for at
 most one remote retry, so a committed response loss replays the exact result.
 Operation-lease allocation itself is not retried after a write ambiguity.
 
+A live host acknowledges a request at the QUIC layer within about one round
+trip, even while its service is still working. When a retry is allowed and the
+connection acknowledges nothing for four path round trips (at least one second,
+at most half the remaining time), the first attempt counts as a transport
+ambiguity. If nothing else uses that connection, it is retired and the retry
+uses a fresh connection within the same deadline.
+This covers a host that restarted on another Relay or address while the client
+kept its old connection. Lease allocation and the retry itself still wait for
+the full deadline.
+
 If the daemon cannot prove whether a mutation committed, it reports
 `operation_outcome_unknown`. The client does not allocate a fresh lease and
 silently rerun that logical operation. Inspect current state before deciding on

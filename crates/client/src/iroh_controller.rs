@@ -15,7 +15,8 @@ use crate::{
     },
     remote_unary::{
         RemoteAttemptError, RemoteUnaryClient, RemoteUnaryDemand, RemoteUnaryTransport,
-        decode_session_service_error, read_exact_response, timeout_until,
+        RequestAcknowledgement, decode_session_service_error, read_acknowledged_response,
+        timeout_until,
     },
     route::{
         combined_relay_address, device_from_endpoint_id, endpoint_id_from_device,
@@ -64,6 +65,8 @@ pub const ZTERM_PAIR_ALPN: &[u8] = b"zterm-pair/2";
 mod cache_tests;
 #[cfg(test)]
 mod progress_tests;
+#[cfg(test)]
+mod restart_tests;
 
 /// Builds the official n0 profile with an explicit platform DNS adapter.
 /// Publication remains relay-only; authenticated connections can upgrade to direct paths.
@@ -761,6 +764,7 @@ impl RemoteUnaryDemand for IrohDemand {
         &'a mut self,
         request: &'a [u8],
         deadline: Instant,
+        retry_follows: bool,
     ) -> TransportFuture<'a, Result<DecodedFrame, RemoteAttemptError>> {
         Box::pin(async move {
             let mut stream = self
@@ -769,6 +773,8 @@ impl RemoteUnaryDemand for IrohDemand {
                 .await
                 .map_err(RemoteAttemptError::PreWrite)?;
             let connection = stream.connection.stable_id();
+            let acknowledgement = retry_follows
+                .then(|| RequestAcknowledgement::before_write(&stream.connection, deadline));
             let result = async {
                 timeout_until(deadline, stream.send.write_all(request))
                     .await
@@ -779,7 +785,7 @@ impl RemoteUnaryDemand for IrohDemand {
                 stream.send.finish().map_err(|_| {
                     RemoteAttemptError::PostWrite(unavailable("Session request finish failed"))
                 })?;
-                read_exact_response(&mut stream.recv, deadline).await
+                read_acknowledged_response(&mut stream.recv, deadline, acknowledgement).await
             }
             .await;
             drop(stream);

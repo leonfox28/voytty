@@ -746,6 +746,12 @@ impl AuthenticatedBiStream {
     pub(crate) fn candidate_observer(&self) -> SelectedCandidateObserver {
         self.candidate_observer.clone()
     }
+
+    /// Transport connection of the candidate that opened this stream.
+    #[cfg(unix)]
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.candidate_observer.candidate.connection
+    }
 }
 
 impl<T> Default for CandidateRegistry<T> {

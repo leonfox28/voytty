@@ -184,10 +184,11 @@ impl RemoteSessionService {
 #[cfg(test)]
 use zterm_client::remote_unary::{
     REMOTE_SESSION_FAILURE_DETAIL, decode_exact_frame, decode_session_service_error,
+    read_exact_response,
 };
 use zterm_client::remote_unary::{
     RemoteAttemptError, RemoteUnaryClient, RemoteUnaryDemand, RemoteUnaryTransport,
-    RequestContract, read_exact_response,
+    RequestAcknowledgement, RequestContract, read_acknowledged_response,
 };
 pub(crate) use zterm_client::remote_unary::{
     SessionUnaryResponseStatus, validate_session_unary_response,
@@ -239,6 +240,7 @@ impl RemoteUnaryDemand for BrokerRemoteUnaryDemand {
         &'a mut self,
         request: &'a [u8],
         deadline: Instant,
+        retry_follows: bool,
     ) -> BoxFuture<'a, Result<DecodedFrame, RemoteAttemptError>> {
         Box::pin(async move {
             let mut stream = self
@@ -247,6 +249,8 @@ impl RemoteUnaryDemand for BrokerRemoteUnaryDemand {
                 .await
                 .map_err(RemoteAttemptError::PreWrite)?;
             let candidate = stream.candidate();
+            let acknowledgement = retry_follows
+                .then(|| RequestAcknowledgement::before_write(stream.connection(), deadline));
             let result = async {
                 timeout_until(deadline, stream.send.write_all(request))
                     .await
@@ -261,7 +265,7 @@ impl RemoteUnaryDemand for BrokerRemoteUnaryDemand {
                         "remote Session request finish failed",
                     ))
                 })?;
-                read_exact_response(&mut stream.recv, deadline).await
+                read_acknowledged_response(&mut stream.recv, deadline, acknowledgement).await
             }
             .await;
             drop(stream);
@@ -351,6 +355,7 @@ mod tests {
     struct FakeState {
         demand_targets: Vec<DeviceId>,
         requests: Vec<Vec<u8>>,
+        retry_follows: Vec<bool>,
         outcomes: VecDeque<ScriptedOutcome>,
     }
 
@@ -396,6 +401,7 @@ mod tests {
                 state: Arc::new(Mutex::new(FakeState {
                     demand_targets: Vec::new(),
                     requests: Vec::new(),
+                    retry_follows: Vec::new(),
                     outcomes: outcomes.into_iter().collect(),
                 })),
             }
@@ -428,6 +434,7 @@ mod tests {
             &'a mut self,
             request: &'a [u8],
             deadline: Instant,
+            retry_follows: bool,
         ) -> BoxFuture<'a, Result<DecodedFrame, RemoteAttemptError>> {
             Box::pin(async move {
                 let outcome = {
@@ -436,6 +443,7 @@ mod tests {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     state.requests.push(request.to_vec());
+                    state.retry_follows.push(retry_follows);
                     state.outcomes.pop_front()
                 };
                 match outcome {
@@ -509,6 +517,7 @@ mod tests {
             &'a mut self,
             request: &'a [u8],
             deadline: Instant,
+            _retry_follows: bool,
         ) -> BoxFuture<'a, Result<DecodedFrame, RemoteAttemptError>> {
             Box::pin(async move {
                 let request_frame =
@@ -824,6 +833,8 @@ mod tests {
         let state = transport.state();
         assert_eq!(state.demand_targets, [target]);
         assert_eq!(state.requests, [request.clone(), request]);
+        // Only an attempt that a retry follows may end early without an ACK.
+        assert_eq!(state.retry_follows, [true, false]);
     }
 
     #[tokio::test]
@@ -859,6 +870,7 @@ mod tests {
         let state = transport.state();
         assert_eq!(state.demand_targets, [target]);
         assert_eq!(state.requests, [request]);
+        assert_eq!(state.retry_follows, [false]);
         assert_eq!(state.outcomes.len(), 1);
     }
 
@@ -893,6 +905,7 @@ mod tests {
         assert_eq!(state.requests.len(), 2);
         assert_eq!(state.requests[0], state.requests[1]);
         assert_eq!(state.requests[0], request);
+        assert_eq!(state.retry_follows, [true, false]);
 
         let frame = decode_exact_frame(&state.requests[1]).expect("recorded request decodes");
         let message: v2::SessionCreateRequest = frame
