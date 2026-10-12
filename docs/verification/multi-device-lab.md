@@ -248,3 +248,19 @@ P37 能救回单个连接卡死，不能解决这种 Relay 整体不可达，原
 样本量小（各一轮），只作为方向性证据。今后若 C 的 Direct 行突然只剩 Relay 路径，先在本会话
 检查 `python3 -c "import socket;socket.socket(2,2).sendto(b'x',('10.0.0.1',9))"` 是否报
 `No route to host`，再排查产品。
+
+## 2026-10-12 P38 候选
+
+### 12. 重建与重启类验证（01:36–02:16 UTC／09:36–10:16）
+
+开始前在本会话确认局域网可达（上述 UDP 探测无报错）；运行中的模拟器与本会话的责任进程
+均为当前 Ghostty。以未提交的 P38 工作区执行 `build`：源码 `40837c6` 加 7 个修改文件，
+A／B 二进制 `1de7a31a…278b28`，调试 APK `6a3a795f…080367`，测试 APK `a6a08d0e…fb1c82`，
+preflight 通过（`checks/ordered-fixes/r01-kept-connection/build-01.log`）。
+
+随后执行 `host-daemon-crash`、`host-reboot` 各一轮（16/16 通过，审计零问题），以及 A↔B
+换 Relay 的定向检查（脚本只对 A 的测试账户加防火墙规则，结束时删除并重启 A／B daemon）。
+02:09–02:16 又在 B 的 `lima0` 上只对其测试账户的 TCP 443 加 netem 延迟，测高 RTT 余量；结束后
+`lima0` 恢复默认 fq_codel，A／B 无残留规则。
+结果与归因见问题清单的 [P38](multi-device-issues.md#p38主机换-relay-重启后保留连接上的首个请求耗尽五秒期限)。
+三端保持运行。

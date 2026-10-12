@@ -86,7 +86,9 @@ impl RemoteUnaryClient {
         timeout_until(deadline, demand.prepare(deadline)).await??;
         let deadline = deadline.min(Instant::now() + contract.operation_budget);
 
-        let first = exchange_and_validate(&mut *demand, request, deadline, contract).await;
+        let retry_follows = contract.retry_class != RetryClass::StatefulControl;
+        let first =
+            exchange_and_validate(&mut *demand, request, deadline, contract, retry_follows).await;
         match first {
             Ok(response) => Ok(response),
             Err(RemoteAttemptError::PreWrite(error)) => Err(error),
@@ -94,7 +96,8 @@ impl RemoteUnaryClient {
                 RetryClass::StatefulControl => Err(first_error),
                 RetryClass::Safe | RetryClass::Mutation => {
                     let second =
-                        exchange_and_validate(&mut *demand, request, deadline, contract).await;
+                        exchange_and_validate(&mut *demand, request, deadline, contract, false)
+                            .await;
                     match second {
                         Ok(response) => Ok(response),
                         Err(_) if contract.retry_class == RetryClass::Mutation => {
@@ -116,8 +119,9 @@ async fn exchange_and_validate(
     request: &[u8],
     deadline: Instant,
     contract: RequestContract,
+    retry_follows: bool,
 ) -> Result<DecodedFrame, RemoteAttemptError> {
-    let response = demand.exchange(request, deadline).await?;
+    let response = demand.exchange(request, deadline, retry_follows).await?;
     contract
         .validate_response(response)
         .map_err(RemoteAttemptError::PostWrite)
@@ -383,10 +387,13 @@ pub trait RemoteUnaryDemand: Send {
     }
 
     /// Exchanges one frame and classifies failure relative to the first write.
+    /// With `retry_follows`, a write the connection never acknowledges may end
+    /// early (see [`RequestAcknowledgement`]) so the retry keeps some budget.
     fn exchange<'a>(
         &'a mut self,
         request: &'a [u8],
         deadline: Instant,
+        retry_follows: bool,
     ) -> BoxFuture<'a, Result<DecodedFrame, RemoteAttemptError>>;
 }
 
@@ -456,6 +463,78 @@ where
     })
     .await
     .map_err(RemoteAttemptError::PostWrite)?
+}
+
+/// Whether the peer acknowledged anything on a request's connection.
+///
+/// A live peer acknowledges the request packets within about one round trip,
+/// however long its service takes to answer. A kept connection whose peer
+/// restarted on another Relay or address reaches nobody: no acknowledgement
+/// and no stateless reset arrive before the QUIC idle timeout (30 s on a
+/// Relay path), so without this the first request spends its whole deadline.
+pub struct RequestAcknowledgement {
+    connection: iroh::endpoint::Connection,
+    received: u64,
+    decide_at: Instant,
+}
+
+impl RequestAcknowledgement {
+    /// Samples before the write, so an immediate acknowledgement still counts.
+    /// The window covers one lost packet and its probe at the connection's
+    /// largest path RTT, and leaves at least half the remaining budget.
+    pub fn before_write(connection: &iroh::endpoint::Connection, deadline: Instant) -> Self {
+        let now = Instant::now();
+        let rtt = connection
+            .paths()
+            .iter()
+            .map(|path| path.rtt())
+            .max()
+            .unwrap_or_default();
+        let window = (rtt * 4)
+            .max(MIN_ACKNOWLEDGEMENT_WINDOW)
+            .min(deadline.saturating_duration_since(now) / 2);
+        Self {
+            connection: connection.clone(),
+            received: acknowledgements(connection),
+            decide_at: now + window,
+        }
+    }
+}
+
+const MIN_ACKNOWLEDGEMENT_WINDOW: Duration = Duration::from_secs(1);
+
+fn acknowledgements(connection: &iroh::endpoint::Connection) -> u64 {
+    let frames = connection.stats().frame_rx;
+    frames.acks + frames.path_acks
+}
+
+/// Reads like [`read_exact_response`]. With an acknowledgement sample, a
+/// request that its connection has not acknowledged at the window's end is a
+/// transport failure after the write; otherwise the read keeps its deadline.
+pub async fn read_acknowledged_response<Reader>(
+    reader: &mut Reader,
+    deadline: Instant,
+    acknowledgement: Option<RequestAcknowledgement>,
+) -> Result<DecodedFrame, RemoteAttemptError>
+where
+    Reader: AsyncRead + Unpin,
+{
+    let Some(acknowledgement) = acknowledgement else {
+        return read_exact_response(reader, deadline).await;
+    };
+    let read = read_exact_response(reader, deadline);
+    tokio::pin!(read);
+    tokio::select! {
+        result = &mut read => return result,
+        () = tokio::time::sleep_until(acknowledgement.decide_at.into()) => {}
+    }
+    if acknowledgements(&acknowledgement.connection) > acknowledgement.received {
+        read.await
+    } else {
+        Err(RemoteAttemptError::PostWrite(transport_unavailable(
+            "remote Session request was not acknowledged",
+        )))
+    }
 }
 
 /// Validates a buffer as exactly one complete protocol frame.
