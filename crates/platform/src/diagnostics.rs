@@ -327,14 +327,23 @@ impl Sink for Store {
         Ok(self.document()?.control)
     }
     fn flush(&self) -> io::Result<()> {
-        let _lock = self.lock(false)?;
-        for (name, _) in FILES {
-            let path = self.paths.logs().join(name);
-            if exists(&path)? {
-                user_state::open_read(&path, self.paths.uid())
-                    .map_err(io::Error::other)?
-                    .sync_data()?;
+        // Capture handles under coordination, then sync after release. A later
+        // rotation renames a captured inode without moving its data; syncing
+        // under writer.lock starved cooperating writers past LOCK_WAIT.
+        let mut files = Vec::new();
+        {
+            let _lock = self.lock(false)?;
+            for (name, _) in FILES {
+                let path = self.paths.logs().join(name);
+                if exists(&path)? {
+                    files.push(
+                        user_state::open_read(&path, self.paths.uid()).map_err(io::Error::other)?,
+                    );
+                }
             }
+        }
+        for file in files {
+            file.sync_data()?;
         }
         fs::File::open(self.paths.logs())?.sync_all()
     }
