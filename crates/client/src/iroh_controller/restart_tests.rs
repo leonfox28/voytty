@@ -4,7 +4,12 @@ use super::*;
 use crate::handshake::{read_one_frame, write_handshake_message};
 use iroh::tls::CaTlsConfig;
 use prost::Message;
-use std::{net::Ipv4Addr, sync::atomic::AtomicUsize, time::Duration};
+use std::{
+    net::Ipv4Addr,
+    sync::atomic::{AtomicU64, AtomicUsize},
+    time::Duration,
+};
+use tokio_util::task::AbortOnDropHandle;
 use zterm_core::ConnectionWelcome;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -18,6 +23,7 @@ enum Return {
 #[derive(Debug)]
 struct MovableLookup {
     relay: Arc<StdMutex<iroh::RelayUrl>>,
+    resolves: Arc<AtomicUsize>,
 }
 
 impl iroh::address_lookup::AddressLookup for MovableLookup {
@@ -30,6 +36,7 @@ impl iroh::address_lookup::AddressLookup for MovableLookup {
             Result<iroh::address_lookup::Item, iroh::address_lookup::Error>,
         >,
     > {
+        self.resolves.fetch_add(1, Ordering::SeqCst);
         let relay = self
             .relay
             .lock()
@@ -59,9 +66,76 @@ async fn spawn_relay() -> (iroh_relay::server::Server, iroh::RelayUrl) {
     (server, url)
 }
 
+/// Another URL for the same Relay whose TCP traffic is delayed in each
+/// direction by `one_way` milliseconds, which a test may change, like netem
+/// on one side's Relay connection. The Relay forwards by endpoint ID, so
+/// peers may reach it through different URLs.
+async fn delayed_relay(
+    server: &iroh_relay::server::Server,
+    one_way: Arc<AtomicU64>,
+) -> (AbortOnDropHandle<()>, iroh::RelayUrl) {
+    let target = server.https_addr().expect("relay HTTPS");
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("delay proxy");
+    let url = format!("https://{}", listener.local_addr().expect("proxy address"))
+        .parse()
+        .expect("proxy URL");
+    let proxy = tokio::spawn(async move {
+        while let Ok((inbound, _)) = listener.accept().await {
+            let one_way = Arc::clone(&one_way);
+            tokio::spawn(async move {
+                let Ok(outbound) = tokio::net::TcpStream::connect(target).await else {
+                    return;
+                };
+                let _ = inbound.set_nodelay(true);
+                let _ = outbound.set_nodelay(true);
+                let (inbound_read, inbound_write) = inbound.into_split();
+                let (outbound_read, outbound_write) = outbound.into_split();
+                tokio::join!(
+                    delay_line(inbound_read, outbound_write, &one_way),
+                    delay_line(outbound_read, inbound_write, &one_way),
+                );
+            });
+        }
+    });
+    (AbortOnDropHandle::new(proxy), url)
+}
+
+/// Forwards one direction in order after a fixed delay, without throttling.
+async fn delay_line(
+    mut from: tokio::net::tcp::OwnedReadHalf,
+    mut to: tokio::net::tcp::OwnedWriteHalf,
+    one_way: &AtomicU64,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let read = async move {
+        let mut buffer = [0_u8; 16 * 1024];
+        while let Ok(read @ 1..) = from.read(&mut buffer).await {
+            let due =
+                tokio::time::Instant::now() + Duration::from_millis(one_way.load(Ordering::SeqCst));
+            if sender.send((due, buffer[..read].to_vec())).is_err() {
+                break;
+            }
+        }
+    };
+    let write = async move {
+        while let Some((due, bytes)) = receiver.recv().await {
+            tokio::time::sleep_until(due).await;
+            if to.write_all(&bytes).await.is_err() {
+                break;
+            }
+        }
+        let _ = to.shutdown().await;
+    };
+    tokio::join!(read, write);
+}
+
 #[derive(Clone, Default)]
 struct Served {
     accepted: Arc<AtomicUsize>,
+    greeted: Arc<AtomicUsize>,
     queries: Arc<AtomicUsize>,
 }
 
@@ -81,6 +155,7 @@ async fn serve(host: Endpoint, served: Served, reply_delay: Duration) {
             if read_one_frame(&mut recv, 16384, deadline).await.is_err() {
                 return;
             }
+            served.greeted.fetch_add(1, Ordering::SeqCst);
             let welcome = ConnectionWelcome::new(
                 zterm_proto::WIRE_MAJOR,
                 Capabilities::from_bits_retain(
@@ -170,7 +245,7 @@ impl KillableHost {
                         .expect("host loopback");
                 }
                 let host = builder.bind().await.expect("host");
-                tokio::time::timeout(Duration::from_secs(5), host.online())
+                tokio::time::timeout(Duration::from_secs(10), host.online())
                     .await
                     .expect("host relay online");
                 tokio::spawn(serve(host.clone(), serving, reply_delay));
@@ -180,7 +255,7 @@ impl KillableHost {
             });
             runtime.shutdown_background();
         });
-        tokio::time::timeout(Duration::from_secs(10), online)
+        tokio::time::timeout(Duration::from_secs(15), online)
             .await
             .expect("killable host online")
             .expect("killable host reports readiness");
@@ -205,12 +280,14 @@ struct Client {
     remote: DeviceId,
     secret: SecretKey,
     advertised: Arc<StdMutex<iroh::RelayUrl>>,
+    resolves: Arc<AtomicUsize>,
 }
 
 impl Client {
     /// The production controller profile also persists its stateless reset key.
     async fn new(relays: &[&iroh::RelayUrl], direct: bool) -> Self {
         let advertised = Arc::new(StdMutex::new(relays[0].clone()));
+        let resolves = Arc::new(AtomicUsize::new(0));
         let mut client = Endpoint::builder(presets::Minimal)
             .persistent_stateless_reset(true)
             .ca_tls_config(CaTlsConfig::insecure_skip_verify())
@@ -223,6 +300,7 @@ impl Client {
             .clear_ip_transports()
             .address_lookup(MovableLookup {
                 relay: Arc::clone(&advertised),
+                resolves: Arc::clone(&resolves),
             });
         if direct {
             client = client
@@ -244,6 +322,7 @@ impl Client {
             remote,
             secret,
             advertised,
+            resolves,
         }
     }
 
@@ -278,19 +357,32 @@ impl Client {
 /// The kept connection's request reaches nobody when the host returns on
 /// another Relay. The first query must still finish inside its unchanged
 /// five-second budget on one fresh connection, which the next query reuses.
-async fn first_query_after_host_returns(returned: Return) {
+/// A nonzero `host_delay` slows each direction of the host's Relay traffic.
+async fn first_query_after_host_returns(returned: Return, host_delay: Duration) {
     let (old_server, old_relay) = spawn_relay().await;
     let (new_server, new_relay) = spawn_relay().await;
+    // Hosts reach the Relays directly unless their traffic is delayed.
+    let (proxies, old_host_relay, new_host_relay) = if host_delay.is_zero() {
+        (Vec::new(), old_relay.clone(), new_relay.clone())
+    } else {
+        let one_way = Arc::new(AtomicU64::new(
+            u64::try_from(host_delay.as_millis()).expect("delay in milliseconds"),
+        ));
+        let (old_proxy, old_url) = delayed_relay(&old_server, Arc::clone(&one_way)).await;
+        let (new_proxy, new_url) = delayed_relay(&new_server, one_way).await;
+        (vec![old_proxy, new_proxy], old_url, new_url)
+    };
     let direct = returned == Return::NewDirectPort;
     let client = Client::new(&[&old_relay, &new_relay], direct).await;
     let old_host = KillableHost::spawn(
         client.secret.clone(),
-        old_relay.clone(),
+        old_host_relay.clone(),
         direct,
         Duration::ZERO,
     )
     .await;
     client.list().await.expect("original query");
+    let kept_rtt = client.kept().await.rtt_ms;
     if direct {
         let waited = Instant::now();
         while client.kept().await.path != "direct" {
@@ -301,16 +393,17 @@ async fn first_query_after_host_returns(returned: Return) {
     old_host.kill().await;
     // A real restart takes seconds; the host returns with the same identity.
     tokio::time::sleep(Duration::from_secs(2)).await;
-    let relay = if returned == Return::OtherRelay {
-        new_relay.clone()
+    let (relay, host_relay) = if returned == Return::OtherRelay {
+        (new_relay.clone(), new_host_relay)
     } else {
-        old_relay.clone()
+        (old_relay.clone(), old_host_relay)
     };
     *client
         .advertised
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = relay.clone();
-    let new_host = KillableHost::spawn(client.secret.clone(), relay, direct, Duration::ZERO).await;
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = relay;
+    let new_host =
+        KillableHost::spawn(client.secret.clone(), host_relay, direct, Duration::ZERO).await;
     assert!(
         !client.kept().await.closed,
         "the query must meet an apparently open connection"
@@ -323,11 +416,12 @@ async fn first_query_after_host_returns(returned: Return) {
     let accepted = new_host.served.accepted.load(Ordering::SeqCst);
     let queries = new_host.served.queries.load(Ordering::SeqCst);
     eprintln!(
-        "{returned:?}: first={elapsed:?} {:?}; accepted={accepted} queries={queries}",
+        "{returned:?} kept_rtt={kept_rtt}ms: first={elapsed:?} {:?}; accepted={accepted} queries={queries}",
         first.as_ref().err().map(ClientError::kind),
     );
     new_host.kill().await;
     let _ = tokio::time::timeout(Duration::from_secs(5), client.controller.shutdown()).await;
+    drop(proxies);
     old_server.shutdown().await.expect("old relay shutdown");
     new_server.shutdown().await.expect("new relay shutdown");
     first.expect("first query on the kept connection");
@@ -342,17 +436,95 @@ async fn first_query_after_host_returns(returned: Return) {
 
 #[tokio::test]
 async fn first_query_on_kept_connection_recovers_when_host_returns_on_the_same_relay() {
-    first_query_after_host_returns(Return::SameRelay).await;
+    first_query_after_host_returns(Return::SameRelay, Duration::ZERO).await;
 }
 
 #[tokio::test]
 async fn first_query_on_kept_connection_recovers_when_host_returns_on_another_relay() {
-    first_query_after_host_returns(Return::OtherRelay).await;
+    first_query_after_host_returns(Return::OtherRelay, Duration::ZERO).await;
 }
 
 #[tokio::test]
 async fn first_query_on_kept_connection_recovers_when_host_returns_on_a_new_direct_port() {
-    first_query_after_host_returns(Return::NewDirectPort).await;
+    first_query_after_host_returns(Return::NewDirectPort, Duration::ZERO).await;
+}
+
+/// The replacement dial can look the host up before it publishes its new
+/// Relay and then never connect. The retry after the window still dials
+/// afresh, as without a replacement, and uses whichever connects first.
+#[tokio::test]
+async fn first_query_recovers_when_its_replacement_dial_saw_only_a_stale_route() {
+    let (old_server, old_relay) = spawn_relay().await;
+    let (new_server, new_relay) = spawn_relay().await;
+    let client = Client::new(&[&old_relay, &new_relay], false).await;
+    let old_host = KillableHost::spawn(
+        client.secret.clone(),
+        old_relay.clone(),
+        false,
+        Duration::ZERO,
+    )
+    .await;
+    client.list().await.expect("original query");
+    old_host.kill().await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let new_host = KillableHost::spawn(
+        client.secret.clone(),
+        new_relay.clone(),
+        false,
+        Duration::ZERO,
+    )
+    .await;
+
+    // The controller's route lookup and Iroh's own lookup for the replacement
+    // both still see the old Relay; the host publishes before the window ends.
+    let before = client.resolves.load(Ordering::SeqCst);
+    let publish = async {
+        let waited = Instant::now();
+        while client.resolves.load(Ordering::SeqCst) < before + 2 {
+            assert!(
+                waited.elapsed() < Duration::from_secs(5),
+                "no replacement lookup"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let published = waited.elapsed();
+        *client
+            .advertised
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = new_relay.clone();
+        published
+    };
+    let started = Instant::now();
+    let (first, published) = tokio::join!(
+        async {
+            let first = client.list().await;
+            (first, started.elapsed())
+        },
+        publish,
+    );
+    let (first, elapsed) = first;
+    let next = client.list().await;
+    let queries = new_host.served.queries.load(Ordering::SeqCst);
+    eprintln!(
+        "stale replacement: published={published:?} first={elapsed:?} {:?}; accepted={} queries={queries}",
+        first.as_ref().err().map(ClientError::kind),
+        new_host.served.accepted.load(Ordering::SeqCst),
+    );
+    new_host.kill().await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), client.controller.shutdown()).await;
+    old_server.shutdown().await.expect("old relay shutdown");
+    new_server.shutdown().await.expect("new relay shutdown");
+    first.expect("first query on the kept connection");
+    assert!(elapsed < crate::protocol::DEFAULT_DEADLINE, "{elapsed:?}");
+    next.expect("next query");
+    assert_eq!(queries, 2, "both queries reach the returned host once");
+}
+
+/// About 760 ms of path RTT, where the acknowledgement window reaches its
+/// cap and the field run (R10) still timed out after the new connection.
+#[tokio::test]
+async fn first_query_on_a_high_rtt_kept_connection_recovers_when_host_returns_on_another_relay() {
+    first_query_after_host_returns(Return::OtherRelay, Duration::from_millis(380)).await;
 }
 
 /// A live host acknowledges the request even while its service takes longer
@@ -382,4 +554,45 @@ async fn slow_live_host_keeps_its_connection_past_the_acknowledgement_window() {
     assert!(elapsed >= reply_delay, "{elapsed:?}");
     assert_eq!(accepted, 1, "the kept connection is not replaced");
     assert_eq!(queries, 2, "neither request is sent twice");
+}
+
+/// A live host whose acknowledgement arrives after half the window, but
+/// within it, also keeps its connection. The replacement dialed meanwhile
+/// sends no Hello, so the host does not retire the kept connection, and it is
+/// closed unused.
+#[tokio::test]
+async fn late_acknowledgement_keeps_the_connection_and_discards_its_replacement() {
+    let (server, relay) = spawn_relay().await;
+    let one_way = Arc::new(AtomicU64::new(0));
+    let (proxy, host_relay) = delayed_relay(&server, Arc::clone(&one_way)).await;
+    let client = Client::new(&[&relay], false).await;
+    // Long enough that the replacement finishes its QUIC handshake first.
+    let reply_delay = Duration::from_millis(2500);
+    let host = KillableHost::spawn(client.secret.clone(), host_relay, false, reply_delay).await;
+    client.list().await.expect("original query");
+    let kept_rtt = client.kept().await.rtt_ms;
+    // The kept path slows to about 700 ms RTT: the window stays at its one
+    // second minimum and the acknowledgement arrives after its midpoint.
+    one_way.store(350, Ordering::SeqCst);
+    let started = Instant::now();
+    let kept = client.list().await;
+    let elapsed = started.elapsed();
+    let next = client.list().await;
+    let accepted = host.served.accepted.load(Ordering::SeqCst);
+    let greeted = host.served.greeted.load(Ordering::SeqCst);
+    let queries = host.served.queries.load(Ordering::SeqCst);
+    eprintln!(
+        "late acknowledgement kept_rtt={kept_rtt}ms: kept={elapsed:?} {:?}; accepted={accepted} greeted={greeted} queries={queries}",
+        kept.as_ref().err().map(ClientError::kind),
+    );
+    host.kill().await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), client.controller.shutdown()).await;
+    drop(proxy);
+    server.shutdown().await.expect("relay shutdown");
+    kept.expect("answer on the kept connection");
+    next.expect("next query");
+    assert!(elapsed >= reply_delay, "{elapsed:?}");
+    assert_eq!(accepted, 2, "a replacement was dialed");
+    assert_eq!(greeted, 1, "only the kept connection sent Hello");
+    assert_eq!(queries, 3, "no request is sent twice");
 }

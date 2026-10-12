@@ -378,6 +378,48 @@ async fn echo(send: &mut SendStream, recv: &mut RecvStream, remote: DeviceId) {
     assert_eq!(frame.request_id, ECHO_REQUEST);
 }
 
+/// A retired idle connection's retry adopts the transport that an
+/// unacknowledged request already dialed, instead of dialing again.
+#[tokio::test]
+async fn retired_connection_retry_adopts_the_replacement_transport() {
+    let fixture = Fixture::new().await;
+    fixture.query(1).await.expect("warm query");
+    let old = fixture
+        .broker
+        .peer_observation(fixture.remote)
+        .await
+        .primary
+        .expect("primary");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let demand = fixture
+        .broker
+        .demand(fixture.remote, deadline)
+        .await
+        .expect("demand");
+    let replacement = demand.dial_replacement(deadline);
+    while !replacement.is_finished() {
+        assert!(Instant::now() < deadline, "replacement dial did not end");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        fixture.connections.load(Ordering::SeqCst),
+        2,
+        "the replacement reached the host"
+    );
+    demand.retire_idle_candidate(old, Some(replacement));
+    fixture
+        .query(3)
+        .await
+        .expect("the retry uses the replacement");
+    assert_eq!(
+        fixture.connections.load(Ordering::SeqCst),
+        2,
+        "no further connection was dialed"
+    );
+    drop(demand);
+    fixture.close().await;
+}
+
 #[tokio::test]
 async fn failed_idle_query_reconnects_and_late_failure_cannot_retire_replacement() {
     let fixture = Fixture::new().await;
@@ -398,7 +440,7 @@ async fn failed_idle_query_reconnects_and_late_failure_cannot_retire_replacement
         .demand(fixture.remote, Instant::now() + Duration::from_secs(5))
         .await
         .expect("demand");
-    demand.retire_idle_candidate(old);
+    demand.retire_idle_candidate(old, None);
     fixture
         .query(4)
         .await

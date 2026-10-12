@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use zterm_client::progress::{ProgressEvent, ProgressHistory, ProgressObserver};
+use zterm_client::remote_unary::ReplacementTransport;
 use zterm_client::route::{combined_relay_address, selected_relay};
 use zterm_core::connection_progress::ConnectionStage;
 
@@ -322,6 +323,9 @@ struct PeerState {
     terminal_error: Option<DaemonError>,
     incarnation: PeerIncarnation,
     local_incarnation: Option<ConnectionIncarnation>,
+    // Set when an unacknowledged request retires the primary; the next
+    // outbound dial races it against a fresh one.
+    replacement: Option<ReplacementTransport>,
 }
 
 #[derive(Default)]
@@ -1055,6 +1059,7 @@ impl PeerState {
 
     fn close_candidates(&mut self) -> Vec<Arc<Candidate>> {
         self.remote_acceptance = None;
+        self.replacement = None;
         self.candidates.take_all()
     }
 }
@@ -1569,9 +1574,37 @@ impl ConnectionBroker {
 }
 
 impl ConnectionDemand {
+    /// Dials this demand's peer without Hello for the request that `until`
+    /// bounds. Progress is left to the dial that adopts it.
+    #[cfg(unix)]
+    pub(crate) fn dial_replacement(&self, until: Instant) -> ReplacementTransport {
+        let broker = self.broker.clone();
+        let slot = Arc::clone(&self.slot);
+        ReplacementTransport::dial(until, async move {
+            let _dial_permit = broker.dial_permit()?;
+            let endpoint = broker.bound_endpoint()?;
+            let routes = broker
+                .dial_routes(&endpoint, slot.remote, &slot.demand.routes(), until)
+                .await?;
+            let mut last_error = None;
+            for route in routes {
+                match connect_transport(&endpoint, route.address, ZTERM_ALPN, until).await {
+                    Ok(connection) => return Ok(connection),
+                    Err(error) => last_error = Some(error),
+                }
+            }
+            Err(last_error.unwrap_or_else(no_route_connected))
+        })
+    }
+
     /// Retires only this failed, still-selected transport when neither outbound
     /// streams nor inbound handlers use it. Never wait past a request deadline.
-    pub(crate) fn retire_idle_candidate(&self, failed: ConnectionCandidateKey) {
+    /// The next outbound dial races any `replacement` against a fresh one.
+    pub(crate) fn retire_idle_candidate(
+        &self,
+        failed: ConnectionCandidateKey,
+        replacement: Option<ReplacementTransport>,
+    ) {
         let Ok(mut state) = self.slot.state.try_lock() else {
             return;
         };
@@ -1603,6 +1636,7 @@ impl ConnectionDemand {
         if state.candidates.is_empty() {
             state.remote_acceptance = None;
         }
+        state.replacement = replacement;
         drop(state);
         candidate.set_primary(false, "retry");
         candidate.cancel(ConnectionCloseReason::EndpointReset);
@@ -1893,14 +1927,16 @@ impl ConnectionBroker {
         }
     }
 
-    async fn dial_once(&self, slot: Arc<PeerSlot>) -> Result<(), DaemonError> {
-        let _dial_permit = self
-            .inner
+    fn dial_permit(&self) -> Result<OwnedSemaphorePermit, DaemonError> {
+        self.inner
             .admission
             .pending_dials
             .clone()
             .try_acquire_owned()
-            .map_err(|_| resource_exhausted("global outbound dial limit reached"))?;
+            .map_err(|_| resource_exhausted("global outbound dial limit reached"))
+    }
+
+    fn bound_endpoint(&self) -> Result<Endpoint, DaemonError> {
         let endpoint = self
             .inner
             .endpoint
@@ -1913,101 +1949,99 @@ impl ConnectionBroker {
                 "bound Endpoint does not own the broker identity",
             ));
         }
+        Ok(endpoint)
+    }
+
+    async fn dial_once(&self, slot: Arc<PeerSlot>) -> Result<(), DaemonError> {
+        let _dial_permit = self.dial_permit()?;
+        let endpoint = self.bound_endpoint()?;
 
         let transient_routes = slot.demand.routes();
         // A normal attempt shares one setup window across address lookup,
         // transport authentication and Hello/Welcome. Each demand still has
         // its own absolute request deadline and can stop waiting earlier.
         let deadline = Instant::now() + zterm_client::protocol::REMOTE_STARTUP_DEADLINE;
-        slot.report_progress(ConnectionStage::LookingUpAddress)
-            .await;
-        let routes = self
-            .dial_routes(&endpoint, slot.remote, &transient_routes, deadline)
-            .await?;
+        let replacement = slot.state.lock().await.replacement.take();
+        let fresh = async {
+            slot.report_progress(ConnectionStage::LookingUpAddress)
+                .await;
+            let routes = self
+                .dial_routes(&endpoint, slot.remote, &transient_routes, deadline)
+                .await?;
+            let mut last_error = None;
+            for route in routes {
+                if self.inner.lifecycle.is_quiescing() || slot.demand.count() == 0 {
+                    return Err(DaemonError::new(
+                        DomainErrorKind::Cancelled,
+                        "outbound demand ended before dial",
+                    ));
+                }
+                slot.report_progress(ConnectionStage::ConnectingSecurely)
+                    .await;
+                match connect_transport(&endpoint, route.address, ZTERM_ALPN, deadline).await {
+                    Ok(connection) => return Ok(connection),
+                    Err(error) => last_error = Some(error),
+                }
+            }
+            Err(last_error.unwrap_or_else(no_route_connected))
+        };
+        let connection = match replacement {
+            Some(replacement) => replacement.race(fresh).await?,
+            None => fresh.await?,
+        };
         let attempt = random_attempt_id()?;
         let key = ConnectionCandidateKey::new(self.inner.identity.device_id(), attempt);
-        let mut last_error = None;
-
-        for route in routes {
-            if self.inner.lifecycle.is_quiescing() || slot.demand.count() == 0 {
-                return Err(DaemonError::new(
-                    DomainErrorKind::Cancelled,
-                    "outbound demand ended before dial",
-                ));
-            }
-            slot.report_progress(ConnectionStage::ConnectingSecurely)
-                .await;
-            let connection =
-                match connect_transport(&endpoint, route.address.clone(), ZTERM_ALPN, deadline)
-                    .await
-                {
-                    Ok(connection) => connection,
-                    Err(error) => {
-                        last_error = Some(error);
-                        continue;
-                    }
-                };
-            configure_normal_connection_limits(&connection, self.inner.limits);
-            if device_from_endpoint_id(connection.remote_id()) != slot.remote {
-                close_connection(&connection, CLOSE_INCOMPATIBLE, b"identity mismatch");
-                return Err(DaemonError::new(
-                    DomainErrorKind::Unauthorized,
-                    "connected Iroh identity did not match the target device",
-                ));
-            }
-            slot.report_progress(ConnectionStage::SecureConnectionReady)
-                .await;
-            let connection_permit = match self
-                .inner
-                .admission
-                .authenticated_connections
-                .clone()
-                .try_acquire_owned()
-            {
-                Ok(permit) => permit,
-                Err(_) => {
-                    close_connection(&connection, CLOSE_OVERLOADED, b"transport overloaded");
-                    return Err(resource_exhausted("authenticated connection limit reached"));
-                }
-            };
-
-            // Cache the path that reached the authenticated peer, never the
-            // first supplied hint. A direct path has no relay to certify here.
-            let verified_relay = selected_relay(&connection);
-            let result = self
-                .run_outbound_handshake(
-                    Arc::clone(&slot),
-                    connection,
-                    key,
-                    verified_relay,
-                    connection_permit,
-                    deadline,
-                )
-                .await;
-            match result {
-                Ok(()) => return Ok(()),
-                Err(error) if error.kind() == DomainErrorKind::TransportUnavailable => {
-                    let state = slot.state.lock().await;
-                    if state.remote_acceptance.is_some() && !state.candidates.is_empty() {
-                        // This outbound handshake already proved remote
-                        // acceptance and only lost duplicate arbitration. A
-                        // remaining peer candidate owns progress; dialing the
-                        // next route here would create a self-exciting race.
-                        return Ok(());
-                    }
-                    drop(state);
-                    last_error = Some(error);
-                }
-                Err(error) => return Err(error),
-            }
+        configure_normal_connection_limits(&connection, self.inner.limits);
+        if device_from_endpoint_id(connection.remote_id()) != slot.remote {
+            close_connection(&connection, CLOSE_INCOMPATIBLE, b"identity mismatch");
+            return Err(DaemonError::new(
+                DomainErrorKind::Unauthorized,
+                "connected Iroh identity did not match the target device",
+            ));
         }
+        slot.report_progress(ConnectionStage::SecureConnectionReady)
+            .await;
+        let connection_permit = match self
+            .inner
+            .admission
+            .authenticated_connections
+            .clone()
+            .try_acquire_owned()
+        {
+            Ok(permit) => permit,
+            Err(_) => {
+                close_connection(&connection, CLOSE_OVERLOADED, b"transport overloaded");
+                return Err(resource_exhausted("authenticated connection limit reached"));
+            }
+        };
 
-        Err(last_error.unwrap_or_else(|| {
-            DaemonError::new(
-                DomainErrorKind::AddressUnavailable,
-                "no route candidate established a connection",
+        // Cache the path that reached the authenticated peer, never the
+        // first supplied hint. A direct path has no relay to certify here.
+        let verified_relay = selected_relay(&connection);
+        let result = self
+            .run_outbound_handshake(
+                Arc::clone(&slot),
+                connection,
+                key,
+                verified_relay,
+                connection_permit,
+                deadline,
             )
-        }))
+            .await;
+        match result {
+            Err(error) if error.kind() == DomainErrorKind::TransportUnavailable => {
+                let state = slot.state.lock().await;
+                if state.remote_acceptance.is_some() && !state.candidates.is_empty() {
+                    // This outbound handshake already proved remote
+                    // acceptance and only lost duplicate arbitration. A
+                    // remaining peer candidate owns progress; dialing again
+                    // here would create a self-exciting race.
+                    return Ok(());
+                }
+                Err(error)
+            }
+            result => result,
+        }
     }
 
     async fn dial_routes(
@@ -3480,6 +3514,13 @@ fn resource_exhausted(detail: &'static str) -> DaemonError {
 
 fn transport_unavailable(detail: &'static str) -> DaemonError {
     DaemonError::new(DomainErrorKind::TransportUnavailable, detail)
+}
+
+fn no_route_connected() -> DaemonError {
+    DaemonError::new(
+        DomainErrorKind::AddressUnavailable,
+        "no route candidate established a connection",
+    )
 }
 
 fn deadline_exceeded(detail: &'static str) -> DaemonError {

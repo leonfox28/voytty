@@ -5,6 +5,7 @@ use crate::{
     model::session_summary_from_wire,
     protocol::{malformed, protocol_error},
 };
+use futures_util::FutureExt;
 use prost::Message;
 use std::{
     future::Future,
@@ -475,6 +476,7 @@ where
 pub struct RequestAcknowledgement {
     connection: iroh::endpoint::Connection,
     received: u64,
+    suspect_at: Instant,
     decide_at: Instant,
 }
 
@@ -482,6 +484,7 @@ impl RequestAcknowledgement {
     /// Samples before the write, so an immediate acknowledgement still counts.
     /// The window covers one lost packet and its probe at the connection's
     /// largest path RTT, and leaves at least half the remaining budget.
+    /// Halfway through it, a live peer would normally have acknowledged.
     pub fn before_write(connection: &iroh::endpoint::Connection, deadline: Instant) -> Self {
         let now = Instant::now();
         let rtt = connection
@@ -496,8 +499,13 @@ impl RequestAcknowledgement {
         Self {
             connection: connection.clone(),
             received: acknowledgements(connection),
+            suspect_at: now + window / 2,
             decide_at: now + window,
         }
+    }
+
+    fn acknowledged(&self) -> bool {
+        acknowledgements(&self.connection) > self.received
     }
 }
 
@@ -509,12 +517,15 @@ fn acknowledgements(connection: &iroh::endpoint::Connection) -> u64 {
 }
 
 /// Reads like [`read_exact_response`]. With an acknowledgement sample, a
-/// request that its connection has not acknowledged at the window's end is a
-/// transport failure after the write; otherwise the read keeps its deadline.
+/// request still unacknowledged halfway through the window starts
+/// `dial_replacement`, so a retry need not dial only after the window; one
+/// unacknowledged at the window's end is a transport failure after the write.
+/// Otherwise the read keeps its deadline.
 pub async fn read_acknowledged_response<Reader>(
     reader: &mut Reader,
     deadline: Instant,
     acknowledgement: Option<RequestAcknowledgement>,
+    dial_replacement: impl FnOnce(),
 ) -> Result<DecodedFrame, RemoteAttemptError>
 where
     Reader: AsyncRead + Unpin,
@@ -526,14 +537,92 @@ where
     tokio::pin!(read);
     tokio::select! {
         result = &mut read => return result,
+        () = tokio::time::sleep_until(acknowledgement.suspect_at.into()) => {}
+    }
+    if acknowledgement.acknowledged() {
+        return read.await;
+    }
+    dial_replacement();
+    tokio::select! {
+        result = &mut read => return result,
         () = tokio::time::sleep_until(acknowledgement.decide_at.into()) => {}
     }
-    if acknowledgements(&acknowledgement.connection) > acknowledgement.received {
+    if acknowledgement.acknowledged() {
         read.await
     } else {
         Err(RemoteAttemptError::PostWrite(transport_unavailable(
             "remote Session request was not acknowledged",
         )))
+    }
+}
+
+/// A transport to the peer of a request that its kept connection has not yet
+/// acknowledged, dialed without Hello. Hello would make a live peer retire
+/// the kept connection, so only the dial after that connection is retired
+/// adopts this one. Dropping it closes whatever it established.
+pub struct ReplacementTransport {
+    dial: Option<tokio::task::JoinHandle<Result<iroh::endpoint::Connection, DaemonError>>>,
+    until: Instant,
+}
+
+impl ReplacementTransport {
+    /// Starts `dial`, which must end by `until`, the request's deadline.
+    /// Afterwards the peer would wait no longer for this connection's Hello.
+    pub fn dial(
+        until: Instant,
+        dial: impl Future<Output = Result<iroh::endpoint::Connection, DaemonError>> + Send + 'static,
+    ) -> Self {
+        Self {
+            dial: Some(tokio::spawn(dial)),
+            until,
+        }
+    }
+
+    /// Uses whichever of this dial and `fresh` connects first. The fresh
+    /// dial still runs unless this one has already connected: this one may
+    /// have looked up the peer before it published a new route.
+    pub async fn race(
+        mut self,
+        fresh: impl Future<Output = Result<iroh::endpoint::Connection, DaemonError>>,
+    ) -> Result<iroh::endpoint::Connection, DaemonError> {
+        tokio::pin!(fresh);
+        let fresh = tokio::select! {
+            biased;
+            Some(connection) = self.connected() => return Ok(connection),
+            result = &mut fresh => result,
+        };
+        match fresh {
+            Ok(connection) => Ok(connection),
+            Err(error) => self.connected().await.ok_or(error),
+        }
+    }
+
+    /// Whether the dial has ended, connected or not.
+    pub fn is_finished(&self) -> bool {
+        self.dial
+            .as_ref()
+            .is_none_or(tokio::task::JoinHandle::is_finished)
+    }
+
+    async fn connected(&mut self) -> Option<iroh::endpoint::Connection> {
+        let dial = self.dial.as_mut()?;
+        let joined = timeout_until(self.until, dial).await.ok()?;
+        self.dial = None;
+        joined
+            .ok()?
+            .ok()
+            .filter(|connection| connection.close_reason().is_none())
+    }
+}
+
+impl Drop for ReplacementTransport {
+    fn drop(&mut self) {
+        if let Some(mut dial) = self.dial.take() {
+            dial.abort();
+            if let Some(Ok(Ok(connection))) = (&mut dial).now_or_never() {
+                connection.close(iroh::endpoint::VarInt::from_u32(0), b"replacement unused");
+            }
+        }
     }
 }
 

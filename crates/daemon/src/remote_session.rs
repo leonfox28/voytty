@@ -251,6 +251,7 @@ impl RemoteUnaryDemand for BrokerRemoteUnaryDemand {
             let candidate = stream.candidate();
             let acknowledgement = retry_follows
                 .then(|| RequestAcknowledgement::before_write(stream.connection(), deadline));
+            let mut replacement = None;
             let result = async {
                 timeout_until(deadline, stream.send.write_all(request))
                     .await
@@ -265,7 +266,10 @@ impl RemoteUnaryDemand for BrokerRemoteUnaryDemand {
                         "remote Session request finish failed",
                     ))
                 })?;
-                read_acknowledged_response(&mut stream.recv, deadline, acknowledgement).await
+                read_acknowledged_response(&mut stream.recv, deadline, acknowledgement, || {
+                    replacement = Some(self.demand.dial_replacement(deadline));
+                })
+                .await
             }
             .await;
             drop(stream);
@@ -273,7 +277,7 @@ impl RemoteUnaryDemand for BrokerRemoteUnaryDemand {
                 .as_ref()
                 .is_err_and(RemoteAttemptError::is_transport_failure_after_write)
             {
-                self.demand.retire_idle_candidate(candidate);
+                self.demand.retire_idle_candidate(candidate, replacement);
             }
             result
         })

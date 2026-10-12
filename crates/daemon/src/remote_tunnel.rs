@@ -89,7 +89,7 @@ where
     // Any response bytes (including a service rejection) preserve the cache;
     // this adapter never decodes Session outcomes or retries an operation.
     if traffic.sent && !traffic.received {
-        demand.retire_idle_candidate(candidate);
+        demand.retire_idle_candidate(candidate, None);
     }
     // Keep the broker demand alive for the whole admitted stream epoch.
     drop(demand);
