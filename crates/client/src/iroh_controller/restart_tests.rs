@@ -577,12 +577,16 @@ async fn late_acknowledgement_keeps_the_connection_and_discards_its_replacement(
     let started = Instant::now();
     let kept = client.list().await;
     let elapsed = started.elapsed();
+    let replaced = host.served.accepted.load(Ordering::SeqCst);
+    // The RTT estimate may still lag the slower path, so the next request
+    // can dial and discard its own replacement too; it must still be greeted
+    // only on the kept connection.
     let next = client.list().await;
     let accepted = host.served.accepted.load(Ordering::SeqCst);
     let greeted = host.served.greeted.load(Ordering::SeqCst);
     let queries = host.served.queries.load(Ordering::SeqCst);
     eprintln!(
-        "late acknowledgement kept_rtt={kept_rtt}ms: kept={elapsed:?} {:?}; accepted={accepted} greeted={greeted} queries={queries}",
+        "late acknowledgement kept_rtt={kept_rtt}ms: kept={elapsed:?} {:?}; replaced={replaced} accepted={accepted} greeted={greeted} queries={queries}",
         kept.as_ref().err().map(ClientError::kind),
     );
     host.kill().await;
@@ -592,7 +596,7 @@ async fn late_acknowledgement_keeps_the_connection_and_discards_its_replacement(
     kept.expect("answer on the kept connection");
     next.expect("next query");
     assert!(elapsed >= reply_delay, "{elapsed:?}");
-    assert_eq!(accepted, 2, "a replacement was dialed");
+    assert_eq!(replaced, 2, "the first request dialed one replacement");
     assert_eq!(greeted, 1, "only the kept connection sent Hello");
     assert_eq!(queries, 3, "no request is sent twice");
 }

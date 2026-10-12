@@ -1187,9 +1187,12 @@ Relay 流量；Relay 按端点 ID 转发，控制端仍直连。保留连接的�
 - 高 RTT 换 Relay：路径 RTT 778–780 ms，首个请求 **4.038–4.043 秒**成功；新主机只接受一个连接
   （即替换连接），下一次请求复用它，queries=2。
 - 晚到确认的存活主机：保留连接建立后把主机侧单向延迟从 0 调到 350 ms，窗口仍为 1 秒下限，确认在
-  窗口中点之后、结束之前到达，服务 2.5 秒后回应。请求 3.21 秒在原连接上成功；主机 accepted=2
-  （替换连接已建立），但只有原连接发过 Hello（greeted=1），下一次请求仍复用原连接，queries=3，
-  没有重发。修正前代码 accepted=1。
+  窗口中点之后、结束之前到达，服务 2.5 秒后回应。请求 3.21 秒在原连接上成功；此时主机
+  accepted=2（替换连接已建立），但只有原连接发过 Hello（greeted=1），下一次请求仍复用原连接，
+  queries=3，没有重发。修正前代码 accepted=1。RTT 估计尚未跟上变慢的路径时，下一次请求也会
+  建立并丢弃自己的替换连接：Linux 上其前的估计只有 347 ms，中点约 0.69 秒，主机最终 accepted=3，
+  仍 greeted=1。首版用例在最后断言 accepted=2，因此 PR CI 的两个 Linux 任务失败，macOS 通过；
+  改为在首个请求后计数。
 - 替换连接只见旧地址：主机已在新 Relay 上恢复，替换连接发出的两次地址查询（控制端路由查询和
   Iroh 自身查询）仍返回旧 Relay，之后（0.81 秒）才改为新 Relay。首个请求 **1.33 秒**成功，由窗口
   后的新拨号胜出，与 P38 相同。对照：把竞争改为先等替换连接，同一用例 **5.003 秒
@@ -1223,7 +1226,8 @@ DNS 在 12 秒内仍返回旧 Relay，与 P38 同）。当天公共 Relay 路径
 `control-no-race-01.log`、`control-no-adopt-01.log`；三端 `build-01.log`、`relay-switch-01`、
 `high-rtt-150-01`、`high-rtt-350-01`（含 A／B 日志、防火墙与 netem 计数）及所用脚本，汇总见
 `summary-01.json`。本机 `just check` 1294 通过（`just-check-01.log`）、`just android-check` 通过
-（`android-check-01.log`）。
+（`android-check-01.log`）；三端 A 虚拟机（Linux arm64）上 restart 七项三轮及 broker 十一项通过
+（`linux-a-01.log`）。
 
 ## 隔离修复候选的首次证据（2026-10-06 历史）
 
