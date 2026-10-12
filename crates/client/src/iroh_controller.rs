@@ -15,8 +15,8 @@ use crate::{
     },
     remote_unary::{
         RemoteAttemptError, RemoteUnaryClient, RemoteUnaryDemand, RemoteUnaryTransport,
-        RequestAcknowledgement, decode_session_service_error, read_acknowledged_response,
-        timeout_until,
+        ReplacementTransport, RequestAcknowledgement, decode_session_service_error,
+        read_acknowledged_response, timeout_until,
     },
     route::{
         combined_relay_address, device_from_endpoint_id, endpoint_id_from_device,
@@ -104,6 +104,8 @@ struct NormalConnection {
 struct Peer {
     routes: StdMutex<Vec<RelayHint>>,
     normal: Mutex<Option<NormalConnection>>,
+    // Set when an unacknowledged request retires the cached connection.
+    replacement: StdMutex<Option<ReplacementTransport>>,
     streams: Arc<Semaphore>,
     cancelled: CancellationToken,
 }
@@ -182,6 +184,7 @@ impl Peer {
         Self {
             routes: StdMutex::new(routes),
             normal: Mutex::new(None),
+            replacement: StdMutex::new(None),
             streams: Arc::new(Semaphore::new(limits.max_bi_streams_per_connection)),
             cancelled: CancellationToken::new(),
         }
@@ -448,7 +451,13 @@ impl IrohController {
                         zterm_diagnostics::Stage::RetiringTransport, None);
                 }
                 let routes = peer.routes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-                let (connection, relay) = self.dial(remote, routes, Vec::new(), ZTERM_ALPN, deadline).await?;
+                let replacement = peer.replacement.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                let dial = async { Ok(self.dial(remote, routes, Vec::new(), ZTERM_ALPN, deadline).await?.0) };
+                let connection = match replacement {
+                    Some(replacement) => replacement.race(dial).await?,
+                    None => dial.await?,
+                };
+                let relay = selected_relay(&connection);
                 let mut guard = UnconfirmedConnection(Some(connection));
                 let connection = guard.0.as_ref().expect("connection guard is populated");
                 let operation = zterm_diagnostics::Operation::default();
@@ -490,7 +499,34 @@ impl IrohController {
         })
     }
 
-    fn retire_idle_connection(&self, peer: &Peer, failed: usize) {
+    /// Dials `remote` without Hello for the request that `until` bounds.
+    fn dial_replacement(
+        &self,
+        remote: DeviceId,
+        peer: &Peer,
+        until: Instant,
+    ) -> ReplacementTransport {
+        let controller = self.clone();
+        let routes = peer
+            .routes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        ReplacementTransport::dial(until, async move {
+            let (connection, _) = controller
+                .dial(remote, routes, Vec::new(), ZTERM_ALPN, until)
+                .await?;
+            Ok(connection)
+        })
+    }
+
+    /// The next dial for this peer races any replacement against a fresh dial.
+    fn retire_idle_connection(
+        &self,
+        peer: &Peer,
+        failed: usize,
+        replacement: Option<ReplacementTransport>,
+    ) {
         let Ok(maximum) = u32::try_from(self.inner.limits.max_bi_streams_per_connection) else {
             return;
         };
@@ -517,6 +553,10 @@ impl IrohController {
             normal
                 .connection
                 .close(VarInt::from_u32(0), b"idle request transport failed");
+            *peer
+                .replacement
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = replacement;
         }
     }
 
@@ -775,6 +815,7 @@ impl RemoteUnaryDemand for IrohDemand {
             let connection = stream.connection.stable_id();
             let acknowledgement = retry_follows
                 .then(|| RequestAcknowledgement::before_write(&stream.connection, deadline));
+            let mut replacement = None;
             let result = async {
                 timeout_until(deadline, stream.send.write_all(request))
                     .await
@@ -785,7 +826,14 @@ impl RemoteUnaryDemand for IrohDemand {
                 stream.send.finish().map_err(|_| {
                     RemoteAttemptError::PostWrite(unavailable("Session request finish failed"))
                 })?;
-                read_acknowledged_response(&mut stream.recv, deadline, acknowledgement).await
+                read_acknowledged_response(&mut stream.recv, deadline, acknowledgement, || {
+                    replacement = Some(self.controller.dial_replacement(
+                        self.remote,
+                        &self.peer,
+                        deadline,
+                    ));
+                })
+                .await
             }
             .await;
             drop(stream);
@@ -794,7 +842,7 @@ impl RemoteUnaryDemand for IrohDemand {
                 .is_err_and(RemoteAttemptError::is_transport_failure_after_write)
             {
                 self.controller
-                    .retire_idle_connection(&self.peer, connection);
+                    .retire_idle_connection(&self.peer, connection, replacement);
             }
             result
         })
