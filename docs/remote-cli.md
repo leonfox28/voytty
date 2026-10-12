@@ -311,6 +311,13 @@ This covers a host that restarted on another Relay or address while the client
 kept its old connection. Lease allocation and the retry itself still wait for
 the full deadline.
 
+If nothing is acknowledged halfway through that window, the client also starts
+connecting to the host in the background, without the protocol greeting, so
+a live host keeps using the old connection. If the old connection is then
+retired, the retry uses whichever is connected first: the background
+connection or a fresh one started after the window. Otherwise the background
+connection is closed unused. The request is still sent at most twice.
+
 If the daemon cannot prove whether a mutation committed, it reports
 `operation_outcome_unknown`. The client does not allocate a fresh lease and
 silently rerun that logical operation. Inspect current state before deciding on
