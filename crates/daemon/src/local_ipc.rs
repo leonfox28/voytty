@@ -9,12 +9,15 @@ use crate::{
 use iroh::SecretKey;
 use std::sync::Arc;
 #[cfg(unix)]
-use std::time::{Duration, Instant};
+use std::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
+};
 #[cfg(unix)]
 use tokio::{
     io::AsyncWriteExt,
     sync::{Semaphore, mpsc},
-    task::JoinSet,
+    task::{AbortHandle, JoinSet},
 };
 use zterm_core::DomainErrorKind;
 #[cfg(unix)]
@@ -23,6 +26,13 @@ use zterm_core::{AttachmentId, DeviceId, ResourceLimits};
 use zterm_proto::{DecodedFrame, WireKind, v2};
 #[cfg(unix)]
 const DEFAULT_DEADLINE: Duration = Duration::from_secs(5);
+/// After a stop, how long local terminal attachments may take to write their
+/// Session's end. Their Sessions have already ended, so this covers only the
+/// final update and one small write; a client that stops reading waits it out.
+/// It is short because `zterm daemon stop` allows five seconds for the whole
+/// remaining shutdown.
+#[cfg(unix)]
+const ATTACHMENT_END_DELIVERY: Duration = Duration::from_secs(1);
 
 // Existing low-level callers retain their entry points during the module move.
 #[cfg(unix)]
@@ -181,6 +191,8 @@ async fn serve_local_inner(
     let permits = Arc::new(Semaphore::new(limits.maximum_connections));
     let (stop_sender, mut stop_receiver) = mpsc::unbounded_channel();
     let mut handlers = JoinSet::new();
+    // Each live handler, and whether it serves a local terminal attachment.
+    let mut handler_kinds: Vec<(AbortHandle, Arc<AtomicBool>)> = Vec::new();
     let mut injected_accept_failures = limits.injected_accept_failures;
     let mut injected_fatal_accept_failures = limits.injected_fatal_accept_failures;
     let mut successful_accepts = 0_usize;
@@ -196,6 +208,7 @@ async fn serve_local_inner(
             }
             joined = handlers.join_next(), if !handlers.is_empty() => {
                 observe_local_handler_completion(joined);
+                handler_kinds.retain(|(handler, _)| !handler.is_finished());
                 #[cfg(test)]
                 if let Some(observer) = &handler_reaped_for_test {
                     let _ = observer.send(handlers.len());
@@ -250,10 +263,14 @@ async fn serve_local_inner(
                 };
                 let service = Arc::clone(&service);
                 let stop_sender = stop_sender.clone();
-                handlers.spawn(async move {
+                let local_attachment = Arc::new(AtomicBool::new(false));
+                let marked = Arc::clone(&local_attachment);
+                let handler = handlers.spawn(async move {
                     let _permit = permit;
-                    handle_connection(stream, expected_uid, service, stop_sender, limits).await;
+                    handle_connection(stream, expected_uid, service, stop_sender, limits, marked)
+                        .await;
                 });
+                handler_kinds.push((handler, local_attachment));
             }
         }
     }
@@ -263,18 +280,46 @@ async fn serve_local_inner(
     // An explicit stop arrives only after Session shutdown has succeeded and
     // its acknowledgement has been flushed. Retire this listener's remaining
     // connections now: an idle first frame or a remote controller tunnel has
-    // no completion that the stopping daemon should await. The lifecycle owner
-    // still joins Session/pairing/network effects before releasing its lock.
-    handlers.abort_all();
-    while let Some(joined) = handlers.join_next().await {
-        if !joined
-            .as_ref()
-            .is_err_and(tokio::task::JoinError::is_cancelled)
-        {
-            observe_local_handler_completion(Some(joined));
+    // no completion that the stopping daemon should await. A local terminal
+    // attachment does: its writer may still be fetching the final update for
+    // the SessionEnded that tells the user why the terminal closed. Give those
+    // a short bound to finish on their own. After a fatal listener error the
+    // Sessions are still live, so their attachments would never finish. The
+    // lifecycle owner still joins Session/pairing/network effects before
+    // releasing its lock.
+    let delivered = if fatal_error.is_none() {
+        for (handler, local_attachment) in &handler_kinds {
+            if !local_attachment.load(Ordering::Acquire) {
+                handler.abort();
+            }
+        }
+        tokio::time::timeout(ATTACHMENT_END_DELIVERY, async {
+            while let Some(joined) = handlers.join_next().await {
+                observe_retired_local_handler(joined);
+            }
+        })
+        .await
+        .is_ok()
+    } else {
+        false
+    };
+    if !delivered {
+        handlers.abort_all();
+        while let Some(joined) = handlers.join_next().await {
+            observe_retired_local_handler(joined);
         }
     }
     fatal_error.map_or(Ok(()), Err)
+}
+
+#[cfg(unix)]
+fn observe_retired_local_handler(joined: Result<(), tokio::task::JoinError>) {
+    if !joined
+        .as_ref()
+        .is_err_and(tokio::task::JoinError::is_cancelled)
+    {
+        observe_local_handler_completion(Some(joined));
+    }
 }
 
 #[cfg(unix)]
@@ -324,6 +369,7 @@ async fn handle_connection(
     service: Arc<DaemonService>,
     stop_sender: mpsc::UnboundedSender<()>,
     limits: LocalIpcLimits,
+    local_attachment: Arc<AtomicBool>,
 ) {
     if zterm_platform::local_unix::authorize_stream_peer(&stream, expected_uid).is_err() {
         return;
@@ -404,6 +450,7 @@ async fn handle_connection(
             let _ = write_error(&mut stream, first.frame.request_id, &error).await;
             return;
         }
+        local_attachment.store(true, Ordering::Release);
         let result = SessionWireServer::new(service.sessions().clone())
             .handle_local_attachment(
                 stream,
