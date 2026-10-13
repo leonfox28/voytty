@@ -6,3 +6,14 @@ Source archive: https://github.com/mozilla/uniffi-rs/archive/refs/tags/v0.32.0.t
 License: Mozilla Public License 2.0, included as UniFFI-MPL-2.0.txt.
 Crate versions are pinned in Cargo.lock. UniFFI source remains available under
 MPL-2.0; distribution of this app does not restrict those source rights.
+
+JetBrains Mono NL Nerd Font Mono Regular — JetBrains Mono Project Authors,
+Ryan L McIntyre and the icon contributors listed in NerdFonts-README.md.
+
+The unmodified font is bundled as res/font/terminal_mono.ttf.
+Base font: JetBrains Mono 2.304; Nerd Fonts release: 3.5.1.
+Source archive: https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.1/JetBrainsMono.tar.xz
+Archive member: JetBrainsMonoNLNerdFontMono-Regular.ttf
+SHA-256: d9a80146bbf2ff23b187316a3e82ee2a2ceab8220267fe09ac150ca46ab2c3bd
+Licenses and upstream attribution: JetBrainsMono-OFL-1.1.txt,
+NerdFonts-LICENSE.txt and NerdFonts-README.md in this directory.

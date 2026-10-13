@@ -590,7 +590,7 @@ print('SCENE_DONE')
             try {
                 val view = terminal()
                 val paint = android.graphics.Paint().apply {
-                    typeface = android.graphics.Typeface.MONOSPACE
+                    typeface = TerminalFont.typeface(view.context)
                     textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP,12f,view.resources.displayMetrics)
                 }
                 val expectedX = (view.width * .4f / paint.measureText("M")).toInt()+1
@@ -783,7 +783,7 @@ print('SCENE_DONE')
         val frame = repository.frame.value ?: return false
         val view = terminal()
         val paint = android.graphics.Paint().apply {
-            typeface = android.graphics.Typeface.MONOSPACE
+            typeface = TerminalFont.typeface(view.context)
             textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP,repository.state.value.saved.preferences.fontSize.toFloat(),view.resources.displayMetrics)
         }
         val rows = (view.height / kotlin.math.ceil((paint.fontMetrics.descent-paint.fontMetrics.ascent).toDouble())).toInt().coerceIn(1,80)
@@ -798,7 +798,7 @@ print('SCENE_DONE')
         val column = lines[row].indexOf(label)+label.length/2
         val view = terminal()
         val paint = android.graphics.Paint().apply {
-            typeface = android.graphics.Typeface.MONOSPACE
+            typeface = TerminalFont.typeface(view.context)
             textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP,12f,view.resources.displayMetrics)
         }
         val cellHeight = kotlin.math.ceil((paint.fontMetrics.descent-paint.fontMetrics.ascent).toDouble()).toFloat()

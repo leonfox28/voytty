@@ -135,6 +135,45 @@ class TerminalRenderingTest {
         }
     }
 
+    @Test fun terminalDrawsNerdIconsAndAsciiWithThePackagedFaceAtEverySize() {
+        instrumentation.runOnMainSync {
+            val glyphs = listOf("M", "i", "l", "─", "\ue0b0", "\uf115", "\ue7a8", "\udb80\udc01")
+            val cells = glyphs.map { NativeCell(it, 1u, Color.WHITE.toUInt(), Color.BLACK.toUInt(), 0u, 0u, Color.WHITE.toUInt()) }
+            val value = frame(0, 0, 1, 0).copy(viewport = NativeViewport(1u, glyphs.size.toUShort()),
+                rows = listOf(NativeRow(cells, false)), activeScreen = NativeActiveScreen.ALTERNATE)
+            val view = TerminalView(instrumentation.targetContext)
+            for (size in terminalFontSizes) {
+                val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    typeface = instrumentation.targetContext.resources.getFont(R.font.terminal_mono)
+                    textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP,
+                        size.toFloat(), view.resources.displayMetrics)
+                    color = Color.WHITE
+                }
+                val width = paint.measureText("M")
+                val height = kotlin.math.ceil((paint.fontMetrics.descent - paint.fontMetrics.ascent).toDouble()).toInt()
+                view.update(value, size)
+                view.layout(0, 0, kotlin.math.ceil(width * glyphs.size).toInt(), height)
+                val actual = pixels(view)
+                val expected = Bitmap.createBitmap(view.width, height, Bitmap.Config.ARGB_8888)
+                try {
+                    val canvas = Canvas(expected)
+                    canvas.drawColor(Color.BLACK)
+                    glyphs.forEachIndexed { column, glyph ->
+                        // Box drawing and Powerline deliberately overhang their
+                        // advance to join cell edges. The semantic grid clips
+                        // each cell, including those intentional overhangs.
+                        canvas.save()
+                        canvas.clipRect(column * width, 0f, (column + 1) * width, height.toFloat())
+                        canvas.drawText(glyph, column * width, -paint.fontMetrics.ascent, paint)
+                        canvas.restore()
+                    }
+                    assertTrue("ASCII and BMP/supplementary Nerd icons use the packaged glyphs in their cells at $size sp",
+                        expected.sameAs(actual))
+                } finally { actual.recycle(); expected.recycle() }
+            }
+        }
+    }
+
     @Test fun cachedRowsMoveImmediatelyAcrossSeveralRowsAndLateFrames() {
         instrumentation.runOnMainSync {
             val view = view(frame(12, 24, 37))
@@ -827,7 +866,7 @@ class TerminalRenderingTest {
     private fun liveView(frame: NativeFrame, context: android.content.Context = instrumentation.targetContext) = TerminalView(context).also {
         it.update(frame, 12)
         val paint = android.graphics.Paint().apply {
-            typeface = android.graphics.Typeface.MONOSPACE
+            typeface = TerminalFont.typeface(context)
             textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP,
                 12f, it.resources.displayMetrics)
         }

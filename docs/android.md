@@ -96,6 +96,13 @@ existing selected text can still be copied, while unsafe extension stops.
 
 Settings independently choose system/Chinese/English, system/dark/light and
 text size through a horizontal 8–16 sp slider in steps of 1 (default 12). Remote program text and explicit terminal colors are preserved.
+The terminal and size preview use the bundled JetBrains Mono NL Nerd Font Mono
+(JetBrains Mono 2.304, Nerd Fonts 3.5.1), independently of the phone's system
+font. Its icons, including Powerline and Nerd Fonts private-use glyphs, occupy
+one terminal cell. Characters outside that font use Android's fallback fonts;
+glyphs wider than their declared one/two-cell allocation are fitted horizontally
+so they are not cut off by the next cell. The desktop CLI uses its outer
+terminal's font; select a Nerd Font there to display the same icons.
 Settings → **Keep connected in background** is off by default and persists across
 updates. Enabling it starts a `connectedDevice` foreground service while the app
 is visible and connecting to, or maintaining, a terminal. The Application still

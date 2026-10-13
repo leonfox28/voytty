@@ -3,7 +3,6 @@ package io.github.leonfox28.zterm
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
-import android.graphics.Typeface
 import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.Path
@@ -70,7 +69,7 @@ internal class TerminalView(context: Context) : View(context) {
     var pendingModifiers: () -> Int = { 0 }
     var consumedModifiers: () -> Unit = {}
     private var current: NativeFrame? = null
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.MONOSPACE }
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = TerminalFont.typeface(context) }
     private val rowRenderer = TerminalRowRenderer()
     internal val rowRecordingCount: Long get() = rowRenderer.recordingCount
     private val underlinePath = Path()
@@ -424,7 +423,7 @@ internal class TerminalView(context: Context) : View(context) {
                 paint.isFakeBoldText = cell.attributes.toInt() and 1 != 0
                 paint.textSkewX = if (cell.attributes.toInt() and 4 != 0) -.2f else 0f
                 canvas.save(); canvas.clipRect(x, top, right, top + cellHeight)
-                canvas.drawText(cell.text, x, top + baseline, paint); canvas.restore()
+                drawTerminalGlyph(canvas, cell.text, x, top + baseline, cellWidth * cell.width.toInt(), paint); canvas.restore()
                 paint.isFakeBoldText = false; paint.textSkewX = 0f; paint.alpha = 255
             }
             if (cell.attributes.toInt() and 8 != 0) {
