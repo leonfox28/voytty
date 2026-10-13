@@ -517,7 +517,7 @@ print('SCENE_DONE')
             ui.onNodeWithText("Esc").assertIsDisplayed()
             ui.runOnIdle { ui.activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }
             await("portrait restored") { repository.frame.value?.let { it.state == "active" && it.viewport == portrait } == true }
-            for (font in listOf(8,9,13,16,12)) {
+            for (font in listOf(10,11,15,20,12)) {
                 ui.runOnIdle { repository.setPreferences(Preferences("en","dark",font)) }
                 await("font applies measured geometry") { repository.frame.value?.let { it.state == "active" && repository.state.value.saved.preferences.fontSize == font && when {
                     font == 12 -> it.viewport == portrait

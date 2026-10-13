@@ -267,25 +267,26 @@ class SettingsUiTest {
         val previous = repository.state.value.saved.preferences
         val store = AppStore(InstrumentationRegistry.getInstrumentation().targetContext)
         try {
-            ui.runOnIdle { repository.goHome(); repository.setPreferences(Preferences("en", "dark", 12)) }
-            ui.waitUntil { repository.state.value.saved.preferences == Preferences("en", "dark", 12) && !repository.state.value.busy }
+            ui.runOnIdle { repository.goHome(); repository.setPreferences(Preferences("en", "dark")) }
+            ui.waitUntil { repository.state.value.saved.preferences == Preferences("en", "dark") && !repository.state.value.busy }
             ui.onNodeWithContentDescription("Settings").performClick()
             val slider = ui.onNodeWithContentDescription("Font size")
             slider.performScrollTo().assertIsDisplayed()
             val range = slider.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo]
-            assertEquals(8f..16f, range.range)
-            assertEquals("nine values including both endpoints", 7, range.steps)
+            assertEquals(15f, range.current)
+            assertEquals(10f..20f, range.range)
+            assertEquals("eleven values including both endpoints", 9, range.steps)
 
             slider.performTouchInput { swipe(center, centerRight, 500) }
             ui.waitForIdle()
-            assertEquals("drag thumb to upper endpoint", 16f, slider.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current)
-            ui.waitUntil { repository.state.value.saved.preferences.fontSize == 16 }
+            assertEquals("drag thumb to upper endpoint", 20f, slider.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current)
+            ui.waitUntil { repository.state.value.saved.preferences.fontSize == 20 }
             slider.performTouchInput { swipe(center, centerLeft, 500) }
             ui.waitForIdle()
-            assertEquals("drag track to lower endpoint", 8f, slider.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current)
-            ui.waitUntil { repository.state.value.saved.preferences.fontSize == 8 }
+            assertEquals("drag track to lower endpoint", 10f, slider.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current)
+            ui.waitUntil { repository.state.value.saved.preferences.fontSize == 10 }
 
-            for (font in 8..16) {
+            for (font in 10..20) {
                 slider.performSemanticsAction(SemanticsActions.SetProgress) { it(font.toFloat()) }
                 ui.waitUntil { repository.state.value.saved.preferences.fontSize == font }
                 assertEquals("persist integer size $font without changing other preferences",
@@ -295,7 +296,7 @@ class SettingsUiTest {
             ui.waitUntil { repository.state.value.saved.preferences.fontSize == 11 }
             ui.activityRule.scenario.recreate()
             ui.onNodeWithContentDescription("Font size").performScrollTo()
-                .assertRangeInfoEquals(androidx.compose.ui.semantics.ProgressBarRangeInfo(11f, 8f..16f, 7))
+                .assertRangeInfoEquals(androidx.compose.ui.semantics.ProgressBarRangeInfo(11f, 10f..20f, 9))
             assertEquals(11, store.load().preferences.fontSize)
         } finally {
             ui.runOnIdle { repository.setPreferences(previous); repository.show(Route.Home) }

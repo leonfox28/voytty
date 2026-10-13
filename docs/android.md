@@ -95,7 +95,9 @@ ordinary output keeps captured text. If retained history changes incompatibly,
 existing selected text can still be copied, while unsafe extension stops.
 
 Settings independently choose system/Chinese/English, system/dark/light and
-text size through a horizontal 8–16 sp slider in steps of 1 (default 12). Remote program text and explicit terminal colors are preserved.
+text size through a horizontal 10–20 sp slider in steps of 1 (default 15).
+Updates retain saved sizes within this range; out-of-range sizes use the default.
+Remote program text and explicit terminal colors are preserved.
 The terminal and size preview use bundled LXGW Bright Code NF GB v2.922 fonts.
 Light is the normal face, Regular is bold, LightItalic is italic, and Italic is
 bold-italic. These are explicit font selections, without synthetic thickening
