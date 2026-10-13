@@ -29,6 +29,17 @@ P01–P35 已提交到 `main`（`1f4b180`）；2026-10-11 新增的 P36 在分�
 
 ## 当前续修状态
 
+**2026-10-13 新增 P43：daemon 停止时，本地终端附件先写出会话结束再被中止（R13）。** P42（R01
+附件占用缺口）的 PR CI 在 macOS 上失败于 `local_session_ipc`：daemon 停止后已连接的附件读到 EOF，
+没有收到 `SessionEnded(DaemonStop)`。本机串行 60 次通过，8 份测试二进制并行 40 轮时 main 上
+320 次中出现 18 次，P42 分支同样出现，与 P42 无关。原因是停止回执写出后监听循环立即
+`abort_all()`，附件写出任务还在阻塞线程上取最终画面，被一并中止。修正后显式停止只立即中止
+非附件连接，本地附件最多 1 秒自行写完结束；同样负载下 **0/320**。同负载下另有两条本地 IPC
+测试失败（会话计数为 0、PTY 阻塞释放），main 上同样存在，单列 R14，见
+[P43](#p43daemon-停止时附件写出会话结束前被中止)。
+
+### 上轮 main 复查与 P41（保留历史）
+
 **2026-10-12 在 `main`（`d2a400a`，含 P38–P40）上重跑三端，新增 P41：历史窗口请求重叠被拒时
 不再结束终端驱动。** 完整扩展 `extended-main-01` **88/88**（A／B × Direct／Relay 各 22/22），
 审计零问题；此前同源短跑重启／接管 A/Relay 10/10、A/Relay 扩展 22/22。核心一轮
@@ -1296,6 +1307,36 @@ ACK 刚成功写出，真实写出失败的可能性很低。
 该失败在 146 行中只出现一次，这次短跑只说明接管路径没有回归，不能证明现场已消除，需在下一轮
 完整核心中观察。证据在 `checks/ordered-fixes/history-prefetch-driver/`。
 
+### P43：daemon 停止时附件写出会话结束前被中止
+
+现场为 PR #77（P42）的 macOS CI：`local_session_ipc::unary_mutations_and_duplex_reconnect_share_one_live_registry`
+在 `zterm daemon stop` 等价的确认停止后读附件事件，得到 `cancelled: local terminal attachment closed`，
+而不是 `SessionEnded(DaemonStop)`。两个 Linux 任务通过。该测试只走本地 IPC，不经过 P42 修改的
+远程连接退役。
+
+停止请求的处理顺序（[local_ipc.rs](../../crates/daemon/src/local_ipc.rs)）：会话全部结束，写出
+并关闭回执，再通知监听循环；循环随即对全部连接处理任务 `abort_all()`。本地附件的
+`SessionEnded` 由它自己的写出任务（[session_wire.rs](../../crates/daemon/src/session_wire.rs)
+`attachment_writer`）发送：先经 `run_effect` 在阻塞线程上取最终画面更新，再写一个小帧。daemon
+使用单线程运行时，写出任务等阻塞线程时，监听循环可能先收到停止信号；P20 之后父任务中止会连带
+中止读写子任务，客户端只读到 EOF。真实使用中，`zterm daemon stop` 时已连接的终端可能显示连接
+关闭而不是“daemon 已停止”。
+
+复现（`stress_ipc.sh`：测试二进制 8 份并行，每轮各跑全部 7 项）：本机串行 60 次 0 失败；
+并行 15 轮 main（`3651d86`）120 次中 4 次、P42 分支 11 次；并行 40 轮 main **18/320**。
+
+修正：每个连接在确认为本地终端附件时置位标记。显式停止后，非附件连接照旧立即中止；本地附件
+最多等 1 秒（`ATTACHMENT_END_DELIVERY`）自行写完结束，到期仍未结束的再中止。它们的会话已经
+结束，只剩最终更新和一次小写入，正常为毫秒级；只有不再读取的客户端会等满。上限取 1 秒，是因为
+`zterm daemon stop` 收到回执后只给其余收尾（含 Endpoint 关闭，见 R05）共 5 秒。致命监听错误时
+会话仍存活，附件不会自行结束，照旧立即全部中止（首版未区分，会让致命退出白等 1 秒才重新绑定）。
+期限、协议和会话关闭顺序均未改。
+
+结果：同样并行 40 轮，修正后 **0/320**（`stress-after-03.log`，修正前 `stress-main-02.log`）。daemon
+全部测试 311 通过。修正依赖现有测试的断言，没有新增确定性回归：复现需要附件写出任务恰在阻塞
+线程上等待时收到停止，单线程测试里无法在不加产品钩子的情况下稳定构造。证据在
+`checks/ordered-fixes/daemon-stop-attachment-eof/`。
+
 ## 隔离修复候选的首次证据（2026-10-06 历史）
 
 以下保留当时尚未合入的证据与边界；2026-10-08 的正式实现见 P27／P28。
@@ -1381,6 +1422,8 @@ QUIC 对持久重置密钥、CID 不复用及重置 oracle 的约束见
 | R10：旧路径高 RTT 时，P38 的窗口与重试串行相加超出五秒期限（**P40 修正，关闭**） | 三端 A↔B 定向检查中，旧连接 RTT 557 ms 时首个请求 3.97 秒成功；754–760 ms 时窗口达 2.5 秒上限，新连接再用 1.42–1.86 秒，请求在 5.01 秒 `deadline_exceeded`，下一次请求成功。不加延迟时主机新 Relay 路径 RTT 已有 490–686 ms | 原失败保留。本机加延迟受控复现（RTT 772–784 ms）修正前 3/3 在 5.00 秒失败。P40 在窗口过半仍无确认时后台建立不发 Hello 的替换连接，旧连接退役后与新拨号竞争；窗口、期限、计时器与重试次数不变。修正后本机 3/3 在 4.04 秒成功，晚到确认的存活主机不换连接、不重发；三端旧路径 507／1159／1213 ms 时首个请求 4.10／4.53／4.81 秒成功。剩余边界：新路径 RTT 约 1.2 秒以上仍会超时。证据 `checks/ordered-fixes/r10-replacement-dial/`，见 [P40](#p40高-rtt-时-p38-的窗口与重新建连串行超出期限) |
 | R11：接管胜出方在快照突发后退出（**P41 修正，三端待观察**） | `core-main-01/0059-race-takeover-A-B-C-relay-1`：主机已提交 B 的接管并发出快照，B 的 CLI 两次快照、三次转 Active 后以 `cancelled: terminal attachment event stream closed` 退出 | 恢复围栏重启后的实时预取与仍在途的上一个历史窗口回应重叠，客户端写出前拒绝，终端驱动把本地拒绝当成命令失败结束。P41 改为拒绝后继续运行，本机驱动回归修正前 `DaemonStopped`、修正后通过。146 行中只出现一次，三端接管类 32/32 无回归；需在下一轮完整核心中观察，见 [P41](#p41历史窗口请求重叠被拒时终端驱动随之结束) |
 | R12：Direct 行主机侧零星 10 秒入站握手超时（已定位，未修改） | `extended-main-01` 中主机侧 7 次 `authenticating_transport` 等满 10 秒 `deadline_exceeded`，各行通过。每次都紧跟一个经 Direct 先完成、随即关闭的入站连接（撤销后的 `unauthorized`、配对完成），间隔多为 250–275 ms，约等于 Relay 单程时延 | 客户端拨号时把同一 Initial 也经 Relay 发出（加密数据报指纹两端一致）。Direct 副本数毫秒完成，原连接关闭并排空后 noq 不再保留其初始 DCID，迟到的 Relay 副本被当成新入站，主机回应无人处理，占用一个未认证入站许可（全局 16）10 秒，并留下误导性的超时警告。本轮各行未表现出用户可见影响，未修改；分析 R02 时应排除这类记录。证据 `checks/ordered-fixes/main-d2a400a-recheck/` |
+| R13：daemon 停止时已连接的本地附件偶发收不到会话结束（**P43 修正**） | PR #77 macOS CI 中 `local_session_ipc` 的确认停止后，附件读到 EOF 而非 `SessionEnded(DaemonStop)`；本机串行不复现，8 份并行时 main 上 18/320 | 停止回执后监听循环 `abort_all()` 中止了仍在阻塞线程上取最终画面的附件写出任务。P43 让本地附件在显式停止后最多 1 秒自行写完，同负载 0/320，见 [P43](#p43daemon-停止时附件写出会话结束前被中止) |
+| R14：本地 IPC 测试在高负载下另有两类失败（未定位） | 8 份并行 40 轮时，`fatal_listener_exit_rebinds_actual_daemon_loop_until_owned_child_can_stop` 在 849 行得到会话数 0（期望 1），main 上 32/320；`blocked_pty_input_does_not_stall_the_socket_runtime_or_an_unrelated_session` 报 “independent child interruption did not release the blocked PTY owner”，main 上 20/320，各轮波动大 | 均早于 P42／P43，CI 上目前未见；尚未区分测试夹具与产品原因，未修改。证据 `checks/ordered-fixes/daemon-stop-attachment-eof/` |
 
 ## 测试器、证据与测试夹具的问题和修正
 
