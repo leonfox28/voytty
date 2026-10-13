@@ -135,39 +135,48 @@ class TerminalRenderingTest {
         }
     }
 
-    @Test fun terminalDrawsNerdIconsAndAsciiWithThePackagedFaceAtEverySize() {
+    @Test fun terminalDrawsChineseAndNerdIconsWithPackagedStylesAtEverySize() {
         instrumentation.runOnMainSync {
-            val glyphs = listOf("M", "i", "l", "─", "\ue0b0", "\uf115", "\ue7a8", "\udb80\udc01")
-            val cells = glyphs.map { NativeCell(it, 1u, Color.WHITE.toUInt(), Color.BLACK.toUInt(), 0u, 0u, Color.WHITE.toUInt()) }
-            val value = frame(0, 0, 1, 0).copy(viewport = NativeViewport(1u, glyphs.size.toUShort()),
+            val glyphs = listOf("M" to 1, "i" to 1, "l" to 1, "你" to 2, "好" to 2, "─" to 1,
+                "\ue0b0" to 1, "\uf115" to 1, "\ue7a8" to 1, "\udb80\udc01" to 1)
+            val cells = glyphs.flatMap { (text, width) ->
+                val cell = NativeCell(text, width.toUByte(), Color.WHITE.toUInt(), Color.BLACK.toUInt(), 0u, 0u, Color.WHITE.toUInt())
+                if (width == 2) listOf(cell, cell.copy(text = "", width = 0u)) else listOf(cell)
+            }
+            val base = frame(0, 0, 1, 0).copy(viewport = NativeViewport(1u, cells.size.toUShort()),
                 rows = listOf(NativeRow(cells, false)), activeScreen = NativeActiveScreen.ALTERNATE)
+            val resources = listOf(0 to R.font.terminal_mono, 1 to R.font.terminal_mono_bold,
+                4 to R.font.terminal_mono_italic, 5 to R.font.terminal_mono_bold_italic)
             val view = TerminalView(instrumentation.targetContext)
-            for (size in terminalFontSizes) {
-                val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                    typeface = instrumentation.targetContext.resources.getFont(R.font.terminal_mono)
+            for (size in terminalFontSizes) for ((style, resource) in resources) for (dim in listOf(0, 2)) {
+                val value = base.copy(rows = base.rows.map { row -> row.copy(cells = row.cells.map {
+                    it.copy(attributes = (style or dim).toUByte())
+                }) })
+                val paint = android.graphics.Paint(TerminalFont.paintFlags).apply {
+                    typeface = instrumentation.targetContext.resources.getFont(resource)
                     textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP,
                         size.toFloat(), view.resources.displayMetrics)
                     color = Color.WHITE
+                    alpha = if (dim == 0) 255 else 150
                 }
-                val width = paint.measureText("M")
+                val width = paint.terminalAdvance("M")
                 val height = kotlin.math.ceil((paint.fontMetrics.descent - paint.fontMetrics.ascent).toDouble()).toInt()
                 view.update(value, size)
-                view.layout(0, 0, kotlin.math.ceil(width * glyphs.size).toInt(), height)
+                view.layout(0, 0, kotlin.math.ceil(width * cells.size).toInt(), height)
                 val actual = pixels(view)
                 val expected = Bitmap.createBitmap(view.width, height, Bitmap.Config.ARGB_8888)
                 try {
                     val canvas = Canvas(expected)
                     canvas.drawColor(Color.BLACK)
-                    glyphs.forEachIndexed { column, glyph ->
-                        // Box drawing and Powerline deliberately overhang their
-                        // advance to join cell edges. The semantic grid clips
-                        // each cell, including those intentional overhangs.
+                    cells.forEachIndexed { column, cell ->
+                        if (cell.width == 0.toUByte()) return@forEachIndexed
+                        // Clip intentional box/Powerline overhangs to the semantic grid.
                         canvas.save()
-                        canvas.clipRect(column * width, 0f, (column + 1) * width, height.toFloat())
-                        canvas.drawText(glyph, column * width, -paint.fontMetrics.ascent, paint)
+                        canvas.clipRect(column * width, 0f, (column + cell.width.toInt()) * width, height.toFloat())
+                        canvas.drawText(cell.text, column * width, -paint.fontMetrics.ascent, paint)
                         canvas.restore()
                     }
-                    assertTrue("ASCII and BMP/supplementary Nerd icons use the packaged glyphs in their cells at $size sp",
+                    assertTrue("Chinese/ASCII/Nerd icons use face $resource with style $style, dim=$dim at $size sp",
                         expected.sameAs(actual))
                 } finally { actual.recycle(); expected.recycle() }
             }
@@ -865,12 +874,12 @@ class TerminalRenderingTest {
 
     private fun liveView(frame: NativeFrame, context: android.content.Context = instrumentation.targetContext) = TerminalView(context).also {
         it.update(frame, 12)
-        val paint = android.graphics.Paint().apply {
+        val paint = android.graphics.Paint(TerminalFont.paintFlags).apply {
             typeface = TerminalFont.typeface(context)
             textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP,
                 12f, it.resources.displayMetrics)
         }
-        val width = kotlin.math.ceil(paint.measureText("M") * frame.viewport.columns.toInt()).toInt()
+        val width = kotlin.math.ceil(paint.terminalAdvance("M") * frame.viewport.columns.toInt()).toInt()
         it.layout(0, 0, width, frame.viewport.rows.toInt() * it.gridCellHeight)
     }
 

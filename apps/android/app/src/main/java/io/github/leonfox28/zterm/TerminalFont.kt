@@ -7,13 +7,32 @@ import android.graphics.Rect
 import android.graphics.Typeface
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
 
-/** One packaged face owns terminal measurement, glyphs and the settings preview. */
+/** LXGW's Light/Regular weights provide normal/bold terminal text, with real italics. */
 internal object TerminalFont {
-    val family = FontFamily(Font(R.font.terminal_mono))
+    // Independent integer rounding would break the font's 1:2 Latin/CJK advances.
+    const val paintFlags = Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG or Paint.LINEAR_TEXT_FLAG
 
-    fun typeface(context: Context): Typeface = context.resources.getFont(R.font.terminal_mono)
+    val family = FontFamily(
+        Font(R.font.terminal_mono, FontWeight.Normal),
+        Font(R.font.terminal_mono_bold, FontWeight.Bold),
+        Font(R.font.terminal_mono_italic, FontWeight.Normal, FontStyle.Italic),
+        Font(R.font.terminal_mono_bold_italic, FontWeight.Bold, FontStyle.Italic),
+    )
+
+    fun typeface(context: Context, style: Int = Typeface.NORMAL): Typeface = context.resources.getFont(when (style) {
+        Typeface.BOLD -> R.font.terminal_mono_bold
+        Typeface.ITALIC -> R.font.terminal_mono_italic
+        Typeface.BOLD_ITALIC -> R.font.terminal_mono_bold_italic
+        else -> R.font.terminal_mono
+    })
 }
+
+/** Paint.measureText rounds up to whole pixels, adding gaps to a one/two-cell grid. */
+internal fun Paint.terminalAdvance(text: String): Float =
+    getRunAdvance(text, 0, text.length, 0, text.length, false, text.length)
 
 /** System fallback glyphs (notably emoji) can exceed the host's one/two-cell allocation. */
 internal fun drawTerminalGlyph(canvas: Canvas, text: String, x: Float, baseline: Float,
@@ -33,8 +52,10 @@ internal fun drawTerminalGlyph(canvas: Canvas, text: String, x: Float, baseline:
             return
         }
     }
-    val advance = paint.measureText(text)
-    if (advance > width) {
+    val advance = paint.terminalAdvance(text)
+    // Font advances have subpixel quantization. Do not distort an otherwise
+    // matching two-cell glyph for a difference smaller than 1/100 pixel.
+    if (advance > width + .01f) {
         canvas.save()
         canvas.translate(x, baseline)
         canvas.scale(width / advance, 1f)
