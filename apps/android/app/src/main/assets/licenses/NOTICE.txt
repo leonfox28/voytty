@@ -6,3 +6,27 @@ Source archive: https://github.com/mozilla/uniffi-rs/archive/refs/tags/v0.32.0.t
 License: Mozilla Public License 2.0, included as UniFFI-MPL-2.0.txt.
 Crate versions are pinned in Cargo.lock. UniFFI source remains available under
 MPL-2.0; distribution of this app does not restrict those source rights.
+
+LXGW Bright Code NF GB — LXGW, the Klee Project Authors, GitHub,
+and the Nerd Fonts icon contributors.
+
+The four unmodified font files are bundled from LXGW Bright Code v2.922.
+Upstream: https://github.com/lxgw/LxgwBright-Code/tree/v2.922/LxgwBrightCodeNFGB
+Light is terminal normal; Regular is terminal bold. LightItalic and Italic
+provide the corresponding terminal italic and bold-italic faces. Dim text
+reduces intensity without changing the selected face.
+
+LXGWBrightCodeNFGB-Light.ttf -> res/font/terminal_mono.ttf
+SHA-256: f12fe4ea31290073756385d1c7c2694109d7ba3d8b5d587c09b973c5a7fe90fe
+
+LXGWBrightCodeNFGB-Regular.ttf -> res/font/terminal_mono_bold.ttf
+SHA-256: b29e9c44fdd6b97ea638402d2886ac6bac93b83aca0bab69ec62f6667e4cff1e
+
+LXGWBrightCodeNFGB-LightItalic.ttf -> res/font/terminal_mono_italic.ttf
+SHA-256: efc8f6bccaf59c83092080caf2e207c28f243b703dbf11a0b4d81c52c0aa4b01
+
+LXGWBrightCodeNFGB-Italic.ttf -> res/font/terminal_mono_bold_italic.ttf
+SHA-256: 2a6385328c47349931bf14a52d20f0c8cb6b743625213c89b42d79c8878d2f43
+
+Licenses and upstream attribution: LXGWBrightCode-OFL-1.1.txt,
+LXGWBrightCode-README.md, NerdFonts-LICENSE.txt and NerdFonts-README.md.

@@ -22,7 +22,7 @@
     <string name="dark">Dark</string>
     <string name="light">Light</string>
     <string name="font_size">Font size</string>
-    <string name="font_preview">Terminal · 终端\n$ zterm</string>
+    <string name="font_preview">Terminal · 终端\n\uF115 zterm  \uE0A0 main \uE0B0</string>
     <string name="version">Version</string>
     <string name="remove_host">Remove host</string>
     <string name="remove_host_message">Remove this host from this device?</string>

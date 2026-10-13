@@ -22,7 +22,7 @@
     <string name="dark">深色</string>
     <string name="light">浅色</string>
     <string name="font_size">字号</string>
-    <string name="font_preview">终端 · Terminal\n$ zterm</string>
+    <string name="font_preview">终端 · Terminal\n\uF115 zterm  \uE0A0 main \uE0B0</string>
     <string name="version">版本</string>
     <string name="remove_host">移除主机</string>
     <string name="remove_host_message">从此设备移除该主机？</string>

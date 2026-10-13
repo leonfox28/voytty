@@ -30,9 +30,27 @@ pub(crate) fn project_outer_rows(bytes: &[u8]) -> Vec<Vec<zterm_core::terminal::
         move |size, _| {
             let command = ExplicitPtyCommand::new("/bin/sh", &cwd)
                 .arg("-c")
-                // Replayed color/status queries receive real terminal replies.
-                // They are input to this fixture, not echoed presentation.
-                .arg(r#"stty -echo; cat "$1"; printf '\033[24;75HSYNCED'; read -r hold"#)
+                // A published frame can precede its terminal replies being
+                // written. A final cursor query fences those replies before
+                // SYNCED lets the parent shut down the fixture's input.
+                .arg(
+                    r#"
+set -eu
+stty -echo -icanon min 1 time 0
+cat "$1"
+printf '\033[24;75H\033[6n'
+expected=$(printf '\033[24;75R')
+reply=
+while :; do
+    byte=$(dd bs=1 count=1 2>/dev/null)
+    [ -n "$byte" ] || exit 1
+    reply=$reply$byte
+    case "$reply" in *"$expected") break ;; esac
+done
+printf 'SYNCED'
+read -r _hold
+"#,
+                )
                 .arg("outer-frame")
                 .arg(&transcript);
             let pty = PtyHost::new()
@@ -81,6 +99,6 @@ pub(crate) fn project_outer_rows(bytes: &[u8]) -> Vec<Vec<zterm_core::terminal::
     drop(prepared);
     sessions
         .shutdown()
-        .expect("outer presentation fixture succeeds");
+        .unwrap_or_else(|error| panic!("outer presentation fixture shutdown: {error}"));
     rows
 }

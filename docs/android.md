@@ -96,6 +96,19 @@ existing selected text can still be copied, while unsafe extension stops.
 
 Settings independently choose system/Chinese/English, system/dark/light and
 text size through a horizontal 8–16 sp slider in steps of 1 (default 12). Remote program text and explicit terminal colors are preserved.
+The terminal and size preview use bundled LXGW Bright Code NF GB v2.922 fonts.
+Light is the normal face, Regular is bold, LightItalic is italic, and Italic is
+bold-italic. These are explicit font selections, without synthetic thickening
+or slanting; dim text still reduces intensity rather than selecting a lighter
+face. All four faces share the same grid metrics: ASCII and Nerd Fonts icons
+occupy one cell, and Chinese characters occupy two. Their bundled Chinese
+glyphs use mainland-standard forms and do not depend on the phone's theme font.
+Subpixel advances preserve the width ratio without independently rounding
+Latin and Chinese measurements up to whole pixels at small text sizes.
+Characters outside these fonts (such as emoji) use Android's fallback fonts;
+glyphs wider than their declared one/two-cell allocation are fitted horizontally
+so they are not cut off by the next cell. The desktop CLI uses its outer
+terminal's font; select a Nerd Font there to display the same icons.
 Settings → **Keep connected in background** is off by default and persists across
 updates. Enabling it starts a `connectedDevice` foreground service while the app
 is visible and connecting to, or maintaining, a terminal. The Application still

@@ -26,7 +26,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -235,7 +234,7 @@ private fun Modifier.semanticsDescription(label: String): Modifier = this.then(M
             steps = terminalFontSizes.last - terminalFontSizes.first - 1,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).semantics { contentDescription = fontLabel })
         Surface(Modifier.fillMaxWidth().padding(vertical = 12.dp), color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(14.dp)) {
-            Text(stringResource(R.string.font_preview), Modifier.padding(18.dp), fontFamily = FontFamily.Monospace, fontSize = fontSize.sp)
+            Text(stringResource(R.string.font_preview), Modifier.padding(18.dp), fontFamily = TerminalFont.family, fontSize = fontSize.sp)
         }
         BackgroundConnectionSettings(state, repository)
         TerminalNotificationSettings(state, repository)

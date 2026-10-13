@@ -3,10 +3,10 @@ package io.github.leonfox28.zterm
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
-import android.graphics.Typeface
 import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.Path
+import android.graphics.Typeface
 import android.view.ActionMode
 import android.view.Menu
 import android.view.MenuItem
@@ -70,7 +70,8 @@ internal class TerminalView(context: Context) : View(context) {
     var pendingModifiers: () -> Int = { 0 }
     var consumedModifiers: () -> Unit = {}
     private var current: NativeFrame? = null
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.MONOSPACE }
+    private val terminalTypefaces = Array(4) { TerminalFont.typeface(context, it) }
+    private val paint = Paint(TerminalFont.paintFlags).apply { typeface = terminalTypefaces[Typeface.NORMAL] }
     private val rowRenderer = TerminalRowRenderer()
     internal val rowRecordingCount: Long get() = rowRenderer.recordingCount
     private val underlinePath = Path()
@@ -289,7 +290,7 @@ internal class TerminalView(context: Context) : View(context) {
         val rows = scrollPixels / cellHeight
         rowRenderer.clear()
         paint.textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, font.toFloat(), resources.displayMetrics)
-        cellWidth = paint.measureText("M").coerceAtLeast(1f)
+        cellWidth = paint.terminalAdvance("M").coerceAtLeast(1f)
         val metrics = paint.fontMetrics
         cellHeight = kotlin.math.ceil((metrics.descent - metrics.ascent).toDouble()).toFloat().coerceAtLeast(1f)
         baseline = -metrics.ascent
@@ -387,7 +388,7 @@ internal class TerminalView(context: Context) : View(context) {
         }
         if (composing.isNotEmpty() && scrollPixels == 0f) {
             paint.color = frame.background.toInt()
-            val extent = paint.measureText(composing.toString())
+            val extent = paint.terminalAdvance(composing.toString())
             canvas.drawRect(cursorX,cursorY,cursorX+extent,cursorY+cellHeight,paint)
             paint.color = frame.cursorColor.toInt()
             canvas.drawText(composing.toString(),cursorX,cursorY+baseline,paint)
@@ -409,23 +410,33 @@ internal class TerminalView(context: Context) : View(context) {
     }
     private fun drawRow(canvas: Canvas, line: NativeRow) {
         val top = 0f
+        // Fill the grid before drawing ink. At fractional cell boundaries an
+        // adjacent background must not blend over the previous glyph's edge.
+        paint.isAntiAlias = false
+        line.cells.forEachIndexed { column, cell ->
+            if (cell.width == 0.toUByte()) return@forEachIndexed
+            val x = column * cellWidth
+            if (x >= width) return@forEachIndexed
+            paint.color = cell.background.toInt(); paint.alpha = 255
+            canvas.drawRect(x, top, x + cellWidth * cell.width.toInt(), top + cellHeight, paint)
+        }
+        paint.isAntiAlias = true
         line.cells.forEachIndexed { column, cell ->
             if (cell.width == 0.toUByte()) return@forEachIndexed
             val x = column * cellWidth
             val right = x + cellWidth * cell.width.toInt()
             if (x >= width) return@forEachIndexed
-            paint.color = cell.background.toInt(); paint.alpha = 255
-            canvas.drawRect(x, top, right, top + cellHeight, paint)
             if (cell.attributes.toInt() and 16 != 0) return@forEachIndexed
             // A plain space has no glyph ink; its background and decorations still draw.
             if (cell.text.isNotEmpty() && cell.text != " ") {
                 paint.color = cell.foreground.toInt()
                 paint.alpha = if (cell.attributes.toInt() and 2 != 0) 150 else 255
-                paint.isFakeBoldText = cell.attributes.toInt() and 1 != 0
-                paint.textSkewX = if (cell.attributes.toInt() and 4 != 0) -.2f else 0f
+                val style = (if (cell.attributes.toInt() and 1 != 0) Typeface.BOLD else Typeface.NORMAL) or
+                    (if (cell.attributes.toInt() and 4 != 0) Typeface.ITALIC else Typeface.NORMAL)
+                paint.typeface = terminalTypefaces[style]
                 canvas.save(); canvas.clipRect(x, top, right, top + cellHeight)
-                canvas.drawText(cell.text, x, top + baseline, paint); canvas.restore()
-                paint.isFakeBoldText = false; paint.textSkewX = 0f; paint.alpha = 255
+                drawTerminalGlyph(canvas, cell.text, x, top + baseline, cellWidth * cell.width.toInt(), paint); canvas.restore()
+                paint.typeface = terminalTypefaces[Typeface.NORMAL]; paint.alpha = 255
             }
             if (cell.attributes.toInt() and 8 != 0) {
                 paint.color = cell.foreground.toInt()
