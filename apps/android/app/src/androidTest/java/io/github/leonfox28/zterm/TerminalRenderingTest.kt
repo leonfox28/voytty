@@ -117,7 +117,7 @@ class TerminalRenderingTest {
             val noAccent = frame.copy(rows = rows.map { row -> row.copy(cells = row.cells.map {
                 if (it.text == " \u0301") it.copy(text = " ") else it
             }) })
-            for (font in listOf(8, 12, 16)) {
+            for (font in listOf(10, 15, 20)) {
                 fun render(value: NativeFrame): Bitmap {
                     val view = liveView(value)
                     view.update(value, font)

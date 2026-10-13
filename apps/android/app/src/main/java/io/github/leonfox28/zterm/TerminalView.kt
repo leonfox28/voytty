@@ -77,7 +77,7 @@ internal class TerminalView(context: Context) : View(context) {
     private val underlinePath = Path()
     private val dotted = android.graphics.DashPathEffect(floatArrayOf(resources.displayMetrics.density,resources.displayMetrics.density*2),0f)
     private val dashed = android.graphics.DashPathEffect(floatArrayOf(resources.displayMetrics.density*3,resources.displayMetrics.density*2),0f)
-    private var font = 12
+    private var font = defaultTerminalFontSize
     private var cellWidth = 1f
     private var cellHeight = 1f
     private var baseline = 1f

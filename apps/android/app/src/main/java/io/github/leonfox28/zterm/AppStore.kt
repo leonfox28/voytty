@@ -24,12 +24,13 @@ internal data class SavedHost(
 ) {
     fun native() = NativeHost(id, name, relays)
 }
+internal const val defaultTerminalFontSize = 15
+internal val terminalFontSizes = 10..20
 internal data class Preferences(
-    val language: String = "system", val theme: String = "system", val fontSize: Int = 12,
+    val language: String = "system", val theme: String = "system", val fontSize: Int = defaultTerminalFontSize,
     val notificationsEnabled: Boolean = true, val notificationPermissionRequested: Boolean = false,
     val keepBackgroundConnection: Boolean = false,
 )
-internal val terminalFontSizes = 8..16
 internal data class RecentConnection(val host: String, val session: String)
 internal data class SavedState(
     val hosts: List<SavedHost> = emptyList(),
@@ -122,7 +123,7 @@ internal class AppStore(
             val settings = root.getJSONObject("preferences")
             val language = settings.getString("language").takeIf { it in setOf("system", "zh", "en") } ?: "system"
             val theme = settings.getString("theme").takeIf { it in setOf("system", "dark", "light") } ?: "system"
-            val font = settings.getInt("fontSize").takeIf { it in terminalFontSizes } ?: 12
+            val font = settings.getInt("fontSize").takeIf { it in terminalFontSizes } ?: defaultTerminalFontSize
             val recent = root.optJSONObject("recent")?.let {
                 val host = it.getString("host")
                 val session = it.getString("session")
