@@ -17,6 +17,8 @@ tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true
+filedescriptor.workspace = true
+mio.workspace = true
 
 [[test]]
 name = "pty_lifecycle"

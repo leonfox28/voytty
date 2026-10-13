@@ -8,27 +8,23 @@ mod session_fixture;
 mod state_fixture;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use zterm_core::terminal::TerminalSize;
 use zterm_core::{
-    AttachmentId, DeviceId, DomainErrorKind, OperationId, ResourceLimits, Revision, SessionName,
-    SessionSelector,
+    AttachmentId, DeviceId, DomainErrorKind, ResourceLimits, Revision, SessionName, SessionSelector,
 };
 use zterm_daemon::bootstrap::bootstrap;
 use zterm_daemon::config::{ValidatedInfrastructure, validate_setup_input};
-use zterm_daemon::lifecycle::run_owned_daemon_listener_for_test;
 use zterm_daemon::local_ipc::{
     LocalAttachmentClient, LocalAttachmentEvent, LocalClient, LocalIpcLimits, serve_local,
     serve_local_with_limits,
 };
 use zterm_daemon::service::DaemonService;
-use zterm_platform::local_unix::{
-    DaemonLock, bind_daemon_socket, bind_owned_daemon_socket, remove_own_socket,
-};
+use zterm_platform::local_unix::{DaemonLock, bind_daemon_socket, remove_own_socket};
 use zterm_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
 use zterm_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
 
@@ -506,7 +502,7 @@ async fn blocked_pty_input_does_not_stall_the_socket_runtime_or_an_unrelated_ses
                     ExplicitPtyCommand::new(&shell, &working_directory)
                         .arg("-c")
                         .arg(
-                            "printf 'BLOCK-READY\\r\\n'; stty -echo; trap '' HUP; while :; do sleep 1; done",
+                            "stty -echo; trap '' HUP; printf 'BLOCK-READY\\r\\n'; while :; do sleep 1; done",
                         )
                 } else {
                     ExplicitPtyCommand::new(&shell, &working_directory).arg("-i")
@@ -735,149 +731,6 @@ async fn listener_accept_failure_preserves_live_session_ownership_and_retryabili
         .map_err(session_fixture::display)?
         .map_err(session_fixture::display)?;
     remove_own_socket(&state.paths, &lock).map_err(session_fixture::display)?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn fatal_listener_exit_rebinds_actual_daemon_loop_until_owned_child_can_stop()
--> Result<(), String> {
-    let state = TestState::new();
-    let requested = validate_setup_input(
-        "fatal-listener-recovery",
-        ValidatedInfrastructure::OfficialN0,
-    )
-    .map_err(session_fixture::display)?;
-    let setup = bootstrap(&state.paths, &requested).map_err(session_fixture::display)?;
-    let lock = DaemonLock::try_acquire(&state.paths)
-        .map_err(session_fixture::display)?
-        .ok_or_else(|| "daemon lock unavailable".to_owned())?;
-    let (listener, socket_ownership) =
-        bind_owned_daemon_socket(&state.paths, &lock).map_err(session_fixture::display)?;
-    let shell = shell_path()?;
-    let cwd = state.paths.home().to_path_buf();
-    let process_id = Arc::new(Mutex::new(None));
-    let sessions = zterm_daemon::session::SessionService::with_spawner(
-        DeviceId::from_array([47; 32]),
-        ResourceLimits::default(),
-        {
-            let process_id = Arc::clone(&process_id);
-            move |size, requested| {
-                let working_directory = requested.unwrap_or(&cwd).to_path_buf();
-                let session = PtyHost::new()
-                    .spawn(
-                        ExplicitPtyCommand::new(&shell, &working_directory)
-                            .arg("-c")
-                            .arg("trap '' HUP; printf 'FATAL-OWNER-READY\\r\\n'; while :; do :; done"),
-                        PtySize::new(size.rows, size.columns),
-                    )
-                    .map_err(|error| {
-                        zterm_daemon::error::DaemonError::new(
-                            DomainErrorKind::InvalidWorkingDirectory,
-                            error.to_string(),
-                        )
-                    })?;
-                *process_id.lock().map_err(|_| {
-                    zterm_daemon::error::DaemonError::new(
-                        DomainErrorKind::StoreUnavailable,
-                        "fatal-listener fixture process lock poisoned",
-                    )
-                })? = session.process_id();
-                Ok((session, working_directory))
-            }
-        },
-    );
-    let principal = sessions.local_principal(AttachmentId::from_array([47; 16]));
-    let lease = sessions
-        .issue_operation_lease(principal)
-        .map_err(session_fixture::display)?;
-    let created = sessions
-        .create(
-            principal,
-            OperationId { lease, sequence: 1 },
-            SessionName::new("fatal-owner").map_err(session_fixture::display)?,
-            None,
-            Some(TerminalSize::new(24, 80)),
-        )
-        .map_err(session_fixture::display)?;
-    let ready = sessions
-        .prepare_attach(
-            principal,
-            Some(SessionSelector::Id(created.session_id)),
-            false,
-            false,
-            None,
-        )
-        .map_err(session_fixture::display)?;
-    session_fixture::activate(&ready)?;
-    session_fixture::wait_for_text(&ready.attachment, "FATAL-OWNER-READY")?;
-
-    let service = Arc::new(DaemonService::with_sessions(setup, 47, sessions));
-    let daemon_paths = state.paths.clone();
-    let daemon_service = Arc::clone(&service);
-    let server = std::thread::spawn(move || {
-        run_owned_daemon_listener_for_test(
-            &daemon_paths,
-            lock,
-            listener,
-            socket_ownership,
-            daemon_service,
-            LocalIpcLimits::for_test(Duration::from_secs(2))
-                .with_fatal_accept_failure_after_for_test(0),
-            Duration::from_millis(20),
-        )
-    });
-
-    let client = LocalClient::new(state.paths.socket());
-    let recovery_deadline = Instant::now() + Duration::from_secs(1);
-    let status = loop {
-        match client.status().await {
-            Ok(status) => break status,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    DomainErrorKind::DaemonStopped | DomainErrorKind::Cancelled
-                ) =>
-            {
-                if Instant::now() >= recovery_deadline {
-                    return Err("fatal listener never rebound its diagnostic socket".into());
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-            Err(error) => return Err(session_fixture::display(error)),
-        }
-    };
-    assert_eq!(status.active_session_count, 1);
-    assert_eq!(status.active_session_names, vec!["fatal-owner"]);
-    assert!(
-        !server.is_finished(),
-        "daemon exited while child ownership remained"
-    );
-    let process_id = process_id
-        .lock()
-        .map_err(|_| "process lock poisoned".to_owned())?
-        .ok_or_else(|| "fixture process ID missing".to_owned())?;
-    assert!(
-        nix::sys::signal::kill(
-            nix::unistd::Pid::from_raw(
-                i32::try_from(process_id).map_err(session_fixture::display)?
-            ),
-            None,
-        )
-        .is_ok(),
-        "recovered status must not outlive the retained child"
-    );
-
-    let stopped = client.stop(true).await.map_err(session_fixture::display)?;
-    assert!(stopped.stopping);
-    tokio::task::spawn_blocking(move || server.join())
-        .await
-        .map_err(session_fixture::display)?
-        .map_err(|_| "owned daemon listener thread panicked".to_owned())?
-        .map_err(session_fixture::display)?;
-    assert!(
-        !state.paths.socket().exists(),
-        "successful final stop owns socket removal"
-    );
     Ok(())
 }
 

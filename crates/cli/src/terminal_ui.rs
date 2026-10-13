@@ -1947,6 +1947,7 @@ mod unix {
 
         fn prefetch_live(&mut self) -> Option<TerminalHistoryWindowQuery> {
             if !self.is_live()
+                || self.discard_window_response
                 || self
                     .live_metrics
                     .is_none_or(|metrics| metrics.max_offset_from_bottom == 0)
@@ -1957,12 +1958,26 @@ mod unix {
         }
 
         fn refetch_history_window(&mut self) -> Option<TerminalHistoryWindowQuery> {
-            if !self.is_history() || self.window_cache.visible_rows().is_some() {
+            if !self.is_history()
+                || self.discard_window_response
+                || self.window_cache.visible_rows().is_some()
+            {
                 return None;
             }
             self.window_cache
                 .set_target(self.window_cache.desired_offset_from_bottom())
                 .request
+        }
+
+        fn set_history_target(&mut self, target: u64) -> ViewportCacheUpdate {
+            let mut update = self.window_cache.set_target(target);
+            if self.discard_window_response && update.request.take().is_some() {
+                // Invalidation retired the cache's correlation, not the
+                // client's outstanding request. Keep only the desired target
+                // until that obsolete response has actually been consumed.
+                self.window_cache.defer_pending_request();
+            }
+            update
         }
 
         fn effective_screen(&self, authoritative: ActiveScreen) -> ActiveScreen {
@@ -2131,7 +2146,7 @@ mod unix {
                 let target = u64::try_from(amount)
                     .unwrap_or(u64::MAX)
                     .min(anchor.max_offset_from_bottom);
-                let update = self.window_cache.set_target(target);
+                let update = self.set_history_target(target);
                 self.state = ViewportState::History(HistoryViewport { notice: None });
                 return history_window_effect(update);
             }
@@ -2152,7 +2167,7 @@ mod unix {
             if target == 0 {
                 return self.start_resume(Vec::new());
             }
-            history_window_effect(self.window_cache.set_target(target))
+            history_window_effect(self.set_history_target(target))
         }
 
         fn apply_view_history_window(
@@ -2161,7 +2176,13 @@ mod unix {
         ) -> Result<ViewportEffect, CliError> {
             if self.discard_window_response {
                 self.discard_window_response = false;
-                return Ok(ViewportEffect::None);
+                // The client has consumed the old reply and released its one
+                // request slot. Refill the latest desired view now; a gesture
+                // made while waiting must not need to be repeated.
+                return Ok(self
+                    .refetch_history_window()
+                    .or_else(|| self.prefetch_live())
+                    .map_or(ViewportEffect::None, ViewportEffect::RequestHistoryWindow));
             }
             if !self.window_cache.request_pending() {
                 return Err(terminal_daemon_error(
@@ -2231,19 +2252,17 @@ mod unix {
                 let Some(anchor) = self.window_cache.anchor() else {
                     return ViewportEffect::None;
                 };
-                let update = self
-                    .window_cache
-                    .set_target(offset.min(anchor.max_offset_from_bottom));
+                let update = self.set_history_target(offset.min(anchor.max_offset_from_bottom));
                 self.state = ViewportState::History(HistoryViewport { notice: None });
                 return history_window_effect(update);
             };
             if offset == 0 {
                 if self.drag_grab_row.is_some() {
-                    return history_window_effect(self.window_cache.set_target(0));
+                    return history_window_effect(self.set_history_target(0));
                 }
                 return self.start_resume(Vec::new());
             }
-            history_window_effect(self.window_cache.set_target(offset))
+            history_window_effect(self.set_history_target(offset))
         }
 
         fn scroll_metrics(&self) -> Option<TerminalScrollMetrics> {
@@ -4842,6 +4861,132 @@ mod unix {
         }
 
         #[test]
+        fn resumed_history_waits_for_old_response_and_keeps_latest_scroll_target() {
+            for drag in [false, true] {
+                let layout = ChromeLayout::new(TerminalSize::new(4, 10), ActiveScreen::Main);
+                let live = TerminalScrollMetrics {
+                    epoch: Revision::new(2),
+                    revision: Revision::new(7),
+                    offset_from_bottom: 0,
+                    max_offset_from_bottom: 10,
+                    viewport_rows: layout.child.rows,
+                };
+                let mut viewport = ViewportController::with_layout(layout, Some(live));
+                let first = viewport
+                    .prefetch_live()
+                    .expect("first request is in flight");
+                viewport.observe_sync_required();
+                viewport.observe_snapshot(Some(TerminalScrollMetrics {
+                    revision: Revision::new(8),
+                    ..live
+                }));
+                assert_eq!(viewport.finish_resume(), Some(Vec::new()));
+                assert!(
+                    viewport.prefetch_live().is_none(),
+                    "old reply still owns admission"
+                );
+                for target in 1..=3 {
+                    let effect = if drag {
+                        viewport.scroll_to_offset(target)
+                    } else {
+                        viewport.navigate(true, 1)
+                    };
+                    assert!(matches!(effect, ViewportEffect::None));
+                    assert_eq!(viewport.window_cache.desired_offset_from_bottom(), target);
+                }
+                let ViewportEffect::RequestHistoryWindow(next) = viewport
+                    .apply_view_history_window(TerminalSurfaceHistoryWindowResult::HistoryGap {
+                        epoch: first.anchor.epoch,
+                        revision: first.anchor.revision,
+                    })
+                    .expect("late obsolete response is discarded")
+                else {
+                    panic!("the latest target must be requested after the old reply");
+                };
+                assert_eq!(next.target_offset_from_bottom, 3);
+                assert_eq!(next.anchor.revision, Revision::new(8));
+                assert!(
+                    viewport.refetch_history_window().is_none(),
+                    "only one refill"
+                );
+                let shape = next.response_shape(next.anchor).expect("valid query");
+                let effect = viewport
+                    .apply_view_history_window(TerminalSurfaceHistoryWindowResult::Frame(
+                        TerminalSurfaceHistoryWindowFrame {
+                            colors: Default::default(),
+                            disposition: shape.disposition,
+                            anchor: next.anchor,
+                            target_offset_from_bottom: shape.target_offset_from_bottom,
+                            first_row_from_live_top: shape.first_row_from_live_top,
+                            rows: (0..shape.row_count)
+                                .map(|_| {
+                                    test_row(
+                                        next.anchor.viewport.columns,
+                                        "history",
+                                        TerminalStyle::default(),
+                                    )
+                                })
+                                .collect(),
+                        },
+                    ))
+                    .expect("current response is correlated and usable");
+                assert!(matches!(effect, ViewportEffect::Render));
+                assert!(viewport.has_complete_cached_viewport());
+                assert!(matches!(
+                    viewport.begin_resume(b"x".to_vec()).expect("input resumes"),
+                    ViewportEffect::Resume
+                ));
+                viewport.observe_snapshot(Some(live));
+                assert_eq!(viewport.finish_resume(), Some(b"x".to_vec()));
+            }
+        }
+
+        #[test]
+        fn obsolete_history_response_during_repeated_resume_waits_for_active() {
+            let layout = ChromeLayout::new(TerminalSize::new(4, 10), ActiveScreen::Main);
+            let live = TerminalScrollMetrics {
+                epoch: Revision::new(2),
+                revision: Revision::new(7),
+                offset_from_bottom: 0,
+                max_offset_from_bottom: 10,
+                viewport_rows: layout.child.rows,
+            };
+            let mut viewport = ViewportController::with_layout(layout, Some(live));
+            viewport
+                .prefetch_live()
+                .expect("first request is in flight");
+            viewport.observe_sync_required();
+            viewport.start_resume(Vec::new());
+            assert!(
+                viewport.discard_window_response,
+                "second invalidation retains correlation"
+            );
+            assert!(matches!(
+                viewport
+                    .apply_view_history_window(TerminalSurfaceHistoryWindowResult::HistoryGap {
+                        epoch: live.epoch,
+                        revision: live.revision,
+                    })
+                    .expect("obsolete response is still expected"),
+                ViewportEffect::None
+            ));
+            assert!(
+                viewport.prefetch_live().is_none(),
+                "resume has no live anchor yet"
+            );
+            viewport.observe_snapshot(Some(live));
+            assert_eq!(viewport.finish_resume(), Some(Vec::new()));
+            assert!(
+                viewport.prefetch_live().is_some(),
+                "one refill after Active"
+            );
+            assert!(
+                viewport.prefetch_live().is_none(),
+                "refill is not duplicated"
+            );
+        }
+
+        #[test]
         fn live_prefetch_after_sync_resume_discards_the_overlapped_response() {
             let physical = TerminalSize::new(4, 10);
             let layout = ChromeLayout::new(physical, ActiveScreen::Main);
@@ -4869,13 +5014,12 @@ mod unix {
                 ..live
             }));
             assert_eq!(viewport.finish_resume(), Some(Vec::new()));
-            viewport
-                .prefetch_live()
-                .expect("the resumed live view asks again");
-            // The terminal driver rejects that overlap locally; the frontend
-            // defers it. The late first response must then be dropped rather
-            // than treated as unsolicited.
-            viewport.window_cache.defer_pending_request();
+            assert!(
+                viewport.prefetch_live().is_none(),
+                "the resumed view waits for the old request to release admission"
+            );
+            // The late first response is dropped, and its completion releases
+            // exactly one replacement prefetch for the current anchor.
             let shape = first.response_shape(first.anchor).expect("valid query");
             let rows = (0..shape.row_count)
                 .map(|index| {
@@ -4897,11 +5041,12 @@ mod unix {
                         rows,
                     },
                 )),
-                Ok(ViewportEffect::None)
+                Ok(ViewportEffect::RequestHistoryWindow(query))
+                    if query.anchor.revision == Revision::new(8)
             ));
             assert!(
-                viewport.prefetch_live().is_some(),
-                "a later prefetch is admitted again"
+                viewport.prefetch_live().is_none(),
+                "the replacement prefetch remains the only pending request"
             );
         }
 

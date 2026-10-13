@@ -413,10 +413,17 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
+    fn private_home() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .expect("private account home")
+    }
+
     #[test]
     fn both_managers_are_opt_in_idempotent_and_remove_only_owned_files() {
         for manager in [Manager::LaunchAgent, Manager::Systemd] {
-            let temp = tempfile::tempdir().expect("fixture");
+            let temp = private_home();
             let owner = Autostart {
                 home: temp.path().into(),
                 uid: nix::unistd::Uid::effective().as_raw(),
@@ -480,7 +487,7 @@ mod tests {
 
     #[test]
     fn symlinks_and_writable_directories_are_rejected() {
-        let temp = tempfile::tempdir().expect("fixture");
+        let temp = private_home();
         let owner = Autostart {
             home: temp.path().into(),
             uid: nix::unistd::Uid::effective().as_raw(),

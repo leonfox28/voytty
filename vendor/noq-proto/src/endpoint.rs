@@ -35,6 +35,9 @@ use crate::{
     transport_parameters::{PreferredAddress, TransportParameters},
 };
 
+mod retired_initials;
+use retired_initials::{InitialKey, RetiredInitials};
+
 /// The main entry point to the library
 ///
 /// This object performs no I/O whatsoever. Instead, it consumes incoming packets and
@@ -53,6 +56,8 @@ pub struct Endpoint {
     /// Buffered Initial and 0-RTT messages for pending incoming connections
     incoming_buffers: Slab<IncomingBuffer>,
     all_incoming_buffers_total_bytes: u64,
+    /// Recently drained server Initial identities, without connection/crypto state.
+    retired_initials: RetiredInitials,
 }
 
 impl Endpoint {
@@ -79,6 +84,7 @@ impl Endpoint {
             last_stateless_reset: None,
             incoming_buffers: Slab::new(),
             all_incoming_buffers_total_bytes: 0,
+            retired_initials: RetiredInitials::default(),
         }
     }
 
@@ -138,6 +144,18 @@ impl Endpoint {
             }
             Drained => {
                 if let Some(conn) = self.connections.try_remove(ch.0) {
+                    if conn.side.is_server()
+                        && let Some(config) = &self.server_config
+                    {
+                        self.retired_initials.insert(
+                            InitialKey {
+                                version: conn.version,
+                                dst_cid: conn.init_cid,
+                                src_cid: conn.initial_remote_cid,
+                            },
+                            config.time_source.now(),
+                        );
+                    }
                     self.index.remove(&conn);
                 } else {
                     // This indicates a bug in downstream code, which could cause spurious
@@ -455,6 +473,18 @@ impl Endpoint {
 
         if datagram_len < MIN_INITIAL_SIZE as usize {
             debug!("ignoring short initial for connection {}", dst_cid);
+            return None;
+        }
+
+        if self.retired_initials.contains(
+            &InitialKey {
+                version: header.version,
+                dst_cid,
+                src_cid: header.src_cid,
+            },
+            server_config.time_source.now(),
+        ) {
+            trace!("ignoring delayed Initial for a drained connection");
             return None;
         }
 
@@ -888,6 +918,8 @@ impl Endpoint {
 
         let id = self.connections.insert(ConnectionMeta {
             init_cid,
+            initial_remote_cid: remote_cid,
+            version,
             local_cids: FxHashMap::from_iter([(PathId::ZERO, path_cids)]),
             network_path,
             side,
@@ -1182,6 +1214,8 @@ impl ConnectionIndex {
 #[derive(Debug)]
 pub(crate) struct ConnectionMeta {
     init_cid: ConnectionId,
+    initial_remote_cid: ConnectionId,
+    version: u32,
     /// Locally issues CIDs for each path
     local_cids: FxHashMap<PathId, PathLocalCids>,
     /// Remote/local addresses the connection began with

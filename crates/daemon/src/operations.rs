@@ -2524,20 +2524,12 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn identity_reset_uses_one_deadline_for_socket_and_daemon_lock_release() {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::os::unix::fs::PermissionsExt;
 
         use zterm_platform::user_state::FileLock;
 
-        let temporary = tempfile::tempdir().expect("temporary root");
-        let home = temporary.path().join("home");
-        fs::create_dir(&home).expect("test home");
-        let uid = fs::metadata(&home).expect("home metadata").uid();
-        let paths = UserPaths::for_test(
-            uid,
-            home.clone(),
-            home.join(".zterm"),
-            temporary.path().join("runtime"),
-        );
+        let state = crate::state_fixture::TestState::new();
+        let paths = state.paths.clone();
         paths.prepare_state_directories().expect("state dirs");
         let runtime = LocalRuntime::for_test(
             paths.clone(),

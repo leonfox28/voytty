@@ -2242,6 +2242,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "30d65c71f1ce40ab09135ce117d742b9f8a19ff91a41a8b57ed50bc2de59c427"
 dependencies = [
  "libc",
+ "log",
  "wasi",
  "windows-sys 0.61.2",
 ]
@@ -5833,6 +5834,8 @@ dependencies = [
 name = "zterm-platform"
 version = "0.1.39"
 dependencies = [
+ "filedescriptor",
+ "mio",
  "nix 0.28.0",
  "portable-pty",
  "serde",

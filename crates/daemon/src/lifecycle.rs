@@ -681,3 +681,7 @@ mod tests {
         assert_eq!(runtime.block_on(task).expect("spawned task joins"), 17);
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "lifecycle_recovery_tests.rs"]
+mod recovery_tests;

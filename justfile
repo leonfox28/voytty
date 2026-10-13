@@ -50,6 +50,7 @@ ci-policy:
     sh tests/secret-scan.sh
     sh tests/secret-scan-fixture.sh
     PYTHONDONTWRITEBYTECODE=1 python3 tests/ci/workflow_policy_test.py
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/e2e/multi_device_audit_test.py
     sh tests/ci/trim-cache-fixture.sh
     actionlint
     sh tests/release/static.sh

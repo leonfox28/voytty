@@ -126,8 +126,7 @@ pub(crate) mod local {
 }
 
 #[cfg(all(test, unix))]
-#[path = "../tests/support/state_fixture.rs"]
-mod state_fixture;
+use crate::state_fixture;
 
 #[cfg(all(test, unix))]
 mod tests {
