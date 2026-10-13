@@ -233,6 +233,12 @@ pub(crate) struct TerminalDriverInterrupt {
 }
 
 impl TerminalDriverInterrupt {
+    #[cfg(test)]
+    pub(crate) fn with_child_cleanup_blocked_for_test(&self, blocked: impl FnOnce()) {
+        let _child = cleanup_lock(&self.child);
+        blocked();
+    }
+
     pub(crate) fn close_explicitly(&self) -> Result<PtyExitStatus, TerminalDriverError> {
         Ok(cleanup_lock(&self.child).close_explicitly()?)
     }

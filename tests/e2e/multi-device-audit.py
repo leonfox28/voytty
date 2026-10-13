@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Audit retained matrix evidence without contacting or modifying test devices.
 
-Usage: python3 tests/e2e/multi-device-audit.py RUN_ID [RUN_ID ...]
+Usage: python3 tests/e2e/multi-device-audit.py [--soak-seconds SECONDS] RUN_ID [RUN_ID ...]
 Writes acceptance-audit.json next to each run's unchanged raw evidence.
 """
+import argparse
 import collections
 import hashlib
 import importlib.util
@@ -21,11 +22,16 @@ base = md.BASE
 # Older runs recorded evidence relative to the repository; current runs record
 # absolute paths, which this join leaves unchanged.
 workspace = Path(__file__).resolve().parents[2]
-if len(sys.argv) < 2:
-    sys.exit('usage: multi-device-audit.py RUN_ID [RUN_ID ...]')
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--soak-seconds', type=int, default=3600,
+                    help='required stability duration; must match the run plan (default: 3600)')
+parser.add_argument('run_ids', nargs='+')
+args = parser.parse_args()
+if args.soak_seconds <= 0:
+    parser.error('soak-seconds must be positive')
 exit_status = 0
 keys = ('scenario', 'host', 'old', 'new', 'path', 'iteration')
-for name in sys.argv[1:]:
+for name in args.run_ids:
     root = base / name
     if root.parent.resolve() != base.resolve():
         sys.exit(f'run IDs must name one directory below {base}')
@@ -269,7 +275,13 @@ for name in sys.argv[1:]:
         soak = json.loads(soak_file.read_text())
         actions = soak.get('actions', [])
         soak_counts = collections.Counter(action['status'] for action in actions)
-        completed_hour = soak['seconds'] >= 3600 and not soak.get('error')
+        seconds = soak['seconds']
+        valid_duration = type(seconds) in (int, float) and math.isfinite(seconds) and not soak.get('error')
+        completed_hour = valid_duration and seconds >= 3600
+        completed_required = valid_duration and seconds >= args.soak_seconds
+        planned_seconds = manifest.get('soak_seconds', 3600)
+        if type(planned_seconds) is not int or planned_seconds != args.soak_seconds:
+            issues.append({'issue': 'soak duration requirement differs from the recorded run plan'})
         fixtures = []
         for host, session in zip(('A', 'B'), soak.get('sessions', [])):
             fixture = root / ('soak-' + host)
@@ -287,9 +299,9 @@ for name in sys.argv[1:]:
             fixtures.append({'host': host, 'session': session, 'execution_records': len(records),
                              'continuity_proof_valid': valid, 'original_session_retained': retained,
                              'counter_first_last': [counters[0], counters[-1]] if counters else []})
-            if completed_hour and not (valid and retained):
+            if completed_required and not (valid and retained):
                 issues.append({'issue': 'completed soak lacks original-session continuity proof', 'host': host})
-        if completed_hour and (len(fixtures) != 2 or {a['host'] for a in actions} != {'A', 'B'}):
+        if completed_required and (len(fixtures) != 2 or {a['host'] for a in actions} != {'A', 'B'}):
             issues.append({'issue': 'completed soak does not cover both hosts'})
         for action in actions:
             label = f"soak-{action['host']}/action-{action['iteration']:04}"
@@ -307,10 +319,12 @@ for name in sys.argv[1:]:
                 evidence = root / ('soak-' + action['host']) / f"failed-action-{action['iteration']:04}"
                 if not (evidence / 'outcome-reconciliation.json').exists():
                     issues.append({'case': label, 'issue': 'unknown soak operation lacks read-only reconciliation'})
-        if soak['status'] == 'passed' and (not completed_hour or any(a['status'] != 'passed' for a in actions)
+        if soak['status'] == 'passed' and (not completed_required or any(a['status'] != 'passed' for a in actions)
                                           or soak.get('connection_failures')):
             issues.append({'issue': 'soak pass contradicts duration or recorded failures'})
         report['soak'] = {'seconds': soak['seconds'], 'completed_60_minutes': completed_hour,
+                          'required_seconds': args.soak_seconds, 'planned_seconds': planned_seconds,
+                          'completed_required_duration': completed_required,
                           'status': soak['status'], 'action_counts': dict(soak_counts),
                           'seed': soak['seed'], 'fixtures': fixtures,
                           'connection_failures': len(soak.get('connection_failures', []))}

@@ -41,6 +41,10 @@ pub mod store;
 pub mod terminal_driver;
 pub mod transport;
 
+#[cfg(all(test, unix))]
+#[path = "../tests/support/state_fixture.rs"]
+mod state_fixture;
+
 /// Static workspace build information.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BootstrapStatus {

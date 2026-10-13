@@ -497,6 +497,20 @@ impl SessionService {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_child_cleanup_blocked_for_test(
+        &self,
+        session_id: SessionId,
+        blocked: impl FnOnce(),
+    ) -> Result<(), DaemonError> {
+        self.inner
+            .entry(session_id)?
+            .actor
+            .interrupt
+            .with_child_cleanup_blocked_for_test(blocked);
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn panic_next_creation_after_spawn_for_test(&self) {
         self.panic_creation_after_spawn
             .store(true, Ordering::Release);

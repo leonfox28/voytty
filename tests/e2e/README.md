@@ -307,6 +307,14 @@ for inconsistent evidence; product failures remain distinct from audit errors. S
 [the acceptance record](../../docs/verification/multi-device.md) for measured
 results and remaining gates.
 
+The audit requires one hour of stability by default. When a different duration
+was agreed before the run, pass it explicitly, for example
+`python3 tests/e2e/multi-device-audit.py --soak-seconds 600 RUN_ID` for a ten-minute
+run. The requirement must match the manifest's `soak_seconds`; original-session,
+both-host, unique-execution and failure checks still apply. The report records
+the required duration separately from `completed_60_minutes`, so a shorter run
+cannot become one-hour evidence. Offline audit regressions run in `just ci-policy`.
+
 The separate privileged `iroh_network_gate` normally runs in its Docker image
 with `eth0` as public egress. When running that test directly inside an owned
 Lima guest, set `ZTERM_GATE_EGRESS_INTERFACE` to the actual default-route device

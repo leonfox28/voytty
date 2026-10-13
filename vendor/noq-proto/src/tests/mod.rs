@@ -60,6 +60,7 @@ mod multipath;
 mod proptests;
 #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 mod random_interaction;
+mod retired_initials;
 mod stateless_reset;
 mod token;
 

@@ -92,7 +92,37 @@ of every historical A/B/C timeout. Related upstream report:
 [RFC 9000 §10.3](https://www.rfc-editor.org/rfc/rfc9000.html#section-10.3) and
 [multipath draft §3.4](https://www.ietf.org/archive/id/draft-ietf-quic-multipath-21.html#section-3.4).
 
+A fourth correction prevents a delayed duplicate Initial from being admitted
+again after its server connection has drained (verification R12/P46). Direct
+and Relay can deliver the same Initial at different times; the old initial-CID
+index disappeared after the Direct connection closed, allowing the Relay copy
+to occupy another application authentication slot until its ten-second timeout.
+
+The endpoint retains at most 1024 retired Initial identities for 60 seconds,
+scoped to both initial CIDs and QUIC version, independent of the transport's
+addresses, like the live initial-CID index. Iroh exposes a Direct IP address and
+a synthetic Relay IPv6 address for the same handshake; including the address
+pair in the first candidate's key incorrectly admitted those cross-path copies.
+It uses the existing server-configurable time source, allowing deterministic
+expiry tests. Duplicate arrivals do not extend retention or keep any Connection,
+crypto state, or timer alive. A fresh handshake with new CIDs is admitted
+normally. Expiry and FIFO capacity eviction restore normal admission; this is a
+bounded duplicate filter, not a general replay-protection guarantee. Existing
+live-connection routing takes precedence. No transport or application deadline
+is increased. Initial CID negotiation follows [RFC 9000 section 7.2](https://www.rfc-editor.org/rfc/rfc9000.html#section-7.2).
+
+The real-packet regression in `src/tests/retired_initials.rs` connects and drains
+both endpoints, then delivers the saved Initial 275 ms later, including via a
+different remote/local address pair. Same-path filtering alone passed its initial
+unit test but still produced ten-second inbound timeouts in the three-device
+run; the added cross-path regression fails that first candidate. Other regressions
+cover fresh connections, other peers' new handshakes, expiry, identity scope,
+capacity and replay non-refresh. Evidence
+is outside build outputs at
+`~/.local/state/zterm-verification/checks/sequential-fixes-20261013/r12-*.log`.
+Product acceptance remains separate from these library regressions.
+
 Remove these corrections once the selected upstream release includes equivalent
-connection-wide idle reset, abandoned-path idle, and active-path stateless reset
-behavior, after rerunning the regressions and multi-device recovery cases.
+connection-wide idle reset, abandoned-path idle, active-path stateless reset,
+and delayed retired-Initial handling, after rerunning the regressions and multi-device recovery cases.
 Do not replace them with longer test deadlines.

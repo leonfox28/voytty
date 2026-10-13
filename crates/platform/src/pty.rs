@@ -4,9 +4,30 @@ use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 
 use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty};
+
+#[cfg(unix)]
+mod unix_io;
+
+#[derive(Default)]
+struct InputStop {
+    stopped: AtomicBool,
+    #[cfg(unix)]
+    wake: Option<mio::Waker>,
+}
+
+impl InputStop {
+    fn stop(&self) {
+        self.stopped.store(true, Ordering::Release);
+        #[cfg(unix)]
+        if let Some(wake) = &self.wake {
+            let _ = wake.wake();
+        }
+    }
+}
 
 #[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
 const HOSTED_TERM: &str = "xterm-256color";
@@ -360,6 +381,11 @@ impl PtyHost {
             .master
             .take_writer()
             .map_err(|error| operation_error(PtyOperation::TakeWriter, error))?;
+        #[cfg(not(unix))]
+        let input_stopped = Arc::new(InputStop::default());
+        #[cfg(unix)]
+        let (reader, writer, input_stopped) = unix_io::interruptible(&*pair.master, reader, writer)
+            .map_err(|error| operation_error(PtyOperation::Open, error))?;
         let child = pair
             .slave
             .spawn_command(builder)
@@ -371,6 +397,7 @@ impl PtyHost {
             writer,
             child,
             finished: None,
+            input_stopped,
         })
     }
 }
@@ -385,6 +412,7 @@ pub struct PtySession {
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     finished: Option<PtyExitStatus>,
+    input_stopped: Arc<InputStop>,
 }
 
 /// PTY input and resize capability separated from root-child control.
@@ -423,6 +451,7 @@ impl PtyIo {
 pub struct PtyChild {
     child: Box<dyn Child + Send + Sync>,
     finished: Option<PtyExitStatus>,
+    input_stopped: Arc<InputStop>,
 }
 
 /// Cloneable, non-waiting child interruption capability.
@@ -434,11 +463,13 @@ pub struct PtyChild {
 #[derive(Clone)]
 pub struct PtyChildInterrupt {
     killer: Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>>,
+    input_stopped: Arc<InputStop>,
 }
 
 impl PtyChildInterrupt {
     /// Requests child termination without waiting or contending indefinitely.
     pub fn interrupt(&self) -> Result<(), PtyError> {
+        self.input_stopped.stop();
         let mut killer = match self.killer.try_lock() {
             Ok(killer) => killer,
             Err(TryLockError::Poisoned(poisoned)) => {
@@ -498,6 +529,7 @@ impl PtyChild {
 
     /// Explicitly terminates and reaps the root child.
     pub fn close_explicitly(&mut self) -> Result<PtyExitStatus, PtyError> {
+        self.input_stopped.stop();
         if let PtyChildState::Exited(status) = self.try_wait()? {
             return Ok(status);
         }
@@ -533,6 +565,7 @@ impl PtySession {
         let reader = self.reader.take().ok_or(PtyError::ReaderAlreadyTaken)?;
         let interrupt = PtyChildInterrupt {
             killer: Arc::new(Mutex::new(self.child.clone_killer())),
+            input_stopped: Arc::clone(&self.input_stopped),
         };
         Ok(PtyDriverParts {
             reader,
@@ -543,6 +576,7 @@ impl PtySession {
             child: PtyChild {
                 child: self.child,
                 finished: self.finished,
+                input_stopped: self.input_stopped,
             },
             interrupt,
         })
@@ -614,6 +648,7 @@ impl PtySession {
     ///
     /// Zterm adds no signal escalation or process-group policy here.
     pub fn close_explicitly(&mut self) -> Result<PtyExitStatus, PtyError> {
+        self.input_stopped.stop();
         if let PtyChildState::Exited(status) = self.try_wait()? {
             return Ok(status);
         }
