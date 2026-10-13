@@ -266,9 +266,14 @@ impl RemoteUnaryDemand for BrokerRemoteUnaryDemand {
                         "remote Session request finish failed",
                     ))
                 })?;
-                read_acknowledged_response(&mut stream.recv, deadline, acknowledgement, || {
-                    replacement = Some(self.demand.dial_replacement(deadline));
-                })
+                read_acknowledged_response(
+                    &mut stream.recv,
+                    deadline,
+                    acknowledgement.as_ref(),
+                    || {
+                        replacement = Some(self.demand.dial_replacement(deadline));
+                    },
+                )
                 .await
             }
             .await;
@@ -277,7 +282,11 @@ impl RemoteUnaryDemand for BrokerRemoteUnaryDemand {
                 .as_ref()
                 .is_err_and(RemoteAttemptError::is_transport_failure_after_write)
             {
-                self.demand.retire_idle_candidate(candidate, replacement);
+                let silent = acknowledgement
+                    .as_ref()
+                    .is_some_and(RequestAcknowledgement::silent);
+                self.demand
+                    .retire_failed_candidate(candidate, replacement, silent);
             }
             result
         })

@@ -305,8 +305,12 @@ A live host acknowledges a request at the QUIC layer within about one round
 trip, even while its service is still working. When a retry is allowed and the
 connection acknowledges nothing for four path round trips (at least one second,
 at most half the remaining time), the first attempt counts as a transport
-ambiguity. If nothing else uses that connection, it is retired and the retry
-uses a fresh connection within the same deadline.
+ambiguity. That connection is retired and the retry uses a fresh connection
+within the same deadline. The count covers the whole connection, so this
+happens even while a terminal attachment uses it: nothing on the connection
+reaches the host, and the attachment reconnects at once instead of after the
+QUIC idle timeout. A request that fails after its write on a connection the
+host still acknowledges retires that connection only if nothing else uses it.
 This covers a host that restarted on another Relay or address while the client
 kept its old connection. Lease allocation and the retry itself still wait for
 the full deadline.

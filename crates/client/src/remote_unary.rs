@@ -408,7 +408,8 @@ pub enum RemoteAttemptError {
 
 impl RemoteAttemptError {
     /// A submitted request failed to obtain a transport response. Adapters may
-    /// retire that exact connection if it is idle, without changing replay
+    /// retire that exact connection if it is idle, or if it stayed silent (see
+    /// [`RequestAcknowledgement::silent`]), without changing replay
     /// classification or the original absolute deadline. A framed service
     /// error is a response, so it never passes through this classification.
     #[must_use]
@@ -507,6 +508,14 @@ impl RequestAcknowledgement {
     fn acknowledged(&self) -> bool {
         acknowledgements(&self.connection) > self.received
     }
+
+    /// Whether the peer has acknowledged nothing on the whole connection since
+    /// the sample. After a failed request this means no stream on it, such as
+    /// a terminal attachment, can reach the peer either.
+    #[must_use]
+    pub fn silent(&self) -> bool {
+        !self.acknowledged()
+    }
 }
 
 const MIN_ACKNOWLEDGEMENT_WINDOW: Duration = Duration::from_secs(1);
@@ -524,7 +533,7 @@ fn acknowledgements(connection: &iroh::endpoint::Connection) -> u64 {
 pub async fn read_acknowledged_response<Reader>(
     reader: &mut Reader,
     deadline: Instant,
-    acknowledgement: Option<RequestAcknowledgement>,
+    acknowledgement: Option<&RequestAcknowledgement>,
     dial_replacement: impl FnOnce(),
 ) -> Result<DecodedFrame, RemoteAttemptError>
 where

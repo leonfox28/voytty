@@ -1598,12 +1598,15 @@ impl ConnectionDemand {
     }
 
     /// Retires only this failed, still-selected transport when neither outbound
-    /// streams nor inbound handlers use it. Never wait past a request deadline.
+    /// streams nor inbound handlers use it, or when it stayed `silent`: then
+    /// those streams cannot reach the peer either, and they fail now instead
+    /// of at the QUIC idle timeout. Never wait past a request deadline.
     /// The next outbound dial races any `replacement` against a fresh one.
-    pub(crate) fn retire_idle_candidate(
+    pub(crate) fn retire_failed_candidate(
         &self,
         failed: ConnectionCandidateKey,
         replacement: Option<ReplacementTransport>,
+        silent: bool,
     ) {
         let Ok(mut state) = self.slot.state.try_lock() else {
             return;
@@ -1622,16 +1625,13 @@ impl ConnectionDemand {
             return;
         };
         // Acquiring all permits makes the idle check atomic with admission in
-        // both directions. A busy terminal/upload must keep its connection.
-        let Ok(_streams) = Arc::clone(&candidate.admission.streams).try_acquire_many_owned(streams)
-        else {
+        // both directions. A busy terminal/upload keeps a connection that the
+        // peer still acknowledges.
+        let streams = Arc::clone(&candidate.admission.streams).try_acquire_many_owned(streams);
+        let handlers = Arc::clone(&candidate.admission.handlers).try_acquire_many_owned(handlers);
+        if (streams.is_err() || handlers.is_err()) && !silent {
             return;
-        };
-        let Ok(_handlers) =
-            Arc::clone(&candidate.admission.handlers).try_acquire_many_owned(handlers)
-        else {
-            return;
-        };
+        }
         state.candidates.remove(failed);
         if state.candidates.is_empty() {
             state.remote_acceptance = None;

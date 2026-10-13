@@ -406,7 +406,7 @@ async fn retired_connection_retry_adopts_the_replacement_transport() {
         2,
         "the replacement reached the host"
     );
-    demand.retire_idle_candidate(old, Some(replacement));
+    demand.retire_failed_candidate(old, Some(replacement), false);
     fixture
         .query(3)
         .await
@@ -440,7 +440,7 @@ async fn failed_idle_query_reconnects_and_late_failure_cannot_retire_replacement
         .demand(fixture.remote, Instant::now() + Duration::from_secs(5))
         .await
         .expect("demand");
-    demand.retire_idle_candidate(old, None);
+    demand.retire_failed_candidate(old, None, false);
     fixture
         .query(4)
         .await
@@ -528,6 +528,47 @@ async fn query_timeout_preserves_another_outbound_stream() {
 #[tokio::test]
 async fn query_timeout_preserves_an_inbound_handler() {
     preserves_live_stream(true, false).await;
+}
+
+/// A failed request whose connection acknowledged nothing retires it even
+/// beside another stream, which cannot reach the host either.
+#[tokio::test]
+async fn silent_failed_candidate_is_retired_beside_a_live_stream() {
+    let fixture = Fixture::new().await;
+    fixture.query(1).await.expect("warm query");
+    let old = fixture
+        .broker
+        .peer_observation(fixture.remote)
+        .await
+        .primary
+        .expect("primary");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let demand = fixture
+        .broker
+        .demand(fixture.remote, deadline)
+        .await
+        .expect("demand");
+    let mut held = demand
+        .open_bi(StreamPurpose::Service, deadline)
+        .await
+        .expect("held outbound stream");
+    echo(&mut held.send, &mut held.recv, fixture.remote).await;
+    demand.retire_failed_candidate(old, None, true);
+    let ended = tokio::time::timeout(Duration::from_secs(1), held.recv.read(&mut [0_u8; 1]))
+        .await
+        .expect("the held stream ends promptly");
+    assert!(
+        ended.is_err(),
+        "the held stream reports its connection lost"
+    );
+    fixture
+        .query(3)
+        .await
+        .expect("the next query dials a fresh connection");
+    assert_eq!(fixture.connections.load(Ordering::SeqCst), 2);
+    drop(held);
+    drop(demand);
+    fixture.close().await;
 }
 
 #[tokio::test]

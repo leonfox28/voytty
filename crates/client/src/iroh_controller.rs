@@ -520,22 +520,28 @@ impl IrohController {
         })
     }
 
-    /// The next dial for this peer races any replacement against a fresh dial.
-    fn retire_idle_connection(
+    /// Retires a failed request's cached connection if no other stream uses
+    /// it, or if it stayed `silent`: then its other streams cannot reach the
+    /// peer either, and they fail now and reconnect instead of at the QUIC
+    /// idle timeout. The next dial for this peer races any replacement
+    /// against a fresh dial.
+    fn retire_failed_connection(
         &self,
         peer: &Peer,
         failed: usize,
         replacement: Option<ReplacementTransport>,
+        silent: bool,
     ) {
         let Ok(maximum) = u32::try_from(self.inner.limits.max_bi_streams_per_connection) else {
             return;
         };
-        // Own every admission permit while removing the cache entry. Merely
-        // reading available_permits would race another stream's admission.
-        // Cleanup must not wait beyond the failed request's deadline.
-        let Ok(_idle) = Arc::clone(&peer.streams).try_acquire_many_owned(maximum) else {
+        // Own every admission permit while removing an idle cache entry.
+        // Merely reading available_permits would race another stream's
+        // admission. Cleanup must not wait beyond the failed request's deadline.
+        let idle = Arc::clone(&peer.streams).try_acquire_many_owned(maximum);
+        if idle.is_err() && !silent {
             return;
-        };
+        }
         let Ok(mut slot) = peer.normal.try_lock() else {
             return;
         };
@@ -548,11 +554,11 @@ impl IrohController {
                 &normal.diagnostic,
                 &normal.connection,
                 zterm_diagnostics::Stage::RetiringTransport,
-                Some(0),
+                idle.is_ok().then_some(0),
             );
             normal
                 .connection
-                .close(VarInt::from_u32(0), b"idle request transport failed");
+                .close(VarInt::from_u32(0), b"request transport failed");
             *peer
                 .replacement
                 .lock()
@@ -826,13 +832,18 @@ impl RemoteUnaryDemand for IrohDemand {
                 stream.send.finish().map_err(|_| {
                     RemoteAttemptError::PostWrite(unavailable("Session request finish failed"))
                 })?;
-                read_acknowledged_response(&mut stream.recv, deadline, acknowledgement, || {
-                    replacement = Some(self.controller.dial_replacement(
-                        self.remote,
-                        &self.peer,
-                        deadline,
-                    ));
-                })
+                read_acknowledged_response(
+                    &mut stream.recv,
+                    deadline,
+                    acknowledgement.as_ref(),
+                    || {
+                        replacement = Some(self.controller.dial_replacement(
+                            self.remote,
+                            &self.peer,
+                            deadline,
+                        ));
+                    },
+                )
                 .await
             }
             .await;
@@ -841,8 +852,15 @@ impl RemoteUnaryDemand for IrohDemand {
                 .as_ref()
                 .is_err_and(RemoteAttemptError::is_transport_failure_after_write)
             {
-                self.controller
-                    .retire_idle_connection(&self.peer, connection, replacement);
+                let silent = acknowledgement
+                    .as_ref()
+                    .is_some_and(RequestAcknowledgement::silent);
+                self.controller.retire_failed_connection(
+                    &self.peer,
+                    connection,
+                    replacement,
+                    silent,
+                );
             }
             result
         })
