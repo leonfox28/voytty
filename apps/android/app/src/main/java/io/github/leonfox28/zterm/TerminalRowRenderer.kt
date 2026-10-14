@@ -28,7 +28,7 @@ internal class TerminalRowRenderer {
     @RequiresApi(29)
     private class HardwareRows {
         // Ordinals locate a row; they do not identify its drawing. A resized TUI
-        // can put identical text at a different ordinal after the local pan.
+        // can put identical text at a different ordinal after a resize.
         private class Content(val cells: List<NativeCell>, val width: Int, val height: Int) {
             private val hash = (cells.hashCode() * 31 + width) * 31 + height
             override fun hashCode() = hash

@@ -232,6 +232,17 @@ impl AlacrittyEngine {
 
     pub(crate) fn resize(&mut self, size: TerminalSize) {
         self.reconcile_active_combining_budget();
+        if self.active_screen() == ActiveScreen::Alternate
+            && usize::from(size.rows) < self.term.screen_lines()
+        {
+            // Alacritty otherwise scrolls the old grid to keep the caret in
+            // view. Full-screen applications own their row coordinates: clip
+            // the bottom and clamp the caret before resizing, keeping surviving
+            // rows in place until the application redraws. Main-screen prompt
+            // scrolling and reflow retain the engine's normal behavior.
+            let cursor = &mut self.term.grid_mut().cursor;
+            cursor.point.line = cursor.point.line.min(Line(i32::from(size.rows) - 1));
+        }
         self.term.resize(EngineSize::new(size));
         self.reconcile_active_combining_budget();
         self.reconcile_hyperlinks();

@@ -267,73 +267,89 @@ class TerminalRenderingTest {
         }
     }
 
-    @Test fun hiddenCursorGridMovesLocallyAndMatchesDelayedResizeInBothDirections() {
+    @Test fun liveRowsKeepTheirCoordinatesAcrossHeightChangesAndDelayedFrames() {
         instrumentation.runOnMainSync {
-            val original = frame(0, 0, 12, maximum = 0, marker = 5)
-            val view = liveView(original)
-            val cell = view.gridCellHeight
-            assertEquals(5 * cell, markerTop(view))
-            view.layout(0, 0, view.width, 9 * cell)
-            assertEquals("hidden-cursor rows move before any remote frame", 2 * cell, markerTop(view))
-            val moved = pixels(view)
-            val resized = original.copy(generation = 2u, geometryGeneration = 2u,
-                viewport = original.viewport.copy(rows = 9u), rows = original.rows.drop(3))
-            view.update(resized, 12)
-            val received = pixels(view)
-            try { assertTrue("new ordinals preserve the moved presentation", moved.sameAs(received)) }
-            finally { moved.recycle(); received.recycle() }
-            view.layout(0, 0, view.width, 12 * cell)
-            assertEquals("closing also moves available rows without remote data", 5 * cell, markerTop(view))
-            // Reverse before the larger-grid response arrives.
-            view.layout(0, 0, view.width, 9 * cell)
-            assertEquals(2 * cell, markerTop(view))
-            view.update(original.copy(generation = 3u, geometryGeneration = 3u), 12)
-            assertEquals("late larger grid uses the actual local height", 2 * cell, markerTop(view))
-            view.update(resized.copy(generation = 4u, geometryGeneration = 4u), 12)
-            assertEquals(2 * cell, markerTop(view))
-        }
-    }
-
-    @Test fun visibleCaretNeverLeavesTheTopEdgeOnEitherScreen() {
-        instrumentation.runOnMainSync {
-            for (screen in NativeActiveScreen.entries) for (cursor in listOf(0, 1, 3)) {
-                val original = frame(0, 0, 12, maximum = 0, marker = cursor).copy(
-                    activeScreen = screen, cursorVisible = true, cursorRow = cursor.toUShort(), cursorColumn = 15u)
+            for (screen in NativeActiveScreen.entries) {
+                val original = frame(0, 0, 12, maximum = 0, marker = 5).copy(activeScreen = screen)
                 val view = liveView(original)
                 val cell = view.gridCellHeight
-                for (height in listOf(12 * cell, 11 * cell, 10 * cell, 6 * cell, cell / 2, 10 * cell, 12 * cell)) {
-                    view.layout(0, 0, view.width, height)
-                    assertEquals("visible caret remains in bounds: $screen cursor=$cursor height=$height",
-                        maxOf(0, cursor * cell + height - 12 * cell), markerTop(view))
-                }
+                assertEquals(5 * cell, markerTop(view))
+                view.layout(0, 0, view.width, 9 * cell)
+                assertEquals("local shrink only clips the bottom", 5 * cell, markerTop(view))
+                val clipped = pixels(view)
+                val resized = original.copy(generation = 2u, geometryGeneration = 2u,
+                    viewport = original.viewport.copy(rows = 9u), rows = original.rows.take(9))
+                view.update(resized, 12)
+                val received = pixels(view)
+                try { assertTrue("matching rows keep exactly the same pixels", clipped.sameAs(received)) }
+                finally { clipped.recycle(); received.recycle() }
+                view.layout(0, 0, view.width, 12 * cell)
+                assertEquals("local growth does not move a smaller remote grid", 5 * cell, markerTop(view))
+                val growing = pixels(view)
+                try {
+                    for (y in 9 * cell until 12 * cell) for (x in 0 until view.width)
+                        assertEquals("new area uses the terminal background", Color.BLACK, growing.getPixel(x, y))
+                } finally { growing.recycle() }
+                // Reverse before the larger-grid response arrives.
+                view.layout(0, 0, view.width, 9 * cell)
+                view.update(original.copy(generation = 3u, geometryGeneration = 3u), 12)
+                assertEquals("obsolete geometry cannot change the origin", 5 * cell, markerTop(view))
+                view.update(resized.copy(generation = 4u, geometryGeneration = 4u), 12)
+                assertEquals(5 * cell, markerTop(view))
             }
         }
     }
 
-    @Test fun liveScreensKeepContentBelowVisibleCursorAboveToolbar() {
+    @Test fun visibleCaretDoesNotPanEitherScreenDuringHeightChanges() {
+        instrumentation.runOnMainSync {
+            for (screen in NativeActiveScreen.entries) for (cursor in listOf(0, 1, 3, 11)) {
+                val original = frame(0, 0, 12, maximum = 0, marker = cursor).copy(
+                    activeScreen = screen, cursorVisible = true, cursorRow = cursor.toUShort(), cursorColumn = 15u)
+                val view = liveView(original)
+                val cell = view.gridCellHeight
+                val before = pixels(view)
+                try {
+                    for (height in listOf(12 * cell, 11 * cell, 10 * cell, 6 * cell, cell / 2, 10 * cell, 12 * cell)) {
+                        view.layout(0, 0, view.width, height)
+                        val clipped = pixels(view)
+                        val expected = Bitmap.createBitmap(before, 0, 0, before.width, height)
+                        try { assertTrue("caret and rows keep their coordinates: $screen cursor=$cursor height=$height",
+                            expected.sameAs(clipped)) }
+                        finally { if (expected !== before) expected.recycle(); clipped.recycle() }
+                    }
+                } finally { before.recycle() }
+            }
+        }
+    }
+
+    @Test fun bottomRowsAreClippedUntilTheRemoteApplicationMovesThem() {
         instrumentation.runOnMainSync {
             for (screen in NativeActiveScreen.entries) {
                 val original = frame(0, 0, 12, maximum = 0, marker = 11).copy(
                     activeScreen = screen, cursorVisible = true, cursorRow = 9u)
                 val view = liveView(original)
                 val cell = view.gridCellHeight
-                view.layout(0, 0, view.width, 10 * cell + cell / 2)
-                assertEquals("footer follows the intermediate local height before remote delivery",
-                    view.height - cell, markerTop(view))
-                view.layout(0, 0, view.width, 9 * cell)
-                assertEquals("both rows below the cursor remain above the toolbar", 8 * cell, markerTop(view))
-                val moved = pixels(view)
+                for (height in listOf(10 * cell + cell / 2, 9 * cell)) {
+                    view.layout(0, 0, view.width, height)
+                    val clipped = pixels(view)
+                    try {
+                        assertFalse("offscreen footer is clipped instead of moving the entire grid",
+                            (0 until clipped.height).any { clipped.getPixel(0, it) == Color.MAGENTA })
+                    } finally { clipped.recycle() }
+                }
                 val resized = original.copy(generation = 2u, geometryGeneration = 2u,
                     viewport = original.viewport.copy(rows = 9u), rows = original.rows.drop(3), cursorRow = 6u)
                 view.update(resized, 12)
-                val received = pixels(view)
-                try { assertTrue("delayed resize preserves text, footer and caret pixels", moved.sameAs(received)) }
-                finally { moved.recycle(); received.recycle() }
+                assertEquals("remote layout places its footer at its own row coordinate", 8 * cell, markerTop(view))
+                view.layout(0, 0, view.width, 12 * cell)
+                assertEquals("closing does not translate the existing footer", 8 * cell, markerTop(view))
+                view.update(original.copy(generation = 3u, geometryGeneration = 3u), 12)
+                assertEquals("only the remote layout moves its footer to the new bottom", 11 * cell, markerTop(view))
             }
         }
     }
 
-    @Test fun resizeSnapshotCannotInterruptEitherMovingScreen() {
+    @Test fun obsoleteResizeCannotInterruptEitherClippedScreen() {
         instrumentation.runOnMainSync {
             for (screen in NativeActiveScreen.entries) {
                 val original = frame(0, 0, 12, maximum = 0, marker = 5).copy(
@@ -346,25 +362,28 @@ class TerminalRenderingTest {
                     view.layout(0, 0, view.width, 9 * cell)
                     val moved = pixels(view)
                     try {
-                        // Actual Alacritty height shrink keeps the caret visible:
-                        // ROW 02..10, before the child repaints ROW 03..11.
+                        // A response to a previous size may already contain
+                        // rows moved by the remote application.
                         val resized = original.copy(generation = 2u, geometryGeneration = 2u,
                             viewport = original.viewport.copy(rows = 9u),
                             rows = original.rows.drop(2).take(9), cursorRow = 8u)
                         view.update(resized, 12)
                         val intermediate = pixels(view)
-                        try { assertTrue("resize-only snapshot must not jump the moving rows down", moved.sameAs(intermediate)) }
+                        try { assertTrue("different-size response cannot displace the clipped rows during animation", moved.sameAs(intermediate)) }
                         finally { intermediate.recycle() }
                         val repainted = resized.copy(generation = 3u, rows = original.rows.drop(3), cursorRow = 7u)
                         view.update(repainted, 12)
                         view.layout(0, 0, view.width, 10 * cell)
-                        assertEquals("prepared smaller grid cannot expose an unknown row mid-animation", 3 * cell, markerTop(view))
+                        assertEquals("prepared smaller grid cannot change row coordinates mid-animation", 5 * cell, markerTop(view))
                         view.layout(0, 0, view.width, 9 * cell)
                         view.updateImeAnimation(false)
                         view.viewTreeObserver.dispatchOnPreDraw()
                         val committed = pixels(view)
-                        try { assertTrue("settled handoff uses the latest prepared TUI frame", moved.sameAs(committed)) }
-                        finally { committed.recycle() }
+                        val expected = pixels(liveView(repainted))
+                        try {
+                            assertTrue("settled handoff uses the remote frame without translation", expected.sameAs(committed))
+                            assertEquals(2 * cell, markerTop(view))
+                        } finally { committed.recycle(); expected.recycle() }
                     } finally { moved.recycle() }
                 } finally {
                     view.updateImeAnimation(false)
@@ -384,10 +403,8 @@ class TerminalRenderingTest {
                 val before = pixels(view)
                 try {
                     view.updateImeAnimation(true)
-                    view.prepareImeViewport(view.width, 9 * cell)
                     view.layout(0, 0, view.width, 9 * cell)
                     pixels(view).recycle()
-                    view.prepareImeViewport(view.width, 12 * cell)
                     view.layout(0, 0, view.width, 12 * cell)
                     val obsolete = original.copy(generation = 2u, geometryGeneration = 2u,
                         viewport = original.viewport.copy(rows = 9u),
@@ -424,18 +441,17 @@ class TerminalRenderingTest {
                 val cell = view.gridCellHeight
                 pixels(view).recycle()
                 view.updateImeAnimation(true)
-                assertTrue(view.prepareImeViewport(view.width, 12 * cell))
                 view.layout(0, 0, view.width, 12 * cell)
                 val moved = pixels(view)
-                // Actual host-model result before any child output (unified-ime-probe.rs).
-                val scrolled = maxOf(0, cursor + 1 - 12)
+                // Main preserves the prompt; alternate clips the bottom.
+                val scrolled = if (screen == NativeActiveScreen.MAIN) maxOf(0, cursor + 1 - 12) else 0
                 val resized = original.copy(generation = 2u, geometryGeneration = 2u,
                     viewport = NativeViewport(12u, 16u), rows = original.rows.drop(scrolled).take(12),
-                    cursorRow = (cursor - scrolled).toUShort(),
+                    cursorRow = minOf(cursor - scrolled, 11).toUShort(),
                     historyMaximum = (if (screen == NativeActiveScreen.MAIN) scrolled else 0).toULong())
                 view.update(resized, 12)
                 val held = pixels(view)
-                try { assertTrue("early host resize retains the moved drawing", moved.sameAs(held)) }
+                try { assertTrue("in-flight host resize retains the clipped drawing", moved.sameAs(held)) }
                 finally { moved.recycle(); held.recycle() }
                 view.updateImeAnimation(false)
                 view.viewTreeObserver.dispatchOnPreDraw()
@@ -443,10 +459,16 @@ class TerminalRenderingTest {
                 val expected = pixels(liveView(resized))
                 try { assertTrue("settled drawing adopts actual host rows and cursor", expected.sameAs(settled)) }
                 finally { settled.recycle(); expected.recycle() }
-                assertEquals((cursor - scrolled) * cell, markerTop(view))
+                if (screen == NativeActiveScreen.MAIN || cursor < 12) {
+                    assertEquals((cursor - scrolled) * cell, markerTop(view))
+                } else {
+                    val clipped = pixels(view)
+                    try { assertFalse("alternate resize discards the old bottom marker instead of scrolling it up",
+                        (0 until clipped.height).any { clipped.getPixel(0, it) == Color.MAGENTA }) }
+                    finally { clipped.recycle() }
+                }
 
                 view.updateImeAnimation(true)
-                assertTrue(view.prepareImeViewport(view.width, 24 * cell))
                 view.layout(0, 0, view.width, 24 * cell)
                 val closing = pixels(view)
                 val restored = if (screen == NativeActiveScreen.MAIN) scrolled else 0
@@ -454,10 +476,10 @@ class TerminalRenderingTest {
                     original.rows[0].cells.map { it.copy(text = "") }) }
                 val grown = original.copy(generation = 3u, geometryGeneration = 3u,
                     rows = original.rows.drop(scrolled - restored).take(12 + restored) + blanks,
-                    cursorRow = (cursor - scrolled + restored).toUShort())
+                    cursorRow = (resized.cursorRow.toInt() + restored).toUShort())
                 view.update(grown, 12)
                 val heldClose = pixels(view)
-                try { assertTrue("growth with or without history keeps the moving baseline", closing.sameAs(heldClose)) }
+                try { assertTrue("growth with or without history keeps the top origin", closing.sameAs(heldClose)) }
                 finally { closing.recycle(); heldClose.recycle() }
                 view.updateImeAnimation(false)
                 view.viewTreeObserver.dispatchOnPreDraw()
@@ -498,46 +520,133 @@ class TerminalRenderingTest {
         }
     }
 
-    @Test fun knownImeTargetSubmitsEarlyOnceAndFinalLayoutCorrectsIt() {
+    @Test fun imeSubmitsOnlyTheFinalMeasurementAfterLayoutInBothDirections() {
         instrumentation.runOnMainSync {
             for (screen in NativeActiveScreen.entries) {
                 val original = frame(0, 0, 12, maximum = 0).copy(activeScreen = screen)
                 val view = liveView(original)
                 val cell = view.gridCellHeight
-                assertFalse("endpoints outside animation are ignored", view.prepareImeViewport(view.width, 9 * cell))
+                val requests = mutableListOf<Pair<Int, Int>>()
+                view.onViewportChanged = { rows, columns -> requests.add(rows to columns) }
                 view.updateImeAnimation(true)
-                assertTrue("target submits while the original height is still displayed", view.prepareImeViewport(view.width, 9 * cell))
-                assertEquals(12 * cell, view.height)
-                view.layout(0, 0, view.width, 11 * cell)
-                assertFalse("intermediate layout did not replace the submitted target", view.prepareImeViewport(view.width, 9 * cell))
-                // A cancellation or changed endpoint may settle somewhere else.
+                for (height in listOf(11 * cell, 10 * cell + cell / 2, 9 * cell)) {
+                    view.layout(0, 0, view.width, height)
+                    view.viewTreeObserver.dispatchOnPreDraw()
+                    assertTrue("opening animation never submits a viewport", requests.isEmpty())
+                }
+                view.updateImeAnimation(false)
+                // onEnd can precede the final layout; only its measured size is authoritative.
                 view.layout(0, 0, view.width, 8 * cell)
-                view.updateImeAnimation(false)
+                assertTrue("onEnd and layout wait for pre-draw", requests.isEmpty())
                 view.viewTreeObserver.dispatchOnPreDraw()
+                assertEquals(listOf(8 to 16), requests)
+                view.layout(0, 0, view.width, 8 * cell)
+                view.viewTreeObserver.dispatchOnPreDraw()
+                assertEquals("unchanged final size is not submitted again", listOf(8 to 16), requests)
+
+                requests.clear()
                 view.updateImeAnimation(true)
-                assertFalse("settled layout already corrected the early target", view.prepareImeViewport(view.width, 8 * cell))
-                assertTrue("reversal submits its new target", view.prepareImeViewport(view.width, 12 * cell))
-                view.layout(0, 0, view.width, 12 * cell)
+                for (height in listOf(9 * cell, 11 * cell + cell / 2, 12 * cell)) {
+                    view.layout(0, 0, view.width, height)
+                    view.viewTreeObserver.dispatchOnPreDraw()
+                    assertTrue("closing animation never submits a viewport", requests.isEmpty())
+                }
                 view.updateImeAnimation(false)
+                assertTrue("final animated layout still waits for completion", requests.isEmpty())
                 view.viewTreeObserver.dispatchOnPreDraw()
+                assertEquals("completion submits even when no further layout occurs", listOf(12 to 16), requests)
+            }
+        }
+    }
+
+    @Test fun reversedImeDoesNotSubmitTransientLayoutsOrStaleCompletion() {
+        instrumentation.runOnMainSync {
+            val view = liveView(frame(0, 0, 12, maximum = 0))
+            val cell = view.gridCellHeight
+            val requests = mutableListOf<Pair<Int, Int>>()
+            view.onViewportChanged = { rows, columns -> requests.add(rows to columns) }
+            view.updateImeAnimation(true)
+            view.layout(0, 0, view.width, 9 * cell)
+            view.updateImeAnimation(false)
+            // Reverse before the previous animation's completion callback runs.
+            view.updateImeAnimation(true)
+            view.layout(0, 0, view.width, 10 * cell)
+            view.viewTreeObserver.dispatchOnPreDraw()
+            assertTrue("stale completion cannot submit during the new animation", requests.isEmpty())
+            view.layout(0, 0, view.width, 12 * cell)
+            view.updateImeAnimation(false)
+            view.viewTreeObserver.dispatchOnPreDraw()
+            assertTrue("returning to the original size needs no remote resize", requests.isEmpty())
+        }
+    }
+
+    @Test fun imeCompletionWaitsForComposeToMeasureTheTargetInset() {
+        instrumentation.runOnMainSync {
+            val view = liveView(frame(0, 0, 12, maximum = 0))
+            val cell = view.gridCellHeight
+            val requests = mutableListOf<Pair<Int, Int>>()
+            view.onViewportChanged = { rows, columns -> requests.add(rows to columns) }
+            view.updateImeAnimation(true)
+            view.imeLayoutSettled = false
+            view.layout(0, 0, view.width, 10 * cell)
+            view.updateImeAnimation(false)
+            view.viewTreeObserver.dispatchOnPreDraw()
+            assertTrue("animation end does not make stale Compose geometry final", requests.isEmpty())
+            view.layout(0, 0, view.width, 9 * cell)
+            view.viewTreeObserver.dispatchOnPreDraw()
+            assertTrue("later intermediate layouts are still local", requests.isEmpty())
+            view.imeLayoutSettled = true
+            view.layout(0, 0, view.width, 8 * cell)
+            assertTrue("target inset still waits for its child layout", requests.isEmpty())
+            view.viewTreeObserver.dispatchOnPreDraw()
+            assertEquals(listOf(8 to 16), requests)
+        }
+    }
+
+    @Test fun settledImeKeepsUnchangedPixelsAtTheirCoordinatesInBothDirections() {
+        instrumentation.runOnMainSync {
+            for (screen in NativeActiveScreen.entries) {
+                val original = frame(0, 0, 12, maximum = 0, marker = 5).copy(activeScreen = screen)
+                val view = liveView(original)
+                val cell = view.gridCellHeight
+                pixels(view).recycle()
+                for (rows in listOf(9, 12)) {
+                    view.updateImeAnimation(true)
+                    view.layout(0, 0, view.width, rows * cell)
+                    val moved = pixels(view)
+                    try {
+                        view.updateImeAnimation(false)
+                        view.viewTreeObserver.dispatchOnPreDraw()
+                        val waiting = pixels(view)
+                        try { assertTrue("completion keeps the clipped rows at their coordinates", moved.sameAs(waiting)) }
+                        finally { waiting.recycle() }
+                        view.update(original.copy(generation = rows.toULong(), geometryGeneration = rows.toULong(),
+                            viewport = original.viewport.copy(rows = rows.toUShort()), rows = original.rows.take(rows)), 12)
+                        val received = pixels(view)
+                        // Growth fills the newly exposed bottom; the existing top rows stay put.
+                        val top = 0
+                        val beforePatch = Bitmap.createBitmap(moved, 0, top, view.width, 9 * cell)
+                        val afterPatch = Bitmap.createBitmap(received, 0, top, view.width, 9 * cell)
+                        try { assertTrue("matching remote rows preserve their displayed positions", beforePatch.sameAs(afterPatch)) }
+                        finally { beforePatch.recycle(); afterPatch.recycle(); received.recycle() }
+                    } finally { moved.recycle() }
+                }
             }
         }
     }
 
     @OptIn(ExperimentalLayoutApi::class)
-    @Test fun productionLayoutReportsTheTargetBeforeTheSystemImeFinishes() {
+    @Test fun productionLayoutSubmitsOnceAfterTheSystemImeFinishes() = withSoftwareKeyboard {
         org.junit.Assume.assumeTrue(android.os.Build.VERSION.SDK_INT >= 30)
         for (screen in NativeActiveScreen.entries) {
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
                 lateinit var activity: MainActivity
                 lateinit var view: TerminalView
                 val laidOut = CountDownLatch(1)
-                var targetReported = CountDownLatch(1)
+                var viewportReported = CountDownLatch(1)
                 var finished = CountDownLatch(1)
-                var showing = true
-                var early = false
-                var targetRows = 0
-                var requests = 0
+                var sentDuringAnimation = false
+                val requests = mutableListOf<Int>()
                 var started = false
                 var stop: (() -> Unit)? = null
                 scenario.onActivity {
@@ -546,6 +655,13 @@ class TerminalRenderingTest {
                     androidx.core.view.ViewCompat.setWindowInsetsAnimationCallback(it.window.decorView, owner)
                     view = TerminalView(it).apply {
                         update(frame(0, 0, 12, maximum = 0).copy(activeScreen = screen), 12)
+                        onViewportChanged = { rows, _ ->
+                            if (started) {
+                                sentDuringAnimation = sentDuringAnimation || owner.running
+                                requests.add(rows)
+                                viewportReported.countDown()
+                            }
+                        }
                         addOnLayoutChangeListener { _, left, top, right, bottom, _, _, _, _ ->
                             if (right > left && bottom > top) laidOut.countDown()
                         }
@@ -557,15 +673,8 @@ class TerminalRenderingTest {
                     val cell = view.gridCellHeight
                     it.setContent {
                         Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
-                            TerminalGridLayout(cell, owner, Modifier.fillMaxSize(), onImeTarget = { width, height ->
-                                if (view.prepareImeViewport(width, height)) {
-                                    early = owner.running && if (showing) view.height / cell > height / cell
-                                        else view.height / cell < height / cell
-                                    targetRows = height / cell
-                                    requests++
-                                    targetReported.countDown()
-                                }
-                            }) {
+                            TerminalGridLayout(cell, owner, Modifier.fillMaxSize(),
+                                onImeLayoutSettled = { view.imeLayoutSettled = it }) {
                                 Box(Modifier.fillMaxWidth().height(48.dp))
                                 AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())
                                 HorizontalDivider()
@@ -590,21 +699,38 @@ class TerminalRenderingTest {
                     assertTrue("terminal owns a served editor before requesting IME", served)
                     for (show in listOf(true, false)) {
                         scenario.onActivity {
-                            showing = show; started = false; early = false; requests = 0
-                            targetReported = CountDownLatch(1); finished = CountDownLatch(1)
+                            started = false; sentDuringAnimation = false; requests.clear()
+                            viewportReported = CountDownLatch(1); finished = CountDownLatch(1)
                             view.setKeyboardVisible(show)
                         }
-                        assertTrue("production layout supplies an early target (show=$show)", targetReported.await(10, TimeUnit.SECONDS))
                         assertTrue("real keyboard animation finishes (show=$show)", finished.await(10, TimeUnit.SECONDS))
+                        assertTrue("settled layout submits a viewport (show=$show)", viewportReported.await(10, TimeUnit.SECONDS))
                         hardwarePixels(activity, view).recycle()
-                        assertTrue("resize precedes the remaining keyboard motion (show=$show)", early)
-                        assertEquals("one final target, no intermediate requests (show=$show)", 1, requests)
-                        assertEquals("early target matches settled layout (show=$show)", targetRows, view.height / view.gridCellHeight)
+                        scenario.onActivity {
+                            assertFalse("no viewport is sent during animation (show=$show)", sentDuringAnimation)
+                            assertEquals("only the final measured size is submitted (show=$show)",
+                                listOf(view.height / view.gridCellHeight), requests)
+                        }
                     }
                 } finally {
                     scenario.onActivity { view.setKeyboardVisible(false); stop?.invoke() }
                 }
             }
+        }
+    }
+
+    private fun withSoftwareKeyboard(block: () -> Unit) {
+        fun shell(command: String): String = android.os.ParcelFileDescriptor.AutoCloseInputStream(
+            instrumentation.uiAutomation.executeShellCommand(command)).bufferedReader().use { it.readText().trim() }
+        val setting = "show_ime_with_hard_keyboard"
+        val previous = shell("settings get secure $setting")
+        check(previous in listOf("0", "1", "null"))
+        // A hardware-keyboard emulator otherwise shows only Gboard's floating
+        // accessory, which does not resize the terminal and cannot test IME layout.
+        shell("settings put secure $setting 1")
+        try { block() }
+        finally {
+            shell(if (previous == "null") "settings delete secure $setting" else "settings put secure $setting $previous")
         }
     }
 
@@ -684,14 +810,14 @@ class TerminalRenderingTest {
         }
     }
 
-    @Test fun hardwareHeightChangesAndResizeFramesReuseTheMovedRows() {
+    @Test fun hardwareHeightChangesAndResizeFramesReuseUnchangedRows() {
         org.junit.Assume.assumeTrue(android.os.Build.VERSION.SDK_INT >= 29)
         for (screen in NativeActiveScreen.entries) {
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
                 lateinit var activity: MainActivity
                 lateinit var view: TerminalView
                 val original = frame(0, 0, 12, maximum = 0, marker = 5).copy(
-                    activeScreen = screen, cursorVisible = true, cursorRow = 10u)
+                    activeScreen = screen, cursorVisible = true, cursorRow = 2u)
                 scenario.onActivity {
                     activity = it
                     view = liveView(original, it)
@@ -708,17 +834,17 @@ class TerminalRenderingTest {
                     val moved = hardwarePixels(activity, view)
                     assertEquals("local height change reuses every row", warm, view.rowRecordingCount)
                     val resized = original.copy(generation = 2u, geometryGeneration = 2u,
-                        viewport = original.viewport.copy(rows = 9u), rows = original.rows.drop(3), cursorRow = 7u)
+                        viewport = original.viewport.copy(rows = 9u), rows = original.rows.take(9), cursorRow = 2u)
                     scenario.onActivity { view.update(resized.copy(rows = original.rows.drop(2).take(9), cursorRow = 8u), 12) }
                     val intermediate = hardwarePixels(activity, view)
                     try {
-                        assertTrue("resize-only candidate never displaces the displayed baseline", moved.sameAs(intermediate))
+                        assertTrue("obsolete geometry cannot displace the displayed baseline", moved.sameAs(intermediate))
                         assertEquals(warm, view.rowRecordingCount)
                     } finally { intermediate.recycle() }
                     scenario.onActivity { view.update(resized.copy(generation = 3u), 12); view.updateImeAnimation(false) }
                     val received = hardwarePixels(activity, view)
                     try {
-                        assertTrue("delayed new-size frame equals the locally moved pixels", moved.sameAs(received))
+                        assertTrue("delayed new-size frame preserves every unchanged pixel", moved.sameAs(received))
                         assertEquals("new geometry and ordinals do not record equal rows", warm, view.rowRecordingCount)
                     } finally { moved.recycle(); received.recycle() }
                     val changed = resized.rows.toMutableList().apply {
@@ -728,6 +854,11 @@ class TerminalRenderingTest {
                     val patched = hardwarePixels(activity, view)
                     try {
                         assertEquals(Color.BLUE, patched.getPixel(0, 4 * view.gridCellHeight))
+                        // The earlier unchanged rows remain at exactly their
+                        // original coordinates after both resize and patch.
+                        for (y in 0 until patched.height) if (y !in 4 * view.gridCellHeight until 5 * view.gridCellHeight)
+                            for (x in 0 until patched.width)
+                                assertEquals("unchanged pixel after keyboard resize ($x,$y)", before.getPixel(x, y), patched.getPixel(x, y))
                         assertEquals("one changed row records once", warm + 1, view.rowRecordingCount)
                     } finally { patched.recycle() }
                     scenario.onActivity {

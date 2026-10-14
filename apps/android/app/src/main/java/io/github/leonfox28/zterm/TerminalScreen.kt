@@ -64,7 +64,7 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
     LaunchedEffect(frame?.inputEpoch, state.sessionId) { modifiers = 0 }
     Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
         TerminalGridLayout(cellHeight, imeAnimation, Modifier.fillMaxSize(),
-            onImeTarget = { width, height -> terminalView?.prepareImeViewport(width, height) }) {
+            onImeLayoutSettled = { terminalView?.imeLayoutSettled = it }) {
             Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconAction("back", stringResource(R.string.back)) { repository.goHome() }
                 Row(Modifier.weight(1f).fillMaxHeight().clickable { repository.togglePanel() }, verticalAlignment = Alignment.CenterVertically) {
@@ -268,7 +268,8 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
 /** The fifth, unoccupied area is below the fixed toolbar, inside the already consumed insets. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable internal fun TerminalGridLayout(cellHeight: Int, imeAnimation: ImeAnimationState, modifier: Modifier,
-    onImeTarget: (Int, Int) -> Unit, content: @Composable () -> Unit) {
+    onImeLayoutSettled: (Boolean) -> Unit = {},
+    content: @Composable () -> Unit) {
     val density = LocalDensity.current
     val ime = WindowInsets.ime
     val start = WindowInsets.imeAnimationSource
@@ -284,9 +285,9 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
         val currentBottom = maxOf(nav, ime.getBottom(density))
         val startBottom = maxOf(nav, start.getBottom(density))
         val endBottom = maxOf(nav, end.getBottom(density))
-        terminalImeTargetHeight(available, currentBottom, startBottom, endBottom, imeAnimation.running)?.let {
-            onImeTarget(constraints.maxWidth, it)
-        }
+        // onEnd may reach the native View before Compose has consumed the final
+        // inset. Only the layout measured at the target inset may be submitted.
+        onImeLayoutSettled(currentBottom == endBottom)
         val remainder = terminalBottomRemainder(available, cellHeight, currentBottom,
             startBottom, endBottom, imeAnimation.running)
         val terminal = children[1].measure(Constraints.fixed(constraints.maxWidth, available - remainder))
