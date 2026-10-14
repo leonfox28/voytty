@@ -54,6 +54,14 @@ inefficient delta causes `SyncRequired` followed by a replacement snapshot.
 There is no unbounded output log or per-revision queue: slow clients converge
 to the latest merged delta or resynchronize once.
 
+Resizing the main screen preserves normal prompt scrolling, history and text
+reflow. The alternate screen keeps surviving cells at their top-left coordinates:
+shrinking clips bottom/right cells and clamps the cursor rather than scrolling
+the old grid to keep it visible; growth adds blank space. The full-screen
+application then lays out its own content for the new size. This rule applies
+to every client and application. Resizes publish immediately, including for a
+silent child; there is no resize-specific quiet interval or repaint timeout.
+
 That convergence needs the host writer to notice a slow reader. A remote QUIC
 stream can accept far more bytes than a slow Relay path delivers, so the host
 alone would keep writing one delta per revision into that credit. Remote

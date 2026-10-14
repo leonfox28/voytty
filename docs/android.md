@@ -60,10 +60,22 @@ controller's measured rows and columns after synchronization. Terminal programs
 can redraw and wrapped output can reflow; the shell process and Session ID remain.
 The eight shortcut keys remain visible above the system IME. The four direction
 arrows use the same 18 dp vector size and stroke as the upload and keyboard icons;
-Esc, Tab, Ctrl and Alt remain text labels. Keyboard animation pans/clips locally.
-When Android supplies the animation endpoint, the client submits that target
-size early; the settled layout corrects it if necessary. Unknown endpoints use
-the final measurement.
+Esc, Tab, Ctrl and Alt remain text labels. Both main and alternate screens resize
+their terminal window for the keyboard. During animation, the terminal's top
+stays fixed while its visible area clips or exposes existing rows. The client
+waits for animation completion and the final measured layout, then submits the
+size once; unchanged sizes are not submitted again. Remote frames draw at their
+own row coordinates, without a translation to compensate for differing heights.
+A response to an obsolete size after keyboard reversal retains the last drawn
+grid until the current size arrives. There is no resize-specific repaint timer
+on either client or host. A bottom prompt can remain clipped until the remote
+application responds to the new size, especially on a slow connection. A matching
+size does not promise that the application has finished repainting; ordinary
+terminal output and explicit synchronized-output batches keep their semantics.
+The host also keeps the alternate screen's surviving rows in place during resize,
+instead of scrolling its old content to keep the cursor visible. Unchanged row
+content continues to reuse the Android renderer's cached drawing, including
+across a size change; a new geometry does not discard all row caches.
 
 The first two toolbar buttons are **Upload image** (photo icon) and **Upload file**
 (paperclip icon). Each opens its system picker directly, with one selection per

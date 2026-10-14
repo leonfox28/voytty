@@ -63,6 +63,7 @@ internal class TerminalView(context: Context) : View(context) {
     private var drawnGeometry: DrawnTerminalGeometry? = null
     private var geometryVersion = 0L
     var onCellHeightChanged: (Int) -> Unit = {}
+    var onViewportChanged: (Int, Int) -> Unit = { rows, columns -> repository?.measure(rows, columns) }
     val gridCellHeight: Int get() = cellHeight.toInt()
     private var drawnSource: NativeFrameSource? = null
     private var pendingSource: NativeFrameSource? = null
@@ -88,21 +89,28 @@ internal class TerminalView(context: Context) : View(context) {
     var imeAnimating: () -> Boolean = { false }
     private var animatedInsets = false
     private var imeMeasurePending = false
+    var imeLayoutSettled = true
+        set(value) {
+            if (field == value) return
+            field = value
+            if (value) measureAfterLayout()
+        }
     fun updateImeAnimation(running: Boolean) {
         if (animatedInsets == running) return
         animatedInsets = running
         // The last animated layout can already have the final height. Native
         // requestLayout alone need not yield another AndroidView layout in
         // Compose, so commit explicitly after the final layout, before drawing.
-        if (!running) {
-            imeMeasurePending = true
-            OneShotPreDrawListener.add(this) {
-                imeMeasurePending = false
-                measureGrid()
-                updateAnchor()
-            }
-            invalidate()
+        if (!running) measureAfterLayout()
+    }
+    private fun measureAfterLayout() {
+        imeMeasurePending = true
+        OneShotPreDrawListener.add(this) {
+            imeMeasurePending = false
+            measureGrid()
+            updateAnchor()
         }
+        invalidate()
     }
     private val scroller = OverScroller(context)
     private var scrollPixels = 0f
@@ -311,23 +319,15 @@ internal class TerminalView(context: Context) : View(context) {
     }
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) { measureGrid() }
     private fun measureGrid() {
-        if (width <= 0 || height <= 0 || animatedInsets || imeMeasurePending || imeAnimating()) return
+        if (width <= 0 || height <= 0 || animatedInsets || imeMeasurePending || !imeLayoutSettled || imeAnimating()) return
         submitGrid(width, height)
     }
-    /** Submit a known final live viewport without forwarding intermediate animation sizes. */
-    internal fun prepareImeViewport(width: Int, height: Int): Boolean {
-        val frame = current ?: return false
-        if (!(animatedInsets || imeAnimating()) || !frame.inputReady || frame.selection != null ||
-            frame.historyOffset != 0uL || scrollPixels != 0f) return false
-        return submitGrid(width, height)
-    }
-    private fun submitGrid(width: Int, height: Int): Boolean {
-        if (width <= 0 || height <= 0) return false
+    private fun submitGrid(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
         val size = floor(height / cellHeight).toInt().coerceIn(1, 80) to floor(width / cellWidth).toInt().coerceIn(1, 240)
-        if (size == lastSize) return false
+        if (size == lastSize) return
         lastSize = size
-        repository?.measure(size.first, size.second)
-        return true
+        onViewportChanged(size.first, size.second)
     }
     private fun frameForDraw(): NativeFrame? {
         val candidate = current ?: return null
@@ -335,7 +335,7 @@ internal class TerminalView(context: Context) : View(context) {
         val waitingForSize = lastSize?.let {
             candidate.viewport.rows.toInt() != it.first || candidate.viewport.columns.toInt() != it.second
         } == true
-        if (!(animatedInsets || imeMeasurePending || imeAnimating() || waitingForSize) ||
+        if (!(animatedInsets || imeMeasurePending || !imeLayoutSettled || imeAnimating() || waitingForSize) ||
             candidate.viewport == displayed.viewport || candidate.inputEpoch != displayed.inputEpoch ||
             !candidate.inputReady || !displayed.inputReady ||
             candidate.activeScreen != displayed.activeScreen ||
@@ -343,8 +343,9 @@ internal class TerminalView(context: Context) : View(context) {
             drawnGeometry?.cellWidth != cellWidth || drawnGeometry?.cellHeight != cellHeight ||
             candidate.selection != null || displayed.selection != null || candidate.historyOffset != 0uL ||
             displayed.historyOffset != 0uL || scrollPixels != 0f) return candidate
-        // Keep the actual moved baseline while the newest remote geometry is
-        // prepared. Its resize-only image is not the child's completed repaint.
+        // A late response to an earlier size must not replace the visible grid
+        // during animation or after reversal. Matching geometry is accepted
+        // immediately; it does not imply that the child has finished repainting.
         return displayed
     }
     override fun onDraw(canvas: Canvas) {
@@ -352,7 +353,10 @@ internal class TerminalView(context: Context) : View(context) {
         canvas.clipRect(0, 0, width, height)
         val offset = kotlin.math.ceil(scrollPixels / cellHeight).toLong()
         val firstRow = frame.firstRow + frame.windowOffset.toLong() - offset
-        val shift = geometryShift(frame) + scrollPixels - offset * cellHeight
+        // The viewport always starts at the top of the View. A local height
+        // change clips/exposes rows; only explicit history scrolling translates
+        // them. Remote row counts must never add a second keyboard translation.
+        val shift = scrollPixels - offset * cellHeight
         val location = IntArray(2); getLocationOnScreen(location)
         val geometry = DrawnTerminalGeometry(cellWidth, cellHeight, baseline, shift, width, height,
             location[0], location[1], geometryVersion, firstRow)
@@ -472,12 +476,6 @@ internal class TerminalView(context: Context) : View(context) {
                 }
             }
         }
-    }
-    private fun geometryShift(frame: NativeFrame): Float {
-        if (scrollPixels != 0f || frame.historyOffset != 0uL || frame.selection != null) return 0f
-        if (frame.viewport.columns.toInt() != floor(width / cellWidth).toInt().coerceIn(1, 240)) return 0f
-        return terminalPan(minOf(height.toFloat(), 80 * cellHeight), cellHeight, frame.viewport.rows.toInt(),
-            frame.cursorRow.toInt().takeIf { frame.cursorVisible })
     }
     private fun scrollBounds(frame: NativeFrame): ClosedFloatingPointRange<Float> {
         val maximum = minOf(frame.windowOffset.toLong(), frame.historyMaximum.toLong())
