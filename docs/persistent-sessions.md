@@ -109,8 +109,11 @@ preserves the current screen; when necessary it removes only the oldest
 complete history lines at an ANSI reset/line boundary to remain within the
 frame ceiling.
 
-The login PTY always receives `TERM=xterm-256color` and
-`COLORTERM=truecolor`. If the user runs Zterm inside Ghostty, kitty,
+The login PTY always receives `TERM=xterm-256color`, `COLORTERM=truecolor`,
+`TERM_PROGRAM=zterm`, and `TERM_PROGRAM_VERSION` set to the host build's
+package version (for example, `0.1.42`). These values are set when a session is
+created; updating the host does not change an existing shell's environment.
+If the user runs Zterm inside Ghostty, kitty,
 Alacritty, tmux, or another terminal, that outer application only interprets
 Zterm's allowlisted ANSI. It does not contain, share, or nest the daemon's
 Alacritty model object or its PTY.
@@ -122,9 +125,10 @@ daemon: `PATH`, `LANG`, `LANGUAGE`, `LC_*`, `TZ`, `TMPDIR`, `XDG_RUNTIME_DIR`,
 the XDG base directories, `DBUS_SESSION_BUS_ADDRESS`, `SSH_AUTH_SOCK`,
 `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, and `__CF_USER_TEXT_ENCODING`. A
 daemon started or updated from inside tmux, Herdr, an SSH connection, or another
-terminal therefore never hands markers such as `TMUX`, `HERDR_ENV`,
-`TERM_PROGRAM`, or `SSH_CONNECTION` to new sessions; everything else comes from
-the login shell's own profile.
+terminal therefore never hands markers such as `TMUX`, `HERDR_ENV`, or
+`SSH_CONNECTION` to new sessions. The outer terminal's `TERM_PROGRAM` and
+`TERM_PROGRAM_VERSION` are replaced by Zterm's own identity; everything else
+comes from the login shell's own profile.
 
 ## Trust and architecture boundary
 
@@ -231,7 +235,8 @@ to 1,024 UTF-8 bytes; invalid/control text is rejected.
 
 OSC 99, standalone bell forwarding, numeric OSC 9 progress/subcommands, actions,
 notification updates, tmux passthrough and external push are not included.
-Programs must actually emit OSC 9/777: zterm does not change its hosted terminal
-identity or force an application's environment-based notification detection.
+Programs must actually emit OSC 9/777. Applications that select notification
+protocols by terminal name need to recognize `TERM_PROGRAM=zterm`; Zterm
+advertises its own identity and does not impersonate another terminal.
 Use matching updated host and client builds; notification kind 325 has no
 compatibility fallback to older receivers.

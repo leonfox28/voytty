@@ -88,7 +88,10 @@ fn hosted_profile_is_independent_of_parent_terminal() -> Result<(), String> {
             "ghostty",
             Some("xterm-ghostty"),
             Some("truecolor"),
-            &[("TERM_PROGRAM", "ghostty")][..],
+            &[
+                ("TERM_PROGRAM", "ghostty"),
+                ("TERM_PROGRAM_VERSION", "1.2.3"),
+            ][..],
         ),
         (
             "kitty",
@@ -106,7 +109,12 @@ fn hosted_profile_is_independent_of_parent_terminal() -> Result<(), String> {
             "herdr",
             Some("xterm-256color"),
             Some("truecolor"),
-            &[("HERDR_ENV", "1"), ("HERDR_PANE_ID", "pane-1")][..],
+            &[
+                ("HERDR_ENV", "1"),
+                ("HERDR_PANE_ID", "pane-1"),
+                ("TERM_PROGRAM", "herdr"),
+                ("TERM_PROGRAM_VERSION", "0.9.5"),
+            ][..],
         ),
         ("unset", None, None, &[][..]),
     ] {
@@ -115,6 +123,8 @@ fn hosted_profile_is_independent_of_parent_terminal() -> Result<(), String> {
         command
             .arg("--hosted-profile-probe")
             .env("TMPDIR", tmpdir)
+            .env_remove("TERM_PROGRAM")
+            .env_remove("TERM_PROGRAM_VERSION")
             .envs(markers.iter().copied())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -167,7 +177,10 @@ fn hosted_profile_is_independent_of_parent_terminal() -> Result<(), String> {
 
 #[cfg(unix)]
 fn hosted_profile_line(tmpdir: &str) -> String {
-    format!("HOSTED_PROFILE:xterm-256color:truecolor:[]:{tmpdir}")
+    format!(
+        "HOSTED_PROFILE:xterm-256color:truecolor:zterm:{}:[]:{tmpdir}",
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 #[cfg(unix)]
@@ -181,8 +194,9 @@ fn hosted_profile_probe() -> Result<(), String> {
     session
         .write_input(
             concat!(
-                "printf 'HOSTED_PROFILE:%s:%s:[%s%s%s%s%s%s]:%s\\n' \"$TERM\" \"$COLORTERM\" ",
-                "\"$TERM_PROGRAM\" \"$KITTY_WINDOW_ID\" \"$TMUX\" \"$TMUX_PANE\" ",
+                "printf 'HOSTED_PROFILE:%s:%s:%s:%s:[%s%s%s%s%s]:%s\\n' \"$TERM\" \"$COLORTERM\" ",
+                "\"$TERM_PROGRAM\" \"$TERM_PROGRAM_VERSION\" ",
+                "\"$KITTY_WINDOW_ID\" \"$TMUX\" \"$TMUX_PANE\" ",
                 "\"$HERDR_ENV\" \"$HERDR_PANE_ID\" \"$TMPDIR\"; exit\n",
             )
             .as_bytes(),
