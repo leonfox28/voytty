@@ -33,6 +33,8 @@ impl InputStop {
 const HOSTED_TERM: &str = "xterm-256color";
 #[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
 const HOSTED_COLORTERM: &str = "truecolor";
+#[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
+const HOSTED_TERM_PROGRAM: &str = "zterm";
 
 /// Daemon variables that describe this host login rather than whichever
 /// terminal, multiplexer, or connection started the daemon; `LC_*` is also
@@ -803,6 +805,8 @@ fn login_shell_builder(
     builder.env("LOGNAME", account.name());
     builder.env("TERM", HOSTED_TERM);
     builder.env("COLORTERM", HOSTED_COLORTERM);
+    builder.env("TERM_PROGRAM", HOSTED_TERM_PROGRAM);
+    builder.env("TERM_PROGRAM_VERSION", crate::build_identity().version);
     builder.cwd(cwd);
     Ok(builder)
 }
@@ -868,6 +872,14 @@ mod tests {
             Some(std::ffi::OsStr::new(HOSTED_COLORTERM))
         );
         assert_eq!(
+            builder.get_env("TERM_PROGRAM"),
+            Some(std::ffi::OsStr::new("zterm"))
+        );
+        assert_eq!(
+            builder.get_env("TERM_PROGRAM_VERSION"),
+            Some(std::ffi::OsStr::new(env!("CARGO_PKG_VERSION")))
+        );
+        assert_eq!(
             builder.get_cwd().map(OsString::as_os_str),
             Some(account.home().as_os_str())
         );
@@ -886,6 +898,7 @@ mod tests {
             ("TMUX_PANE", "%1"),
             ("STY", "1.pts-0.host"),
             ("TERM_PROGRAM", "ghostty"),
+            ("TERM_PROGRAM_VERSION", "1.2.3"),
             ("SSH_CONNECTION", "192.0.2.1 50000 192.0.2.2 22"),
             ("SHLVL", "3"),
             ("PWD", "/elsewhere"),
@@ -924,6 +937,8 @@ mod tests {
                 "SHELL",
                 "SSH_AUTH_SOCK",
                 "TERM",
+                "TERM_PROGRAM",
+                "TERM_PROGRAM_VERSION",
                 "TMPDIR",
                 "USER",
                 "XDG_RUNTIME_DIR",
@@ -943,6 +958,8 @@ mod tests {
                 ("SHELL", shell),
                 ("SSH_AUTH_SOCK", "/tmp/agent.sock"),
                 ("TERM", HOSTED_TERM),
+                ("TERM_PROGRAM", "zterm"),
+                ("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION")),
                 ("TMPDIR", "/tmp/zterm-user/"),
                 ("USER", account.name()),
                 ("XDG_RUNTIME_DIR", "/run/user/501"),
