@@ -677,7 +677,10 @@ internal class TerminalView(context: Context) : View(context) {
     }
     override fun onCheckIsTextEditor(): Boolean = true
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
-        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        // This is a terminal preedit buffer, not a multiline text editor.
+        // MULTI_LINE makes some IMEs commit LF for Return instead of sending
+        // KEYCODE_ENTER. Multiline commits/pastes still pass through unchanged.
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_ACTION_NONE
         outAttrs.initialSelStart = Selection.getSelectionStart(composing)
         outAttrs.initialSelEnd = Selection.getSelectionEnd(composing)
