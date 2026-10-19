@@ -157,4 +157,11 @@
     <string name="background_notification_visible">Connection notifications are visible.</string>
     <string name="background_notification_hidden">Connection notifications are hidden by Android settings. Background connection can still run.</string>
     <string name="background_start_failed">Background service could not start. Reopen the app to try again; the terminal is still available.</string>
+    <string name="general">General</string>
+    <string name="terminal_section">Terminal</string>
+    <string name="resume_session">Resume last session</string>
+    <string name="home_empty_title">No hosts yet</string>
+    <string name="home_empty_body">Run this on your computer, then scan its QR code to add it here.</string>
+    <string name="scan_hint">Scan the QR code shown by zterm pair create</string>
+    <string name="back_to_hosts">Back to hosts</string>
 </resources>

@@ -13,7 +13,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable internal fun UploadToolbarButtons(
@@ -43,8 +42,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
     }
     for (picker in UploadPicker.entries) {
         val label = stringResource(if (picker == UploadPicker.Image) R.string.upload_image else R.string.upload_file)
-        TextButton(onClick = { uploads.choose(picker) }, enabled = inputReady && upload?.active != true,
-            modifier = modifier.semantics { contentDescription = label }, contentPadding = PaddingValues(0.dp)) {
+        ToolbarKey(onClick = { uploads.choose(picker) }, enabled = inputReady && upload?.active != true,
+            modifier = modifier.semantics { contentDescription = label }) {
             LineIcon(if (picker == UploadPicker.Image) "image" else "attachment", Modifier.size(18.dp))
         }
     }
@@ -55,29 +54,40 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable internal fun UploadProgressDialog(upload: UploadUi, cancel: () -> Unit, retry: () -> Unit) {
     val active = upload.active
-    AlertDialog(onDismissRequest = cancel,
-        properties = DialogProperties(dismissOnBackPress = true, dismissOnClickOutside = false),
-        title = { Text(stringResource(if (active) R.string.upload else R.string.upload_failed)) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(upload.filename.ifBlank { stringResource(R.string.upload_selected_file) }, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(upload.totalBytes?.let { stringResource(R.string.upload_size, it / 1_000_000.0) } ?: stringResource(R.string.upload_size_unknown))
-                if (active) {
-                    if (upload.phase == "preparing") {
-                        LinearProgressIndicator(Modifier.fillMaxWidth())
-                        Text(stringResource(R.string.upload_preparing))
-                    } else {
-                        val total = upload.totalBytes ?: 0L
-                        val fraction = if (total == 0L) 1f else (upload.acceptedBytes.toDouble() / total).toFloat().coerceIn(0f, 1f)
-                        LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
-                        Text(stringResource(R.string.upload_percent, (fraction * 100).toInt()))
-                        Text(stringResource(R.string.upload_speed, upload.bytesPerSecond / 1_000_000.0))
-                        if (upload.phase in setOf("finishing", "inserting")) Text(stringResource(R.string.upload_finishing))
-                    }
-                }
-                upload.error?.let { ErrorText(it) }
+    val secondary = MaterialTheme.colorScheme.onSurfaceVariant
+    ZtermDialog(cancel, stringResource(if (active) R.string.upload else R.string.upload_failed),
+        icon = if (upload.picker == UploadPicker.Image) "image" else "attachment",
+        destructive = !active, dismissOnClickOutside = false, actions = {
+            if (active) DialogButton(stringResource(R.string.cancel), cancel)
+            else {
+                DialogButton(stringResource(R.string.close), cancel)
+                DialogButton(stringResource(R.string.retry), retry, DialogRole.Primary)
             }
-        },
-        confirmButton = { TextButton(if (active) cancel else retry) { Text(stringResource(if (active) R.string.cancel else R.string.retry)) } },
-        dismissButton = { if (!active) TextButton(cancel) { Text(stringResource(R.string.close)) } })
+        }) {
+        Column {
+            Text(upload.filename.ifBlank { stringResource(R.string.upload_selected_file) }, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyLarge)
+            Text(upload.totalBytes?.let { stringResource(R.string.upload_size, it / 1_000_000.0) } ?: stringResource(R.string.upload_size_unknown),
+                Modifier.padding(top = 2.dp), style = MaterialTheme.typography.bodySmall, color = secondary)
+        }
+        if (active) {
+            if (upload.phase == "preparing") {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Text(stringResource(R.string.upload_preparing), style = MaterialTheme.typography.bodySmall, color = secondary)
+            } else {
+                val total = upload.totalBytes ?: 0L
+                val fraction = if (total == 0L) 1f else (upload.acceptedBytes.toDouble() / total).toFloat().coerceIn(0f, 1f)
+                LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+                Row(Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.upload_percent, (fraction * 100).toInt()), Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall, color = secondary)
+                    Text(stringResource(R.string.upload_speed, upload.bytesPerSecond / 1_000_000.0),
+                        style = MaterialTheme.typography.bodySmall, color = secondary)
+                }
+                if (upload.phase in setOf("finishing", "inserting")) Text(stringResource(R.string.upload_finishing),
+                    style = MaterialTheme.typography.bodySmall, color = secondary)
+            }
+        }
+        upload.error?.let { ErrorText(it) }
+    }
 }

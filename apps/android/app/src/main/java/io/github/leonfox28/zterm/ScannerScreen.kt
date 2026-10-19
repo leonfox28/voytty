@@ -17,7 +17,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,8 +27,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
@@ -100,70 +98,81 @@ import java.util.concurrent.atomic.AtomicBoolean
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         PageHeader(stringResource(R.string.scan)) { repository.show(Route.Home) }
         Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp), contentAlignment = Alignment.Center) {
-            Surface(Modifier.fillMaxSize(), color = Color(0xFF151E17), shape = RoundedCornerShape(20.dp)) {
+            Surface(Modifier.fillMaxSize(), color = Color(0xFF0B0E0C), shape = MaterialTheme.shapes.extraLarge) {
                 if (permitted && !paused) CameraPreview(codeReady) { localError = "camera_unavailable" }
             }
             if (!permitted) Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(stringResource(R.string.camera_denied), color = Color.White)
+                LineIcon("image", Modifier.padding(bottom = 16.dp).size(40.dp), Color.White.copy(alpha = .6f))
+                Text(stringResource(R.string.camera_denied), color = Color.White, style = MaterialTheme.typography.titleMedium)
                 Button({
                     if (permanentlyDenied) context.startActivity(android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
                     else permission.launch(Manifest.permission.CAMERA)
                 }, Modifier.padding(top = 16.dp)) { Text(stringResource(if (permanentlyDenied) R.string.open_settings else R.string.allow_camera)) }
             }
-            if (permitted && !paused) ScanCorners()
-            if (state.busy || imageBusy) CircularProgressIndicator()
-            if (!manual && (localError != null || state.error != null)) Surface(Modifier.align(Alignment.BottomCenter).padding(16.dp), shape = RoundedCornerShape(12.dp)) {
-                Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    ErrorText(localError ?: state.error)
-                    TextButton({ localError = null; repository.clearError() }) { Text(stringResource(R.string.retry)) }
+            if (permitted && !paused) {
+                ScanCorners()
+                Surface(Modifier.align(Alignment.TopCenter).padding(top = 20.dp, start = 20.dp, end = 20.dp), shape = CircleShape,
+                    color = Color.Black.copy(alpha = .55f), contentColor = Color.White) {
+                    Text(stringResource(R.string.scan_hint), Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        style = MaterialTheme.typography.bodyMedium)
                 }
             }
-        }
-        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton({ localError = null; repository.clearError(); choosing = true; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, enabled = !state.busy && !imageBusy) {
-                LineIcon("image"); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.choose_image))
-            }
-            TextButton({ localError = null; repository.clearError(); manual = true }, enabled = !state.busy && !imageBusy) { Text(stringResource(R.string.enter_credentials)) }
-        }
-    }
-    if (manual) CredentialDialog(state.busy, state.error, repository.runtime.ticketTextLimit().toInt(), { manual = false; repository.clearError() }, repository::pair)
-    if (candidates.isNotEmpty()) AlertDialog(onDismissRequest = { candidates = emptyList() },
-        title = { Text(stringResource(R.string.choose_device)) }, text = {
-            androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 360.dp)) {
-                items(candidates.size) { index ->
-                    val (ticket, host) = candidates[index]
-                    TextButton({ candidates = emptyList(); repository.pair(ticket) }, Modifier.fillMaxWidth()) {
-                        Column(Modifier.fillMaxWidth()) { Text(host.name); Text(host.deviceId.takeLast(8), style = MaterialTheme.typography.bodySmall) }
+            if (state.busy || imageBusy) CircularProgressIndicator()
+            val failure = localError ?: state.error
+            if (!manual && failure != null) DialogSurface(Modifier.align(Alignment.BottomCenter).padding(16.dp)) {
+                Column(Modifier.padding(20.dp)) {
+                    Text(errorMessage(failure), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.error)
+                    DialogActions(Modifier.padding(top = 16.dp)) {
+                        DialogButton(stringResource(R.string.retry), { localError = null; repository.clearError() }, DialogRole.Primary)
                     }
                 }
             }
-        }, confirmButton = {}, dismissButton = { TextButton({ candidates = emptyList() }) { Text(stringResource(R.string.cancel)) } })
+        }
+        Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            FilledTonalButton({ localError = null; repository.clearError(); choosing = true; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                Modifier.weight(1f).height(52.dp), enabled = !state.busy && !imageBusy, shape = MaterialTheme.shapes.medium) {
+                LineIcon("image", Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.choose_image), maxLines = 1)
+            }
+            FilledTonalButton({ localError = null; repository.clearError(); manual = true }, Modifier.weight(1f).height(52.dp),
+                enabled = !state.busy && !imageBusy, shape = MaterialTheme.shapes.medium) {
+                LineIcon("keyboard", Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.enter_credentials), maxLines = 1)
+            }
+        }
+    }
+    if (manual) CredentialDialog(state.busy, state.error, repository.runtime.ticketTextLimit().toInt(), { manual = false; repository.clearError() }, repository::pair)
+    if (candidates.isNotEmpty()) ZtermDialog({ candidates = emptyList() }, stringResource(R.string.choose_device), icon = "server",
+        actions = { DialogButton(stringResource(R.string.cancel), { candidates = emptyList() }) }) {
+        candidates.forEach { (ticket, host) ->
+            Surface({ candidates = emptyList(); repository.pair(ticket) }, Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Text(host.name, style = MaterialTheme.typography.bodyLarge)
+                    Text(host.deviceId.takeLast(8), style = MaterialTheme.typography.bodySmall, fontFamily = TerminalFont.family,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
 }
 @Composable private fun CredentialDialog(busy: Boolean, error: String?, limit: Int, dismiss: () -> Unit, connect: (String) -> Unit) {
     // A bearer is transient composition state, never saved into Activity bundles.
     var ticket by remember { mutableStateOf("") }
-    Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.padding(24.dp).fillMaxWidth().imePadding(), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
-            Column(Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { IconAction("close", stringResource(R.string.close), onClick = dismiss) }
-                OutlinedTextField(ticket, { if (it.toByteArray().size <= limit) ticket = it }, Modifier.fillMaxWidth().heightIn(min = 116.dp, max = 180.dp),
-                    enabled = !busy, placeholder = { Text(stringResource(R.string.credential_hint)) }, isError = error != null, shape = RoundedCornerShape(12.dp))
-                ErrorText(error)
-                Button({ connect(ticket) }, Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 16.dp).height(48.dp),
-                    enabled = ticket.isNotBlank() && !busy, shape = RoundedCornerShape(12.dp)) {
-                    if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text(stringResource(R.string.connect))
-                }
-            }
-        }
+    ZtermDialog(dismiss, stringResource(R.string.enter_credentials), icon = "keyboard", actions = {
+        DialogButton(stringResource(R.string.cancel), dismiss)
+        DialogButton(stringResource(R.string.connect), { connect(ticket) }, DialogRole.Primary, enabled = ticket.isNotBlank() && !busy, busy = busy)
+    }) {
+        OutlinedTextField(ticket, { if (it.toByteArray().size <= limit) ticket = it }, Modifier.fillMaxWidth().heightIn(min = 116.dp, max = 180.dp),
+            enabled = !busy, placeholder = { Text(stringResource(R.string.credential_hint)) }, isError = error != null, shape = MaterialTheme.shapes.medium)
+        ErrorText(error)
     }
 }
 @Composable private fun ScanCorners() {
-    val tint = MaterialTheme.colorScheme.primary
-    Canvas(Modifier.fillMaxWidth(.75f).aspectRatio(1f)) {
-        val width = size.width; val height = size.height; val arm = width * .08f
+    val tint = Color.White
+    Canvas(Modifier.fillMaxWidth(.72f).aspectRatio(1f)) {
+        val width = size.width; val height = size.height; val arm = width * .12f
         for ((x,dx) in listOf(0f to 1f, width to -1f)) for ((y,dy) in listOf(0f to 1f, height to -1f)) {
-            drawLine(tint, androidx.compose.ui.geometry.Offset(x,y), androidx.compose.ui.geometry.Offset(x+dx*arm,y), 3.dp.toPx())
-            drawLine(tint, androidx.compose.ui.geometry.Offset(x,y), androidx.compose.ui.geometry.Offset(x,y+dy*arm), 3.dp.toPx())
+            drawLine(tint, androidx.compose.ui.geometry.Offset(x,y), androidx.compose.ui.geometry.Offset(x+dx*arm,y), 4.dp.toPx(), androidx.compose.ui.graphics.StrokeCap.Round)
+            drawLine(tint, androidx.compose.ui.geometry.Offset(x,y), androidx.compose.ui.geometry.Offset(x,y+dy*arm), 4.dp.toPx(), androidx.compose.ui.graphics.StrokeCap.Round)
         }
     }
 }

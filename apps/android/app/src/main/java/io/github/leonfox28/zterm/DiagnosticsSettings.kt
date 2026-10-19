@@ -25,24 +25,29 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-ndjson")) { uri ->
         if (uri != null) diagnostics.export(uri, exportIncludesDebug)
     }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 16.dp)) {
-        Text(stringResource(R.string.diagnostics), style = MaterialTheme.typography.titleSmall)
-        Text(stringResource(R.string.diagnostics_description), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
+    SettingsGroup(stringResource(R.string.diagnostics)) {
+        Text(stringResource(R.string.diagnostics_description), Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp),
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         val detailLabel = stringResource(R.string.diagnostics_detail)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(detailLabel, Modifier.weight(1f))
+        SettingsRow(detailLabel, subtitle = if (state.remainingSeconds > 0)
+            stringResource(R.string.diagnostics_remaining, state.remainingSeconds) else null) {
             Switch(state.remainingSeconds > 0, { diagnostics.setEnabled(it) }, enabled = !state.busy, modifier = Modifier.testTag("diagnostics-detail").semantics { contentDescription = detailLabel })
         }
-        if (state.remainingSeconds > 0) {
-            Text(stringResource(R.string.diagnostics_remaining, state.remainingSeconds), style = MaterialTheme.typography.bodySmall)
-            TextButton({ diagnostics.setEnabled(true) }, enabled = !state.busy) { Text(stringResource(R.string.diagnostics_renew)) }
+        if (state.remainingSeconds > 0) TextButton({ diagnostics.setEnabled(true) }, Modifier.padding(start = 4.dp), enabled = !state.busy) {
+            Text(stringResource(R.string.diagnostics_renew))
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        GroupDivider()
+        Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Checkbox(includeDebug, { includeDebug = it }, enabled = !state.busy, modifier = Modifier.testTag("diagnostics-include-detail"))
-            Text(stringResource(R.string.diagnostics_include_detail), style = MaterialTheme.typography.bodySmall)
+            Text(stringResource(R.string.diagnostics_include_detail), style = MaterialTheme.typography.bodyMedium)
         }
-        OutlinedButton({ exportIncludesDebug = includeDebug; export.launch("zterm-logs.jsonl") }, enabled = !state.busy) { Text(stringResource(R.string.diagnostics_export)) }
-        if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-        if (state.failed) Text(stringResource(R.string.diagnostics_failed), color = MaterialTheme.colorScheme.error)
+        OutlinedButton({ exportIncludesDebug = includeDebug; export.launch("zterm-logs.jsonl") },
+            Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 16.dp).heightIn(min = 44.dp),
+            enabled = !state.busy, shape = MaterialTheme.shapes.small) {
+            LineIcon("download", Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.diagnostics_export))
+        }
+        if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp))
+        if (state.failed) Text(stringResource(R.string.diagnostics_failed), Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
     }
 }

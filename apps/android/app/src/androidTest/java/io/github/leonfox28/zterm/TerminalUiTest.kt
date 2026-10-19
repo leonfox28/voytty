@@ -74,7 +74,16 @@ class TerminalUiTest {
             val encoded = android.util.Base64.encodeToString(script.toByteArray(), android.util.Base64.NO_WRAP)
             ui.runOnIdle { repository.text("python3 -c 'import base64; exec(base64.b64decode(\"$encoded\"))'\r") }
             await("protocol output") { content().contains("PROTOCOL_READY") && repository.frame.value?.applicationTitle == "编辑器" }
-            ui.onNodeWithText("$name · 编辑器").assertExists()
+            // The toolbar chip names the Session; the program title sits beside "Current" in the sheet.
+            fun sheetShowsProgramTitle(shown: Boolean) {
+                ui.runOnIdle { repository.togglePanel() }
+                // Assert only once the current row exists, so absence cannot pass on an unloaded list.
+                ui.waitUntil(20_000) { ui.onAllNodesWithText("Current").fetchSemanticsNodes().isNotEmpty() }
+                if (shown) ui.onNodeWithText(" · 编辑器").assertExists() else ui.onNodeWithText(" · 编辑器").assertDoesNotExist()
+                ui.runOnIdle { repository.closePanel() }
+            }
+            ui.onNodeWithText(name).assertExists()
+            sheetShowsProgramTitle(true)
             assertEquals(io.github.leonfox28.zterm.nativebridge.NativeCursorShape.BEAM, repository.frame.value!!.cursorShape)
             assertTrue(repository.frame.value!!.cursorBlinking)
             val styles = repository.frame.value!!.rows.first { row -> row.cells.take(6).joinToString("") { it.text } == "STRIKE" }.cells
@@ -83,7 +92,8 @@ class TerminalUiTest {
             val renamed = "$name-renamed"
             ui.runOnIdle { repository.renameSession(requireNotNull(owned), renamed) }
             await("manual rename") { !repository.state.value.busy && repository.state.value.sessions.any { it.name == renamed } }
-            ui.onNodeWithText("$renamed · 编辑器").assertExists()
+            ui.onNodeWithText(renamed).assertExists()
+            sheetShowsProgramTitle(true)
             ui.runOnIdle { repository.goHome() }
             ui.waitUntil { repository.frame.value == null }
             ui.runOnIdle { repository.connectHost(host.id) }
@@ -120,6 +130,7 @@ class TerminalUiTest {
             ui.runOnIdle { repository.text("c") }
             await("empty title") { repository.frame.value?.applicationTitle == "" }
             ui.onNodeWithText(renamed).assertExists()
+            sheetShowsProgramTitle(false)
             assertTrue(repository.state.value.sessions.any { it.sessionId == owned && it.name == renamed })
             ui.runOnIdle { repository.text("q") }
         } finally {
@@ -419,8 +430,8 @@ print('SCENE_DONE')
             }
 
             val viewport = repository.frame.value!!.viewport
-            // The header also includes the shell's OSC title on Linux. Match
-            // our unique Session name without assuming an empty child title.
+            // The toolbar chip shows the unique Session name; the shell's OSC
+            // title on Linux stays in the sheet.
             ui.onNodeWithText(name, substring = true).performClick()
             ui.onNodeWithText("New session").assertIsDisplayed()
             assertEquals("overlay preserves terminal dimensions", viewport, repository.frame.value!!.viewport)
