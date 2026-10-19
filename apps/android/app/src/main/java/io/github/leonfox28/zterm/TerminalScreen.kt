@@ -3,25 +3,30 @@ package io.github.leonfox28.zterm
 import android.view.WindowManager.LayoutParams
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -62,20 +67,17 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
     }
     BackHandler(enabled = state.panel || !imeVisible) { if (state.panel) repository.closePanel() else repository.goHome() }
     LaunchedEffect(frame?.inputEpoch, state.sessionId) { modifiers = 0 }
+    val chrome = MaterialTheme.colorScheme.surfaceContainerLow
+    val inputReady = frame?.inputReady == true
+    var terminalHeight by remember { mutableIntStateOf(0) }
+    val scrim = MaterialTheme.colorScheme.scrim.copy(alpha = .32f)
+    val closeSheet = Modifier.clickable(indication = null, interactionSource = null) { repository.closePanel() }
+    // The scrim also covers the status bar strip, which sits outside the padded content below.
+    if (state.panel) Box(Modifier.fillMaxWidth().windowInsetsTopHeight(WindowInsets.statusBars).background(scrim).then(closeSheet))
     Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
         TerminalGridLayout(cellHeight, imeAnimation, Modifier.fillMaxSize(),
             onImeLayoutSettled = { terminalView?.imeLayoutSettled = it }) {
-            Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconAction("back", stringResource(R.string.back)) { repository.goHome() }
-                Row(Modifier.weight(1f).fillMaxHeight().clickable { repository.togglePanel() }, verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(terminalDisplayTitle(session?.name ?: host?.name ?: "zterm", frame?.applicationTitle.orEmpty()), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                        TerminalConnectionSubtitle(host?.name.orEmpty(), frame, state.busy, state.error)
-                    }
-                    LineIcon("down", Modifier.padding(horizontal = 12.dp).size(20.dp))
-                }
-            }
-            Box(Modifier.fillMaxWidth()) {
+            Box(Modifier.fillMaxWidth().onSizeChanged { terminalHeight = it.height }) {
                 AndroidView(factory = { context -> TerminalView(context).apply {
                         this.repository = repository; terminalView = this
                         onCellHeightChanged = { cellHeight = it }; onCellHeightChanged(gridCellHeight)
@@ -101,20 +103,13 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
                         else stringResource(R.string.connection_failure_body)
                     WideStatusCard(title, body, Modifier.align(Alignment.Center).padding(24.dp),
                         icon = "disconnect", busy = state.busy) {
-                        if (state.busy && state.connecting) {
-                            OutlinedButton(repository::goHome, Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                                Text(stringResource(R.string.cancel))
+                        DialogActions {
+                            if (state.busy && state.connecting) DialogButton(stringResource(R.string.cancel), repository::goHome)
+                            else {
+                                DialogButton(stringResource(R.string.sessions), repository::togglePanel, enabled = !state.busy)
+                                DialogButton(stringResource(if (canTakeover) R.string.takeover else R.string.retry),
+                                    { if (canTakeover) taking = state.sessionId else repository.retry() }, DialogRole.Primary, enabled = !state.busy)
                             }
-                        } else {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            FilledTonalButton(repository::togglePanel, Modifier.weight(1f).heightIn(min = 48.dp), enabled = !state.busy) {
-                                Text(stringResource(R.string.sessions))
-                            }
-                            Button(onClick = { if (canTakeover) taking = state.sessionId else repository.retry() },
-                                modifier = Modifier.weight(1.35f).heightIn(min = 48.dp), enabled = !state.busy) {
-                                Text(stringResource(if (canTakeover) R.string.takeover else R.string.retry))
-                            }
-                        }
                         }
                     }
                 }
@@ -123,7 +118,8 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
                 }
                 val notice = state.error ?: frame?.notice
                 if (notice != null && frame != null && !inactive) {
-                    Surface(Modifier.align(Alignment.TopCenter).padding(8.dp), shape = RoundedCornerShape(8.dp)) {
+                    Surface(Modifier.align(Alignment.TopCenter).padding(8.dp), shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.errorContainer, shadowElevation = 4.dp) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             ErrorText(notice, Modifier.padding(horizontal = 12.dp))
                             IconAction("close", stringResource(R.string.close)) { repository.clearError() }
@@ -132,13 +128,17 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
                 }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Row(Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                UploadToolbarButtons(repository.uploads, frame?.inputReady == true,
-                    Modifier.weight(1f).fillMaxHeight()) { terminalView?.requestFocus() }
-                val keys = listOf("Esc" to NativeKey.Escape, "Tab" to NativeKey.Tab, "Ctrl" to null, "Alt" to null,
+            Row(Modifier.fillMaxWidth().height(TerminalToolbarHeight).background(chrome)
+                .padding(horizontal = 4.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                SessionChip(session?.name ?: host?.name ?: "zterm", connectionColor(frame, state.busy, state.error), state.panel,
+                    repository::togglePanel, Modifier.fillMaxHeight().widthIn(SessionChipMinWidth, SessionChipMaxWidth))
+                UploadToolbarButtons(repository.uploads, inputReady, Modifier.weight(1f).fillMaxHeight()) { terminalView?.requestFocus() }
+                // Tab and Alt give way to the upload keys: legacy Ctrl+I is Tab, and an Esc prefix acts as Meta.
+                val keys = listOf("Esc" to NativeKey.Escape, "Ctrl" to null,
                     "←" to NativeKey.Left, "↓" to NativeKey.Down, "↑" to NativeKey.Up, "→" to NativeKey.Right)
                 keys.forEach { (label,key) ->
-                    val bit = when(label) { "Ctrl" -> 4; "Alt" -> 2; else -> 0 }
+                    val bit = if (label == "Ctrl") 4 else 0
                     val arrow = when (key) {
                         NativeKey.Left -> "arrow-left" to R.string.key_left
                         NativeKey.Down -> "arrow-down" to R.string.key_down
@@ -147,56 +147,83 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
                         else -> null
                     }
                     val description = arrow?.let { stringResource(it.second) }
-                    TextButton(onClick = {
+                    ToolbarKey(onClick = {
                         if (bit != 0) modifiers = modifiers xor bit
                         else if (key != null) { repository.key(key,modifiers); repository.key(key,modifiers,3); modifiers = 0 }
-                    }, enabled = frame?.inputReady == true && upload?.active != true,
-                        modifier = Modifier.weight(1f).fillMaxHeight().semantics { if (description != null) contentDescription = description }, contentPadding = PaddingValues(0.dp),
-                        colors = ButtonDefaults.textButtonColors(containerColor = if (bit != 0 && modifiers and bit != 0) MaterialTheme.colorScheme.primaryContainer else androidx.compose.ui.graphics.Color.Transparent)) {
-                        if (arrow != null) LineIcon(arrow.first, Modifier.size(18.dp))
-                        else Text(label, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                    }, enabled = inputReady && upload?.active != true,
+                        modifier = Modifier.weight(1f).fillMaxHeight().semantics { if (description != null) contentDescription = description },
+                        latched = bit != 0 && modifiers and bit != 0) {
+                        if (arrow != null) LineIcon(arrow.first, Modifier.size(16.dp))
+                        // Proportional type keeps "Esc" and "Ctrl" about as wide as each other and the icons.
+                        else Text(label, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1)
                     }
                 }
                 val keyboardLabel = stringResource(if (imeVisible) R.string.hide_keyboard else R.string.show_keyboard)
-                TextButton(onClick = { terminalView?.setKeyboardVisible(!imeVisible) },
-                    enabled = frame?.inputReady == true || imeVisible,
+                ToolbarKey(onClick = { terminalView?.setKeyboardVisible(!imeVisible) },
+                    enabled = inputReady || imeVisible,
                     modifier = Modifier.weight(1f).fillMaxHeight().semantics { contentDescription = keyboardLabel },
-                    contentPadding = PaddingValues(0.dp)) {
+                    latched = imeVisible) {
                     LineIcon("keyboard", Modifier.size(18.dp))
                 }
             }
         }
-        // Only this optional panel needs constraints during composition.
-        // Keep the terminal's per-frame IME movement in measurement/layout.
-        if (state.panel) BoxWithConstraints(Modifier.fillMaxSize()) {
-            val panelHeight = (maxHeight * .65f).coerceAtMost(420.dp)
-            Box(Modifier.fillMaxSize().padding(top = 48.dp).clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) { repository.closePanel() })
-            Surface(Modifier.padding(top = 48.dp).fillMaxWidth().heightIn(max = panelHeight), color = MaterialTheme.colorScheme.surfaceContainer, shadowElevation = 12.dp,
-                shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp)) {
+        // The sheet is composed after the toolbar so its rows follow the session chip, and it is sized in
+        // layout from the terminal area so keyboard animation frames never recompose it.
+        if (state.panel) Box(Modifier.fillMaxWidth().layout { measurable, constraints ->
+            val height = terminalHeight.coerceIn(0, constraints.maxHeight)
+            val placeable = measurable.measure(Constraints.fixed(constraints.maxWidth, height))
+            layout(constraints.maxWidth, height) { placeable.place(0, 0) }
+        }) {
+            Box(Modifier.fillMaxSize().background(scrim).then(closeSheet))
+            Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().layout { measurable, constraints ->
+                    val limit = minOf((constraints.maxHeight * .65f).toInt(), 460.dp.roundToPx())
+                    val placeable = measurable.measure(constraints.copy(minHeight = 0, maxHeight = limit))
+                    layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+                }, color = chrome, shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
                 Column {
-                    if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-                    LazyColumn(Modifier.weight(1f, fill = false)) {
+                    Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(1f)) { TerminalConnectionSubtitle(host?.name.orEmpty(), frame, state.busy, state.error, 13.sp) }
+                        IconAction("home", stringResource(R.string.back_to_hosts)) { repository.goHome() }
+                    }
+                    Box(Modifier.fillMaxWidth().height(3.dp)) { if (state.busy) LinearProgressIndicator(Modifier.fillMaxSize()) }
+                    LazyColumn(Modifier.weight(1f, fill = false).padding(horizontal = 8.dp)) {
                         items(state.sessions, key = { it.sessionId }) { item ->
                             var menu by remember { mutableStateOf(false) }
                             // sessionId is also the failed/retry target; only a
                             // retained connection can own the current row.
                             val current = item.sessionId == state.sessionId && frame?.state in setOf("active", "synchronizing", "reconnecting")
-                            Row(Modifier.fillMaxWidth().clickable(enabled = !state.busy) {
+                            val colors = MaterialTheme.colorScheme
+                            Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium)
+                                .background(if (current) colors.primaryContainer else Color.Transparent)
+                                .clickable(enabled = !state.busy) {
                                 when {
                                     current -> repository.closePanel()
                                     item.occupied -> taking = item.sessionId
                                     else -> repository.selectSession(item.sessionId)
                                 }
-                            }.padding(start = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f).padding(vertical = 12.dp)) {
-                                    Text(item.name, maxLines = 1, color = if (current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                                    if (current || item.occupied) Text(stringResource(if(current) R.string.current_session else R.string.occupied), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }.padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                IconTile("terminal", size = 36.dp,
+                                    container = if (current) colors.primary else colors.surfaceContainerHigh,
+                                    tint = if (current) colors.onPrimary else colors.onSurfaceVariant)
+                                Column(Modifier.weight(1f).padding(horizontal = 12.dp, vertical = 12.dp)) {
+                                    Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = if (current) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (current) colors.onPrimaryContainer else colors.onSurface)
+                                    if (current || item.occupied) Row {
+                                        val secondary = if (current) colors.onPrimaryContainer.copy(alpha = .72f) else LocalZtermColors.current.warning
+                                        Text(stringResource(if(current) R.string.current_session else R.string.occupied),
+                                            style = MaterialTheme.typography.bodySmall, color = secondary)
+                                        if (current) terminalApplicationTitle(item.name, frame?.applicationTitle.orEmpty())?.let { title ->
+                                            Text(" · $title", Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                                style = MaterialTheme.typography.bodySmall, color = secondary)
+                                        }
+                                    }
                                 }
                                 Box {
                                     IconAction("more", stringResource(R.string.session_menu), !state.busy) { menu = true }
-                                    DropdownMenu(menu, { menu = false }) {
+                                    DropdownMenu(menu, { menu = false }, shape = MaterialTheme.shapes.medium) {
                                         DropdownMenuItem(text = { Text(stringResource(R.string.rename)) }, onClick = { menu = false; renaming = item })
-                                        DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, onClick = { menu = false; deleting = item })
+                                        DropdownMenuItem(text = { Text(stringResource(R.string.delete), color = colors.error) }, onClick = { menu = false; deleting = item })
                                     }
                                 }
                             }
@@ -206,8 +233,9 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
                     state.sessionListError?.let { code ->
                         SessionListError(code, !state.sessionsRefreshing, repository::refreshSessionList)
                     }
-                    TextButton({ creating = true }, Modifier.fillMaxWidth().height(52.dp), enabled = !state.busy) {
-                        LineIcon("plus"); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.new_session))
+                    FilledTonalButton({ creating = true }, Modifier.fillMaxWidth().padding(12.dp).height(48.dp), enabled = !state.busy,
+                        shape = MaterialTheme.shapes.medium) {
+                        LineIcon("plus", Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.new_session), maxLines = 1)
                     }
                 }
             }
@@ -221,10 +249,11 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
             renaming?.let { old -> if (state.sessions.any { it.sessionId == old.sessionId && it.name != old.name }) renaming = null }
         }
     }
-    deleting?.let { row -> ConfirmDialog(stringResource(R.string.delete_session), row.name + "\n" + stringResource(R.string.delete_session_message), stringResource(R.string.delete), { deleting = null }) { deleting = null; repository.deleteSession(row.sessionId) } }
+    deleting?.let { row -> ConfirmDialog(stringResource(R.string.delete_session), row.name + "\n" + stringResource(R.string.delete_session_message), stringResource(R.string.delete), { deleting = null },
+        icon = "trash", destructive = true) { deleting = null; repository.deleteSession(row.sessionId) } }
     taking?.let { id ->
         val name = state.sessions.firstOrNull { it.sessionId == id }?.name
-        ConfirmDialog(stringResource(R.string.takeover), name?.let { "$it\n" }.orEmpty() + stringResource(R.string.takeover_message), stringResource(R.string.takeover), { taking = null }) {
+        ConfirmDialog(stringResource(R.string.takeover), name?.let { "$it\n" }.orEmpty() + stringResource(R.string.takeover_message), stringResource(R.string.takeover), { taking = null }, icon = "terminal") {
             taking = null; repository.selectSession(id,true)
         }
     }
@@ -237,7 +266,18 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
         TextButton(retry, enabled = enabled) { Text(stringResource(R.string.retry)) }
     }
 }
-@Composable internal fun TerminalConnectionSubtitle(host: String, status: TerminalStatus?, busy: Boolean, error: String?) {
+@Composable internal fun connectionColor(status: TerminalStatus?, busy: Boolean, error: String?): Color {
+    val extra = LocalZtermColors.current
+    return when (status?.state) {
+        "active" -> extra.success
+        "synchronizing" -> if (status.inputReady) extra.success else extra.warning
+        "reconnecting" -> extra.warning
+        "ended", "lease_lost", "closed" -> MaterialTheme.colorScheme.error
+        else -> if (busy) extra.warning else if (error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outline
+    }
+}
+@Composable internal fun TerminalConnectionSubtitle(host: String, status: TerminalStatus?, busy: Boolean, error: String?,
+    fontSize: TextUnit = 11.sp) {
     val label = when (status?.state) {
         "reconnecting" -> stringResource(R.string.reconnecting)
         "ended" -> stringResource(R.string.session_ended)
@@ -259,13 +299,48 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
         else -> stringResource(if (busy) R.string.connecting else if (error != null) R.string.connection_error else R.string.disconnected)
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
+        StatusDot(connectionColor(status, busy, error), Modifier.padding(end = 6.dp).size(if (fontSize > 11.sp) 8.dp else 6.dp))
         Text(host, Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis,
-            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            fontSize = fontSize, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(" · $label", maxLines = 1, overflow = TextOverflow.Ellipsis,
-            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            fontSize = fontSize, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
-/** The fifth, unoccupied area is below the fixed toolbar, inside the already consumed insets. */
+internal val TerminalToolbarHeight = 48.dp
+// The chip follows its session name between these bounds: the minimum fits the dot and four characters, and
+// the maximum keeps the other nine keys at least 32dp wide on a 412dp phone; longer names end in an ellipsis.
+private val SessionChipMinWidth = 56.dp
+private val SessionChipMaxWidth = 80.dp
+
+/** Stands in for a title bar: connection health and the session name, sized to its content; opens the session sheet. */
+@Composable private fun SessionChip(name: String, health: Color, open: Boolean, onClick: () -> Unit, modifier: Modifier) {
+    ToolbarKey(onClick, enabled = true, modifier = modifier, latched = open, filled = true) {
+        Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            StatusDot(health, Modifier.size(6.dp))
+            Text(name, Modifier.padding(start = 6.dp).weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        }
+    }
+}
+
+/**
+ * A compact toolbar button. Keys are flat so the row reads as one strip; only [filled] controls (the session
+ * chip) keep a key-cap fill, and [latched] marks a held modifier or another active state.
+ */
+@Composable internal fun ToolbarKey(onClick: () -> Unit, enabled: Boolean, modifier: Modifier, latched: Boolean = false,
+    filled: Boolean = false, content: @Composable RowScope.() -> Unit) {
+    val extra = LocalZtermColors.current
+    val rest = if (filled) extra.keyCap else Color.Transparent
+    TextButton(onClick = onClick, enabled = enabled, modifier = modifier, shape = MaterialTheme.shapes.extraSmall,
+        contentPadding = PaddingValues(0.dp),
+        colors = ButtonDefaults.textButtonColors(
+            containerColor = if (latched) MaterialTheme.colorScheme.primaryContainer else rest,
+            contentColor = if (latched) MaterialTheme.colorScheme.onPrimaryContainer else extra.onKeyCap,
+            disabledContainerColor = if (filled) rest.copy(alpha = .5f) else rest,
+            disabledContentColor = extra.onKeyCap.copy(alpha = .38f)),
+        content = content)
+}
+/** Children: terminal, divider, toolbar. The unoccupied remainder is below the fixed toolbar, inside the already consumed insets. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable internal fun TerminalGridLayout(cellHeight: Int, imeAnimation: ImeAnimationState, modifier: Modifier,
     onImeLayoutSettled: (Boolean) -> Unit = {},
@@ -277,10 +352,9 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
     val navigation = WindowInsets.navigationBars
     Layout(content = content, modifier = modifier) { children, constraints ->
         val chromeConstraints = constraints.copy(minHeight = 0)
-        val header = children[0].measure(chromeConstraints)
-        val divider = children[2].measure(chromeConstraints)
-        val toolbar = children[3].measure(chromeConstraints)
-        val available = (constraints.maxHeight - header.height - divider.height - toolbar.height).coerceAtLeast(0)
+        val divider = children[1].measure(chromeConstraints)
+        val toolbar = children[2].measure(chromeConstraints)
+        val available = (constraints.maxHeight - divider.height - toolbar.height).coerceAtLeast(0)
         val nav = navigation.getBottom(density)
         val currentBottom = maxOf(nav, ime.getBottom(density))
         val startBottom = maxOf(nav, start.getBottom(density))
@@ -290,27 +364,31 @@ import io.github.leonfox28.zterm.nativebridge.NativeSession
         onImeLayoutSettled(currentBottom == endBottom)
         val remainder = terminalBottomRemainder(available, cellHeight, currentBottom,
             startBottom, endBottom, imeAnimation.running)
-        val terminal = children[1].measure(Constraints.fixed(constraints.maxWidth, available - remainder))
+        val terminal = children[0].measure(Constraints.fixed(constraints.maxWidth, available - remainder))
         layout(constraints.maxWidth, constraints.maxHeight) {
-            header.placeRelative(0, 0)
-            terminal.placeRelative(0, header.height)
-            divider.placeRelative(0, header.height + terminal.height)
-            toolbar.placeRelative(0, header.height + terminal.height + divider.height)
+            terminal.placeRelative(0, 0)
+            divider.placeRelative(0, terminal.height)
+            toolbar.placeRelative(0, terminal.height + divider.height)
         }
     }
 }
 @Composable private fun SessionForm(previous: String?, busy: Boolean, error: String?, dismiss: () -> Unit, submit: (String,String) -> Unit) {
     var name by remember(previous) { mutableStateOf(previous.orEmpty()) }
     var directory by remember { mutableStateOf("") }
-    AlertDialog(onDismissRequest = dismiss, title = { Text(stringResource(if (previous == null) R.string.new_session else R.string.rename)) },
-        text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedTextField(name, { if (it.length <= 128) name = it }, label = { Text(stringResource(R.string.name)) }, singleLine = true, enabled = !busy)
-            if (previous == null) OutlinedTextField(directory, { if (it.length <= 4096) directory = it }, label = { Text(stringResource(R.string.directory_optional)) }, singleLine = true, enabled = !busy)
-            ErrorText(error)
-        } }, confirmButton = { TextButton({ submit(name,directory) }, enabled = name.isNotBlank() && !busy) { Text(stringResource(if (previous == null) R.string.create else R.string.save)) } },
-        dismissButton = { TextButton(dismiss) { Text(stringResource(R.string.cancel)) } })
+    ZtermDialog(dismiss, stringResource(if (previous == null) R.string.new_session else R.string.rename),
+        icon = if (previous == null) "plus" else "edit", actions = {
+            DialogButton(stringResource(R.string.cancel), dismiss)
+            DialogButton(stringResource(if (previous == null) R.string.create else R.string.save), { submit(name,directory) },
+                DialogRole.Primary, enabled = name.isNotBlank() && !busy, busy = busy)
+        }) {
+        OutlinedTextField(name, { if (it.length <= 128) name = it }, Modifier.fillMaxWidth(), label = { Text(stringResource(R.string.name)) },
+            singleLine = true, enabled = !busy, shape = MaterialTheme.shapes.medium)
+        if (previous == null) OutlinedTextField(directory, { if (it.length <= 4096) directory = it }, Modifier.fillMaxWidth(),
+            label = { Text(stringResource(R.string.directory_optional)) }, singleLine = true, enabled = !busy, shape = MaterialTheme.shapes.medium)
+        ErrorText(error)
+    }
 }
 
-internal fun terminalDisplayTitle(sessionName: String, applicationTitle: String): String =
-    if (applicationTitle.isEmpty() || applicationTitle == sessionName) sessionName
-    else "$sessionName · $applicationTitle"
+/** The running program's terminal title, unless it is empty or merely repeats the session name. */
+internal fun terminalApplicationTitle(sessionName: String, applicationTitle: String): String? =
+    applicationTitle.takeUnless { it.isEmpty() || it == sessionName }

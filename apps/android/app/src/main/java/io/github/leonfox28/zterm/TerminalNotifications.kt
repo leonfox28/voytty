@@ -18,13 +18,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -35,7 +32,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -149,29 +145,24 @@ internal class TerminalNotifications(context: Context, private val failed: () ->
             else -> guidance = true
         }
     }
-    Text(stringResource(R.string.notifications), Modifier.padding(start = 12.dp, top = 20.dp, bottom = 8.dp),
-        fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     val effective = appEnabled && systemEnabled
-    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
-        Row(Modifier.fillMaxWidth().testTag("terminal-notifications").heightIn(min = 74.dp)
-            .toggleable(effective, enabled = state.initialized && !state.notificationsSaving && !pending,
-                role = Role.Switch, onValueChange = change)
-            .padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                Text(stringResource(R.string.terminal_notifications), fontSize = 15.sp)
-                Text(stringResource(when {
-                    !systemEnabled -> R.string.notifications_system_blocked
-                    appEnabled -> R.string.notifications_on
-                    else -> R.string.notifications_off
-                }), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+    SettingsGroup(stringResource(R.string.notifications)) {
+        SettingsRow(stringResource(R.string.terminal_notifications),
+            Modifier.testTag("terminal-notifications")
+                .toggleable(effective, enabled = state.initialized && !state.notificationsSaving && !pending,
+                    role = Role.Switch, onValueChange = change),
+            subtitle = stringResource(when {
+                !systemEnabled -> R.string.notifications_system_blocked
+                appEnabled -> R.string.notifications_on
+                else -> R.string.notifications_off
+            })) {
             Switch(checked = effective, onCheckedChange = null,
                 enabled = state.initialized && !state.notificationsSaving && !pending)
         }
     }
     if (guidance) ConfirmDialog(stringResource(R.string.enable_notifications),
         stringResource(R.string.notifications_permission_guidance), stringResource(R.string.notification_system_settings),
-        dismiss = { guidance = false }, confirm = {
+        dismiss = { guidance = false }, icon = "bell", confirm = {
             guidance = false
             try { pending = true; settings.launch(notifications.settingsIntent()) }
             catch (_: android.content.ActivityNotFoundException) {

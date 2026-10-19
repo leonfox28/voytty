@@ -675,7 +675,6 @@ class TerminalRenderingTest {
                         Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
                             TerminalGridLayout(cell, owner, Modifier.fillMaxSize(),
                                 onImeLayoutSettled = { view.imeLayoutSettled = it }) {
-                                Box(Modifier.fillMaxWidth().height(48.dp))
                                 AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())
                                 HorizontalDivider()
                                 Box(Modifier.fillMaxWidth().height(48.dp))

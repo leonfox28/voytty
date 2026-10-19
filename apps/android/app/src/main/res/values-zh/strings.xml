@@ -154,4 +154,11 @@
     <string name="background_notification_visible">连接通知可见。</string>
     <string name="background_notification_hidden">Android 设置已隐藏连接通知，仍可保持后台连接。</string>
     <string name="background_start_failed">后台服务未能启动，返回应用可重试；终端仍可使用。</string>
+    <string name="general">通用</string>
+    <string name="terminal_section">终端</string>
+    <string name="resume_session">继续上次的会话</string>
+    <string name="home_empty_title">还没有主机</string>
+    <string name="home_empty_body">在电脑上运行下面的命令，然后扫描二维码即可添加。</string>
+    <string name="scan_hint">扫描 zterm pair create 显示的二维码</string>
+    <string name="back_to_hosts">返回主机列表</string>
 </resources>

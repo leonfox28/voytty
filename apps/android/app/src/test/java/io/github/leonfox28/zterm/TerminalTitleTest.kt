@@ -1,14 +1,15 @@
 package io.github.leonfox28.zterm
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class TerminalTitleTest {
-    @Test fun titleCombinesWithoutChangingManualName() {
+    @Test fun programTitleIsShownOnlyWhenItAddsToTheManualName() {
         val manual = "开发会话"
-        assertEquals("开发会话 · 编辑器", terminalDisplayTitle(manual, "编辑器"))
-        assertEquals(manual, terminalDisplayTitle(manual, ""))
-        assertEquals(manual, terminalDisplayTitle(manual, manual))
-        assertEquals("重命名 · 编辑器", terminalDisplayTitle("重命名", "编辑器"))
+        assertEquals("编辑器", terminalApplicationTitle(manual, "编辑器"))
+        assertNull(terminalApplicationTitle(manual, ""))
+        assertNull(terminalApplicationTitle(manual, manual))
+        assertEquals("编辑器", terminalApplicationTitle("重命名", "编辑器"))
     }
 }

@@ -3,7 +3,11 @@ package io.github.leonfox28.zterm
 import android.content.res.Configuration
 import android.os.LocaleList
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.foundation.Canvas
@@ -13,7 +17,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -57,17 +60,9 @@ import java.util.Locale
             }
         }
     }
-    val colors = if (dark) darkColorScheme(primary = Color(0xFFD9FBA7), onPrimary = Color(0xFF101713),
-        background = Color(0xFF101713), surface = Color(0xFF101713), surfaceContainer = Color(0xFF1A241D),
-        surfaceContainerHigh = Color(0xFF223027), onSurface = Color(0xFFF0F4ED), onSurfaceVariant = Color(0xFFACB9AF),
-        outline = Color(0xFF7A8F80), outlineVariant = Color(0xFF314036), error = Color(0xFFFFB4AB))
-    else lightColorScheme(primary = Color(0xFF476A20), onPrimary = Color.White,
-        background = Color(0xFFF5F8F3), surface = Color(0xFFF5F8F3), surfaceContainer = Color.White,
-        surfaceContainerHigh = Color(0xFFE6EEE3), onSurface = Color(0xFF182219), onSurfaceVariant = Color(0xFF53634F),
-        outline = Color(0xFF71816B), outlineVariant = Color(0xFFD4DED2))
     CompositionLocalProvider(LocalContext provides localized, LocalConfiguration provides localized.resources.configuration,
         LocalUpdateBlocks provides updateBlocks) {
-        MaterialTheme(colorScheme = colors) {
+        ZtermTheme(dark) {
             Surface(Modifier.fillMaxSize()) {
                 Box {
                     when (state.route) {
@@ -94,6 +89,21 @@ import java.util.Locale
             "right" -> { line(9f,5f,16f,12f); line(16f,12f,9f,19f) }
             "close" -> { line(6f,6f,18f,18f); line(18f,6f,6f,18f) }
             "down" -> { line(6f,9f,12f,15f); line(12f,15f,18f,9f) }
+            "up" -> { line(6f,15f,12f,9f); line(12f,9f,18f,15f) }
+            "home" -> { line(3f,11f,12f,3.5f); line(12f,3.5f,21f,11f); line(5.5f,9f,5.5f,20f); line(5.5f,20f,18.5f,20f)
+                line(18.5f,20f,18.5f,9f); line(10f,20f,10f,14f); line(10f,14f,14f,14f); line(14f,14f,14f,20f) }
+            "trash" -> { line(4f,7f,20f,7f); line(9f,7f,9f,4f); line(9f,4f,15f,4f); line(15f,4f,15f,7f)
+                line(6f,7f,7f,20f); line(7f,20f,17f,20f); line(17f,20f,18f,7f); line(10f,11f,10f,16f); line(14f,11f,14f,16f) }
+            "edit" -> { line(4f,20f,4.5f,16f); line(4f,20f,8f,19.5f); line(4.5f,16f,15.5f,5f); line(8f,19.5f,19f,8.5f)
+                line(15.5f,5f,19f,8.5f); line(13f,7.5f,16.5f,11f) }
+            "bell" -> {
+                val path = Path().apply {
+                    moveTo(6f*factor,17f*factor); lineTo(6f*factor,11f*factor)
+                    cubicTo(6f*factor,7.7f*factor,8.7f*factor,5f*factor,12f*factor,5f*factor)
+                    cubicTo(15.3f*factor,5f*factor,18f*factor,7.7f*factor,18f*factor,11f*factor); lineTo(18f*factor,17f*factor)
+                }
+                drawPath(path,color,style=Stroke(stroke)); line(4f,17f,20f,17f); line(10f,20f,14f,20f); line(12f,3f,12f,5f)
+            }
             "plus" -> { line(12f,5f,12f,19f); line(5f,12f,19f,12f) }
             "arrow-left" -> { line(21f,12f,3f,12f); line(3f,12f,10f,5f); line(3f,12f,10f,19f) }
             "arrow-down" -> { line(12f,3f,12f,21f); line(12f,21f,5f,14f); line(12f,21f,19f,14f) }
@@ -152,105 +162,159 @@ import java.util.Locale
 }
 private fun Modifier.semanticsDescription(label: String): Modifier = this.then(Modifier.semantics { contentDescription = label })
 
-@Composable internal fun PageHeader(title: String, back: () -> Unit) {
-    Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
-        IconAction("back", stringResource(R.string.back), onClick = back)
-        Text(title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-    }
-}
 @Composable private fun HomeScreen(state: AppState, repository: AppRepository) {
     var removing by remember { mutableStateOf<SavedHost?>(null) }
-    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 24.dp)) {
-        Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) {
-            LineIcon("terminal", color = MaterialTheme.colorScheme.primary)
-            Text("zterm", Modifier.padding(start = 14.dp).weight(1f), fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+    val colors = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 20.dp)) {
+        Row(Modifier.fillMaxWidth().height(72.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconTile("terminal", container = colors.primaryContainer, tint = colors.onPrimaryContainer)
+            Text("zterm", Modifier.padding(start = 14.dp).weight(1f), style = MaterialTheme.typography.headlineSmall)
             IconAction("settings", stringResource(R.string.settings)) { repository.show(Route.Settings) }
         }
-        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(vertical = 16.dp)) {
+        Box(Modifier.fillMaxWidth().height(4.dp)) {
+            if (state.busy || !state.initialized && state.error == null)
+                LinearProgressIndicator(Modifier.fillMaxSize().clip(CircleShape))
+        }
+        val hosts = state.saved.hosts
+        if (state.initialized && hosts.isEmpty()) EmptyHosts(Modifier.weight(1f).fillMaxWidth())
+        else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(top = 12.dp, bottom = 96.dp)) {
             val recent = state.saved.recent
-            val recentHost = state.saved.hosts.firstOrNull { it.id == recent?.host }
+            val recentHost = hosts.firstOrNull { it.id == recent?.host }
             if (recent != null && recentHost != null) item {
-                Card(onClick = { repository.connectHost(recent.host, true) }, enabled = !state.busy,
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer), shape = RoundedCornerShape(20.dp)) {
-                    Column(Modifier.fillMaxWidth().padding(20.dp)) {
-                        Text(stringResource(R.string.recent_connection), color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(recentHost.name, Modifier.weight(1f).padding(vertical = 16.dp), fontSize = 23.sp, fontWeight = FontWeight.SemiBold)
-                            LineIcon("right", color = MaterialTheme.colorScheme.primary)
-                        }
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
+                RecentCard(recentHost.name, !state.busy) { repository.connectHost(recent.host, true) }
             }
-            item { Text(stringResource(R.string.saved_hosts), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp) }
-            items(state.saved.hosts, key = { it.id }) { host ->
-                Surface(Modifier.fillMaxWidth().combinedClickable(enabled = !state.busy,
-                    onClick = { repository.connectHost(host.id) }, onLongClick = { removing = host }),
-                    shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
-                    Row(Modifier.padding(18.dp).heightIn(min = 42.dp), verticalAlignment = Alignment.CenterVertically) {
-                        LineIcon("server", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(host.name, Modifier.padding(horizontal = 18.dp).weight(1f), fontWeight = FontWeight.Medium)
-                        LineIcon("right", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            item { SectionLabel(stringResource(R.string.saved_hosts)) }
+            items(hosts, key = { it.id }) { host ->
+                Surface(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.medium, color = colors.surfaceContainer) {
+                    Row(Modifier.combinedClickable(enabled = !state.busy,
+                        onClick = { repository.connectHost(host.id) }, onLongClick = { removing = host })
+                        .padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        HostMonogram(host.name)
+                        Text(host.name, Modifier.padding(horizontal = 16.dp).weight(1f), style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        LineIcon("right", Modifier.size(20.dp), colors.onSurfaceVariant)
                     }
                 }
             }
         }
-        ErrorText(state.error)
-        if (state.busy || !state.initialized && state.error == null) LinearProgressIndicator(Modifier.fillMaxWidth())
-        OutlinedButton({ repository.show(Route.Scanner) }, Modifier.fillMaxWidth().padding(vertical = 16.dp).height(50.dp), enabled = state.initialized && !state.busy,
-            shape = RoundedCornerShape(12.dp)) { LineIcon("plus"); Spacer(Modifier.width(10.dp)); Text(stringResource(R.string.add_host)) }
+        // Leave room so the floating add button never covers the error line.
+        ErrorText(state.error, Modifier.padding(end = 88.dp, bottom = 16.dp))
+    }
+    val enabled = state.initialized && !state.busy
+    val addLabel = stringResource(R.string.add_host)
+    Box(Modifier.fillMaxSize().safeDrawingPadding().padding(20.dp), contentAlignment = Alignment.BottomEnd) {
+        Surface({ repository.show(Route.Scanner) }, Modifier.size(64.dp).semantics { contentDescription = addLabel },
+            enabled = enabled, shape = CircleShape, shadowElevation = 6.dp,
+            color = if (enabled) colors.primary else colors.surfaceContainerHighest,
+            contentColor = if (enabled) colors.onPrimary else colors.onSurfaceVariant) {
+            Box(contentAlignment = Alignment.Center) { LineIcon("plus", Modifier.size(28.dp)) }
+        }
     }
     removing?.let { host -> ConfirmDialog(stringResource(R.string.remove_host), host.name + "\n" + stringResource(R.string.remove_host_message),
-        stringResource(R.string.remove), { removing = null }) { removing = null; repository.removeHost(host.id) } }
+        stringResource(R.string.remove), { removing = null }, icon = "trash", destructive = true) { removing = null; repository.removeHost(host.id) } }
+}
+@Composable private fun RecentCard(name: String, enabled: Boolean, open: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Surface(open, Modifier.fillMaxWidth(), enabled = enabled, shape = MaterialTheme.shapes.large, color = colors.primaryContainer,
+        contentColor = colors.onPrimaryContainer) {
+        Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(stringResource(R.string.recent_connection), style = MaterialTheme.typography.labelMedium,
+                    color = colors.onPrimaryContainer.copy(alpha = .72f))
+                Text(name, Modifier.padding(top = 6.dp), style = MaterialTheme.typography.headlineSmall,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(stringResource(R.string.resume_session), Modifier.padding(top = 2.dp), style = MaterialTheme.typography.bodyMedium,
+                    color = colors.onPrimaryContainer.copy(alpha = .72f))
+            }
+            Box(Modifier.size(48.dp).clip(CircleShape).background(colors.primary), contentAlignment = Alignment.Center) {
+                LineIcon("arrow-right", Modifier.size(22.dp), colors.onPrimary)
+            }
+        }
+    }
+}
+@Composable private fun HostMonogram(name: String) {
+    Box(Modifier.size(40.dp).clip(MaterialTheme.shapes.small).background(MaterialTheme.colorScheme.surfaceContainerHigh),
+        contentAlignment = Alignment.Center) {
+        Text(name.trim().firstOrNull()?.uppercase() ?: "#", style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary, fontFamily = TerminalFont.family)
+    }
+}
+@Composable private fun EmptyHosts(modifier: Modifier) {
+    Column(modifier.padding(horizontal = 12.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+        IconTile("server", size = 72.dp, tint = MaterialTheme.colorScheme.primary)
+        Text(stringResource(R.string.home_empty_title), Modifier.padding(top = 24.dp), style = MaterialTheme.typography.titleLarge)
+        Text(stringResource(R.string.home_empty_body), Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        CommandChip("zterm pair create", Modifier.padding(top = 20.dp))
+    }
+}
+@Composable internal fun CommandChip(command: String, modifier: Modifier = Modifier) {
+    Surface(modifier, shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Text("$ $command", Modifier.padding(horizontal = 14.dp, vertical = 8.dp), fontFamily = TerminalFont.family,
+            fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+    }
 }
 @Composable private fun SettingsScreen(state: AppState, repository: AppRepository, updates: AppUpdates) {
     BackHandler { repository.show(Route.Home) }
     val preferences = state.saved.preferences
     var fontSize by remember(preferences.fontSize) { mutableIntStateOf(preferences.fontSize) }
-    Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+    Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         PageHeader(stringResource(R.string.settings)) { repository.show(Route.Home) }
-        PreferenceGroup(stringResource(R.string.language), preferences.language,
-            listOf("system" to stringResource(R.string.follow_system), "zh" to stringResource(R.string.chinese), "en" to stringResource(R.string.english))) {
-            val value = it
-            repository.updatePreferences { current -> current.copy(language = value) }
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+            SettingsGroup(stringResource(R.string.general)) {
+                PreferenceChoice(stringResource(R.string.language), preferences.language,
+                    listOf("system" to stringResource(R.string.follow_system), "zh" to stringResource(R.string.chinese), "en" to stringResource(R.string.english))) {
+                    val value = it
+                    repository.updatePreferences { current -> current.copy(language = value) }
+                }
+                GroupDivider()
+                PreferenceChoice(stringResource(R.string.theme), preferences.theme,
+                    listOf("system" to stringResource(R.string.follow_system), "dark" to stringResource(R.string.dark), "light" to stringResource(R.string.light))) {
+                    val value = it
+                    repository.updatePreferences { current -> current.copy(theme = value) }
+                }
+            }
+            SettingsGroup(stringResource(R.string.terminal_section)) {
+                val fontLabel = stringResource(R.string.font_size)
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(fontLabel, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                    Surface(shape = MaterialTheme.shapes.extraSmall, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                        Text(fontSize.toString(), Modifier.padding(horizontal = 10.dp, vertical = 4.dp), fontFamily = TerminalFont.family,
+                            style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                Slider(value = fontSize.toFloat(),
+                    onValueChange = { fontSize = it.roundToInt().coerceIn(terminalFontSizes) },
+                    onValueChangeFinished = {
+                        val value = fontSize
+                        repository.updatePreferences { current -> current.copy(fontSize = value) }
+                    },
+                    valueRange = terminalFontSizes.first.toFloat()..terminalFontSizes.last.toFloat(),
+                    steps = terminalFontSizes.last - terminalFontSizes.first - 1,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).semantics { contentDescription = fontLabel })
+                Surface(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = MaterialTheme.shapes.medium) {
+                    Text(stringResource(R.string.font_preview), Modifier.padding(16.dp), fontFamily = TerminalFont.family, fontSize = fontSize.sp)
+                }
+            }
+            BackgroundConnectionSettings(state, repository)
+            TerminalNotificationSettings(state, repository)
+            DiagnosticsSettings()
+            AboutSettings(updates, state.initialized)
+            ErrorText(state.error)
         }
-        PreferenceGroup(stringResource(R.string.theme), preferences.theme,
-            listOf("system" to stringResource(R.string.follow_system), "dark" to stringResource(R.string.dark), "light" to stringResource(R.string.light))) {
-            val value = it
-            repository.updatePreferences { current -> current.copy(theme = value) }
-        }
-        val fontLabel = stringResource(R.string.font_size)
-        Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 20.dp, bottom = 8.dp)) {
-            Text(fontLabel, Modifier.weight(1f), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(fontSize.toString(), fontSize = 13.sp)
-        }
-        Slider(value = fontSize.toFloat(),
-            onValueChange = { fontSize = it.roundToInt().coerceIn(terminalFontSizes) },
-            onValueChangeFinished = {
-                val value = fontSize
-                repository.updatePreferences { current -> current.copy(fontSize = value) }
-            },
-            valueRange = terminalFontSizes.first.toFloat()..terminalFontSizes.last.toFloat(),
-            steps = terminalFontSizes.last - terminalFontSizes.first - 1,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).semantics { contentDescription = fontLabel })
-        Surface(Modifier.fillMaxWidth().padding(vertical = 12.dp), color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(14.dp)) {
-            Text(stringResource(R.string.font_preview), Modifier.padding(18.dp), fontFamily = TerminalFont.family, fontSize = fontSize.sp)
-        }
-        BackgroundConnectionSettings(state, repository)
-        TerminalNotificationSettings(state, repository)
-        DiagnosticsSettings()
-        AboutSettings(updates, state.initialized)
-        ErrorText(state.error)
     }
 }
-@Composable private fun PreferenceGroup(title: String, selected: String, options: List<Pair<String,String>>, change: (String) -> Unit) {
-    Text(title, Modifier.padding(start = 12.dp, top = 20.dp, bottom = 8.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
-        Column {
-            options.forEach { (value,label) ->
-                Row(Modifier.fillMaxWidth().selectable(selected == value, onClick = { change(value) }).padding(horizontal = 12.dp).height(52.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(label, Modifier.weight(1f)); RadioButton(selected == value, onClick = null)
-                }
+@Composable private fun PreferenceChoice(title: String, selected: String, options: List<Pair<String,String>>, change: (String) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+        Text(title, Modifier.padding(bottom = 12.dp), style = MaterialTheme.typography.bodyLarge)
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            options.forEachIndexed { index, (value, label) ->
+                SegmentedButton(selected == value, onClick = { change(value) }, SegmentedButtonDefaults.itemShape(index, options.size),
+                    colors = SegmentedButtonDefaults.colors(activeContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        activeContentColor = MaterialTheme.colorScheme.onPrimaryContainer, activeBorderColor = MaterialTheme.colorScheme.outline,
+                        inactiveContainerColor = MaterialTheme.colorScheme.surfaceContainer, inactiveBorderColor = MaterialTheme.colorScheme.outline),
+                    icon = {}, label = { Text(label, maxLines = 1) })
             }
         }
     }
@@ -285,10 +349,3 @@ private fun Modifier.semanticsDescription(label: String): Modifier = this.then(M
     "camera_unavailable" -> R.string.camera_unavailable
     else -> R.string.connection_error
 })
-@Composable internal fun ConfirmDialog(title: String, message: String, action: String,
-    dismiss: () -> Unit, confirm: () -> Unit) {
-    BlockStartupUpdatePrompt()
-    AlertDialog(onDismissRequest = dismiss, title = { Text(title) }, text = { Text(message) },
-        confirmButton = { TextButton(confirm) { Text(action) } },
-        dismissButton = { TextButton(dismiss) { Text(stringResource(R.string.cancel)) } })
-}

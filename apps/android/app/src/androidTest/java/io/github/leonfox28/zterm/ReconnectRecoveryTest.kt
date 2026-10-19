@@ -68,6 +68,8 @@ class ReconnectRecoveryTest {
                 assertEquals(first, store.load().recent?.session)
                 assertEquals(first, store.load().hosts.first { it.id == host.id }.lastSession)
                 await { repository.frame.value?.let { it.connectionPath != NativeConnectionPath.UNKNOWN && it.rttMs != null } == true }
+                // Route and latency live in the session sheet opened from the toolbar chip.
+                main { repository.togglePanel() }
                 for (language in listOf("en", "zh", "system")) {
                     main { repository.updatePreferences { it.copy(language = language) } }
                     await { repository.state.value.saved.preferences.language == language }
@@ -80,6 +82,7 @@ class ReconnectRecoveryTest {
                     File(app.cacheDir, "reconnect-header.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
                     bitmap.recycle()
                 }
+                main { repository.closePanel() }
                 if (args.getString("daemonRestart") == "1") {
                     ready.writeText("ready")
                     withTimeout(120_000) { while (!restarted.isFile) delay(100) }
