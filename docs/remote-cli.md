@@ -44,6 +44,7 @@ These inspection commands do not start a daemon or create state:
 zterm status
 zterm doctor
 zterm logs [-n|--lines <n>]
+zterm config terminal-identity
 ```
 
 `status` summarizes the device name, version, daemon state,
@@ -58,6 +59,16 @@ progress and errors use stderr. Public execution errors have one `Error:` prefix
 A typed missing-Session error includes a shell-quoted `session list --target=...`
 hint, while cancellation, unknown outcomes and created-but-not-attached failures
 retain their distinct diagnostics.
+
+After setup, `zterm config terminal-identity [zterm|ghostty]` reads or changes
+the local host's child-program identity. With no value it shows the saved choice;
+`zterm` is the default and restores native identification. `ghostty` enables
+compatibility for applications such as Herdr that select OSC 9 notifications by
+terminal name. Changes are persisted and apply to new sessions on this host
+without restarting or starting its daemon. Existing sessions keep their identity.
+For a remote host, run this command on that host; it has no `--target` option.
+See [terminal identity and notifications](persistent-sessions.md) for the precise
+environment contract and notification prerequisites.
 
 `logs` reads a bounded tail once: 100 lines by default, at most 1,000 lines and
 1 MiB. `-n` aliases `--lines`; missing logs produce an English explanation. Key

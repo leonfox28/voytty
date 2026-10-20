@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 use zeroize::Zeroizing;
 use zterm_core::{AuthorizationStatus, MAX_TICKET_TEXT_BYTES, SessionId};
 use zterm_daemon::bootstrap::BootstrapResult;
-use zterm_daemon::config::validate_setup_profile;
+use zterm_daemon::config::{TerminalIdentity, validate_setup_profile};
 use zterm_daemon::error::DaemonError;
 use zterm_daemon::operations::{
     CommandDeviceSummary, CommandSessionSummary, LifecycleStage, LocalRuntime, ObservedState,
@@ -108,6 +108,9 @@ impl Cli {
                 Command::Logs(_)
                     | Command::Status
                     | Command::Doctor
+                    | Command::Config {
+                        command: ConfigCommand::TerminalIdentity { identity: None }
+                    }
                     | Command::Daemon {
                         command: DaemonCommand::Autostart {
                             command: AutostartCommand::Status
@@ -173,6 +176,12 @@ impl Cli {
 enum Command {
     /// Configure this device and explicitly start its daemon.
     Setup(SetupArgs),
+    /// Inspect or change this host's configuration without starting its daemon.
+    Config {
+        /// Configuration operation.
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// Show setup and daemon state without starting anything.
     Status,
     /// Run local-only diagnostics without starting anything.
@@ -213,6 +222,16 @@ enum Command {
     Update(UpdateArgs),
     /// Remove the complete managed state and this installed executable.
     Uninstall(UninstallArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    /// Show or set the child-program identity for new sessions on this host.
+    TerminalIdentity {
+        /// Omit to show the current value. Changes apply to new sessions without a restart.
+        #[arg(value_parser = TerminalIdentity::VALUES)]
+        identity: Option<String>,
+    },
 }
 
 #[derive(clap::Args)]
@@ -712,6 +731,16 @@ pub async fn execute(
         Some(Command::Setup(arguments)) => setup(runtime, arguments, interaction)
             .await
             .map(CommandOutcome::Text),
+        Some(Command::Config {
+            command: ConfigCommand::TerminalIdentity { identity },
+        }) => {
+            let configured = runtime.terminal_identity(identity.as_deref()).await?;
+            let mut output = format!("Terminal identity: {}\n", configured.as_str());
+            if identity.is_some() {
+                output.push_str("Applies to new sessions on this host; no daemon restart required. Existing sessions keep their identity.\n");
+            }
+            Ok(CommandOutcome::Text(output))
+        }
         Some(Command::Status) => status(runtime).await.map(CommandOutcome::Text),
         Some(Command::Doctor) => doctor(runtime).await.map(CommandOutcome::Text),
         Some(Command::Pair { command }) => pair(runtime, command, interaction).await,
