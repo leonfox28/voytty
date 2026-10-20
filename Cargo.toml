@@ -24,7 +24,7 @@ noq-proto = { path = "vendor/noq-proto" }
 iroh = { path = "vendor/iroh" }
 
 [workspace.package]
-version = "0.1.45"
+version = "0.1.46"
 edition = "2024"
 rust-version = "1.98"
 publish = false
