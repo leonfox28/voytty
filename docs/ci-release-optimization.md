@@ -199,3 +199,31 @@ Cargo 清理 metadata 找出的 path 包；新增真实 Cargo fixture 覆盖缺 
 在两轮构建中分别逐字节一致。总构建时间从 4m20.90s 到 1m14.64s，但这也包含 Cargo
 本地热构建和 Gradle 初始化的收益，不能全部归因于新 Gradle 缓存；上表单列实际
 Kotlin 编译与检查 task 的耗时。hosted 稳态收益仍需 main 首次填充后验证。
+
+## 2026-10-20：Linux arm64 的 handoff 测试初始化竞态
+
+10 月 19 日，PR #90 的
+[首次运行](https://github.com/leonfox28/zterm/actions/runs/39233147500/job/117995786462)
+在 `startup_failure_keeps_new_binary_and_records_partial_completion` 的错误文本断言失败；
+合并后的 [main 首次运行](https://github.com/leonfox28/zterm/actions/runs/39247933910/job/118044379141)
+在 `post_check_failure_restores_previous_binary_and_reports_failure` 读取结果日志时得到
+`NotFound`。两次都仅 Linux arm64 失败，同一提交重跑通过。
+
+本次在本地 Linux arm64 容器（Rust 1.98.0、普通用户、关闭 incremental/dev debuginfo）中，
+仅运行这两项测试的 1,600 轮并发实验复现 4 次启动错误断言失败。补充错误输出后，实际原因是
+`exec` 返回 `ETXTBSY`（`Text file busy`），独立更新进程尚未启动。
+另外一组交接与分发测试的普通并发运行也复现同类错误。
+
+测试父进程原先直接写入每个 fixture 的 `zterm` 脚本。另一测试同时创建子进程时，可能继承
+尚未关闭的写入描述符；`CLOEXEC` 只在该子进程执行新程序时关闭它。即使原写入线程已经关闭
+文件，Linux 仍可能因另一子进程持有写入句柄而拒绝执行。单独的 `strace` 延迟实验捕捉到了
+这一顺序；延迟注入只用于验证机制，不属于 CI 或上述普通并发统计。
+
+修复将脚本写入交给不再创建子进程的专用 fixture 子进程，并在原有 6 秒子进程等待上限内
+确认它退出后使用脚本。产品更新流程与超时不变，也不增加失败重试。两项故障测试新增阶段标记
+断言，确保确实到达启动故障／激活后自检故障，并保留实际错误及子进程 panic 诊断。
+
+修复后，两项测试 1,600 轮（3,200 个用例）及整组 19 项 handoff 测试 120 轮均通过。
+这是本地 Linux arm64 证据，不替代 GitHub runner 的验证。历史 main 日志没有保留实际更新
+错误，因此不能单靠该日志断言它必然属于同一原因；修复覆盖两项测试共用的初始化竞态，新增
+阶段断言也防止把更早发生的失败误认为预期的回滚测试结果。
