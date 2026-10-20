@@ -34,7 +34,10 @@ use zterm_core::{
     SessionEndReason, SessionId, SessionName, SessionSelector,
 };
 use zterm_platform::account::EffectiveAccount;
-use zterm_platform::pty::{PtyChildState, PtyError, PtyHost, PtyPathKind, PtySession, PtySize};
+use zterm_platform::pty::{
+    PtyChildState, PtyError, PtyHost, PtyPathKind, PtySession, PtySize, TerminalIdentity,
+};
+use zterm_platform::user_state::UserPaths;
 use zterm_terminal::{TerminalError, TerminalModel};
 
 use crate::error::DaemonError;
@@ -441,13 +444,29 @@ pub struct SessionService {
 }
 
 impl SessionService {
-    /// Creates the production account-login-shell service.
+    /// Creates an account-login-shell service with the default identity.
     #[must_use]
     pub fn new(own_device_id: DeviceId) -> Self {
+        Self::with_login_identity(own_device_id, || Ok(TerminalIdentity::default()))
+    }
+
+    /// Creates the host service, reading the committed identity for each new session.
+    #[must_use]
+    pub fn from_config(own_device_id: DeviceId, paths: UserPaths) -> Self {
+        Self::with_login_identity(own_device_id, move || {
+            crate::config::load_config(&paths).map(|config| config.terminal_identity)
+        })
+    }
+
+    fn with_login_identity(
+        own_device_id: DeviceId,
+        identity: impl Fn() -> Result<TerminalIdentity, DaemonError> + Send + Sync + 'static,
+    ) -> Self {
         Self::with_spawner(
             own_device_id,
             ResourceLimits::default(),
-            |size, requested_cwd| {
+            move |size, requested_cwd| {
+                let identity = identity()?;
                 let account = EffectiveAccount::current().map_err(|error| {
                     DaemonError::new(DomainErrorKind::UnsupportedPlatform, error.to_string())
                 })?;
@@ -455,9 +474,10 @@ impl SessionService {
                     .map(Path::to_path_buf)
                     .unwrap_or_else(|| account.home().to_path_buf());
                 let session = PtyHost::new()
-                    .spawn_current_account_login_shell(
+                    .spawn_login_shell_with_identity(
                         PtySize::new(size.rows, size.columns),
                         Some(&working_directory),
+                        identity,
                     )
                     .map_err(map_pty_error)?;
                 Ok((session, working_directory))

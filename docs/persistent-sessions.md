@@ -109,10 +109,29 @@ preserves the current screen; when necessary it removes only the oldest
 complete history lines at an ANSI reset/line boundary to remain within the
 frame ceiling.
 
-The login PTY always receives `TERM=xterm-256color`, `COLORTERM=truecolor`,
-`TERM_PROGRAM=zterm`, and `TERM_PROGRAM_VERSION` set to the host build's
-package version (for example, `0.1.42`). These values are set when a session is
-created; updating the host does not change an existing shell's environment.
+The login PTY receives `TERM=xterm-256color`, `COLORTERM=truecolor`, and
+`TERM_PROGRAM_VERSION` set to the host build's package version (for example,
+`0.1.45`). `TERM_PROGRAM` defaults to `zterm`; the host can explicitly select
+`ghostty` compatibility for programs that gate ordinary notifications by name:
+
+```sh
+zterm config terminal-identity          # Show this host's saved choice
+zterm config terminal-identity ghostty  # Enable compatibility for new sessions
+zterm config terminal-identity zterm    # Restore the default for new sessions
+```
+
+Run the command on the host that owns the sessions, after `zterm setup`. The
+choice is saved as `terminal_identity` in `~/.zterm/config.toml`; existing files
+without that field default to `zterm`. New sessions read the saved choice without
+a daemon restart, including sessions created from Android or another remote
+client. Existing shells and reattachments retain their original environment.
+Repeated setup preserves the choice. These commands do not start or stop the
+daemon.
+
+Only `TERM_PROGRAM` changes. `TERM`, terminfo, capability-query replies, and
+the host's actual `TERM_PROGRAM_VERSION` remain unchanged; selecting `ghostty`
+does not implement additional Ghostty features or advertise its version.
+
 If the user runs Zterm inside Ghostty, kitty,
 Alacritty, tmux, or another terminal, that outer application only interprets
 Zterm's allowlisted ANSI. It does not contain, share, or nest the daemon's
@@ -127,8 +146,8 @@ the XDG base directories, `DBUS_SESSION_BUS_ADDRESS`, `SSH_AUTH_SOCK`,
 daemon started or updated from inside tmux, Herdr, an SSH connection, or another
 terminal therefore never hands markers such as `TMUX`, `HERDR_ENV`, or
 `SSH_CONNECTION` to new sessions. The outer terminal's `TERM_PROGRAM` and
-`TERM_PROGRAM_VERSION` are replaced by Zterm's own identity; everything else
-comes from the login shell's own profile.
+`TERM_PROGRAM_VERSION` are replaced by the host's configured identity and Zterm
+build version; everything else comes from the login shell's own profile.
 
 ## Trust and architecture boundary
 
@@ -236,7 +255,12 @@ to 1,024 UTF-8 bytes; invalid/control text is rejected.
 OSC 99, standalone bell forwarding, numeric OSC 9 progress/subcommands, actions,
 notification updates, tmux passthrough and external push are not included.
 Programs must actually emit OSC 9/777. Applications that select notification
-protocols by terminal name need to recognize `TERM_PROGRAM=zterm`; Zterm
-advertises its own identity and does not impersonate another terminal.
+protocols by terminal name may need the explicit `ghostty` compatibility choice
+above. For example, Herdr 0.9.5 does not recognize `TERM_PROGRAM=zterm`, but
+emits OSC 9 for `TERM_PROGRAM=ghostty`. Set Herdr's `[ui.toast]`
+`delivery = "terminal"` and launch or attach Herdr from a newly created Zterm
+session after changing the identity. Herdr suppresses notifications for its
+active tab. Android additionally needs **Settings → Terminal notifications**
+enabled and OS notification permission. The default remains `zterm`.
 Use matching updated host and client builds; notification kind 325 has no
 compatibility fallback to older receivers.

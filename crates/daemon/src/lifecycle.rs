@@ -332,7 +332,9 @@ fn run_daemon_with_network_mode(
                 directory.clone(),
                 network_handle.broker(),
             );
-            let service = DaemonService::with_network(setup, network_handle.observe())
+            let sessions =
+                crate::session::SessionService::from_config(own_device_id, paths.clone());
+            let service = DaemonService::with_network(setup, network_handle.observe(), sessions)
                 .with_remote_sessions(remote_sessions);
             let session_handler = RemoteSessionServiceHandler::new(
                 service.sessions().clone(),
@@ -371,7 +373,13 @@ fn run_daemon_with_network_mode(
                         .map_or(0, |duration| duration.as_secs()),
                     sessions,
                 ),
-                None => DaemonService::new(setup),
+                None => DaemonService::with_sessions(
+                    setup,
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_or(0, |duration| duration.as_secs()),
+                    crate::session::SessionService::from_config(own_device_id, paths.clone()),
+                ),
             };
             (
                 Arc::new(service.with_remote_sessions(remote_sessions)),

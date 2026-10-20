@@ -328,8 +328,11 @@ impl DaemonService {
     /// Creates production service state around the prepared network observer.
     #[cfg(unix)]
     #[must_use]
-    pub fn with_network(setup: BootstrapResult, network: NetworkObserver) -> Self {
-        let sessions = SessionService::new(setup.device_id);
+    pub fn with_network(
+        setup: BootstrapResult,
+        network: NetworkObserver,
+        sessions: SessionService,
+    ) -> Self {
         Self {
             setup,
             started_at_unix: now_unix(),
@@ -980,7 +983,7 @@ impl DaemonService {
             WireKind::LocalValidateSetupRequest => {
                 let request: v2::LocalValidateSetupRequest = decode_request(&frame)?;
                 let requested = config_from_wire(&request)?;
-                if requested != self.setup.config {
+                if !requested.same_setup(&self.setup.config) {
                     return Err(DaemonError::new(
                         DomainErrorKind::AlreadyConfiguredConflict,
                         "requested setup differs from the running daemon configuration",

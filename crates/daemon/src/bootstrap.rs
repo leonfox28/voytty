@@ -66,7 +66,7 @@ pub fn bootstrap_with_lock_held(
 
     let existing_config = if config_exists {
         let existing = load_config(paths)?;
-        if &existing != requested {
+        if !existing.same_setup(requested) {
             return Err(DaemonError::new(
                 DomainErrorKind::AlreadyConfiguredConflict,
                 "requested setup differs from committed config.toml",
@@ -158,7 +158,7 @@ pub fn validate_committed_setup_with_store(
     })
 }
 
-fn validate_committed_files_exist(paths: &UserPaths) -> Result<(), DaemonError> {
+pub(crate) fn validate_committed_files_exist(paths: &UserPaths) -> Result<(), DaemonError> {
     if !managed_exists(paths.identity())?
         || !managed_exists(paths.config())?
         || !managed_exists(paths.database())?

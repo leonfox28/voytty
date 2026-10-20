@@ -10,6 +10,8 @@ use zterm_platform::user_state::{UserPaths, atomic_write, validate_regular_file}
 
 use crate::error::DaemonError;
 
+pub use zterm_platform::pty::TerminalIdentity;
+
 /// Current configuration schema.
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 
@@ -21,6 +23,9 @@ pub struct ConfigV1 {
     pub schema_version: u32,
     /// User-facing device name.
     pub device_name: String,
+    /// Child-program identity for newly created sessions; older configs use zterm.
+    #[serde(default)]
+    pub terminal_identity: TerminalIdentity,
     /// Mutually exclusive infrastructure selection.
     pub infrastructure: InfrastructureConfig,
 }
@@ -127,8 +132,17 @@ impl ValidatedInfrastructure {
 pub struct ValidatedConfig {
     /// Trimmed user-facing device name.
     pub device_name: String,
+    /// Child-program identity for newly created sessions.
+    pub terminal_identity: TerminalIdentity,
     /// Validated mutually exclusive infrastructure choice.
     pub infrastructure: ValidatedInfrastructure,
+}
+
+impl ValidatedConfig {
+    /// Setup owns device identity and infrastructure, not mutable session preferences.
+    pub(crate) fn same_setup(&self, other: &Self) -> bool {
+        self.device_name == other.device_name && self.infrastructure == other.infrastructure
+    }
 }
 
 impl ConfigV1 {
@@ -144,6 +158,7 @@ impl ConfigV1 {
         Self {
             schema_version: CONFIG_SCHEMA_VERSION,
             device_name: config.device_name.clone(),
+            terminal_identity: config.terminal_identity,
             infrastructure,
         }
     }
@@ -181,6 +196,7 @@ impl ConfigV1 {
         };
         Ok(ValidatedConfig {
             device_name,
+            terminal_identity: self.terminal_identity,
             infrastructure,
         })
     }
@@ -194,6 +210,7 @@ pub fn validate_setup_input(
     validate_device_name(device_name)?;
     Ok(ValidatedConfig {
         device_name: device_name.trim().to_owned(),
+        terminal_identity: TerminalIdentity::default(),
         infrastructure,
     })
 }
@@ -231,6 +248,7 @@ pub fn validate_setup_profile(
     ConfigV1 {
         schema_version: CONFIG_SCHEMA_VERSION,
         device_name: device_name.to_owned(),
+        terminal_identity: TerminalIdentity::default(),
         infrastructure,
     }
     .validate()
@@ -280,6 +298,7 @@ mod tests {
         let raw = ConfigV1 {
             schema_version: CONFIG_SCHEMA_VERSION,
             device_name: "config-debug-host".to_owned(),
+            terminal_identity: TerminalIdentity::default(),
             infrastructure: InfrastructureConfig::SelfHosted {
                 relay_url: relay_sentinel.to_owned(),
             },

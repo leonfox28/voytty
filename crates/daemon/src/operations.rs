@@ -24,7 +24,7 @@ use crate::client::{LocalClient, LocalDeviceClient};
 use crate::client::{
     LocalPairingClient, RemoteDaemonRestarter, SessionClient, UnixAttachmentConnector,
 };
-use crate::config::ValidatedConfig;
+use crate::config::{TerminalIdentity, ValidatedConfig};
 use crate::device_directory::ResolvedSessionTarget;
 use crate::error::DaemonError;
 #[cfg(unix)]
@@ -559,6 +559,47 @@ impl LocalRuntime {
     /// Validates or creates setup and explicitly ensures one daemon.
     pub async fn setup(&self, requested: &ValidatedConfig) -> Result<BootstrapResult, DaemonError> {
         setup_and_ensure(&self.paths, requested, &self.launcher).await
+    }
+
+    /// Reads or changes the local host's identity for new sessions without starting a daemon.
+    pub async fn terminal_identity(
+        &self,
+        value: Option<&str>,
+    ) -> Result<TerminalIdentity, DaemonError> {
+        #[cfg(unix)]
+        {
+            let requested = value
+                .map(|value| value.parse::<TerminalIdentity>())
+                .transpose()
+                .map_err(|detail| DaemonError::new(DomainErrorKind::ConfigProfile, detail))?;
+            let require_setup = || {
+                crate::bootstrap::validate_committed_files_exist(&self.paths).map_err(|error| {
+                    if error.kind() == DomainErrorKind::NotSetup {
+                        not_setup_for_command()
+                    } else {
+                        error
+                    }
+                })
+            };
+            require_setup()?;
+            let _lock = if requested.is_some() {
+                Some(acquire_lifecycle_lock(&self.paths, Instant::now()).await?)
+            } else {
+                None
+            };
+            require_setup()?;
+            let mut config = crate::config::load_config(&self.paths)?;
+            if let Some(identity) = requested {
+                config.terminal_identity = identity;
+                crate::config::write_config(&self.paths, &config)?;
+            }
+            Ok(config.terminal_identity)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = value;
+            Err(unsupported_command_platform())
+        }
     }
 
     /// Authenticates, preflights, and atomically installs one explicit update.
@@ -2090,7 +2131,7 @@ async fn validate_running_setup(
     Ok(BootstrapResult {
         device_id: validated.device_id,
         endpoint_id: validated.endpoint_id,
-        config: requested.clone(),
+        config: crate::config::load_config(paths)?,
     })
 }
 

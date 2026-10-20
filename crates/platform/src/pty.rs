@@ -33,8 +33,43 @@ impl InputStop {
 const HOSTED_TERM: &str = "xterm-256color";
 #[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
 const HOSTED_COLORTERM: &str = "truecolor";
-#[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
-const HOSTED_TERM_PROGRAM: &str = "zterm";
+
+/// Identity advertised to child programs; terminal capabilities stay unchanged.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalIdentity {
+    /// Zterm's native identity.
+    #[default]
+    Zterm,
+    /// Compatibility with programs that only recognize Ghostty's OSC 9 support.
+    Ghostty,
+}
+
+impl TerminalIdentity {
+    /// Accepted configuration and command-line values.
+    pub const VALUES: [&'static str; 2] = ["zterm", "ghostty"];
+
+    /// Value exported as `TERM_PROGRAM` in a new login shell.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Zterm => "zterm",
+            Self::Ghostty => "ghostty",
+        }
+    }
+}
+
+impl std::str::FromStr for TerminalIdentity {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "zterm" => Ok(Self::Zterm),
+            "ghostty" => Ok(Self::Ghostty),
+            _ => Err("terminal identity must be zterm or ghostty"),
+        }
+    }
+}
 
 /// Daemon variables that describe this host login rather than whichever
 /// terminal, multiplexer, or connection started the daemon; `LC_*` is also
@@ -349,18 +384,29 @@ impl PtyHost {
         size: PtySize,
         working_directory: Option<&Path>,
     ) -> Result<PtySession, PtyError> {
+        self.spawn_login_shell_with_identity(size, working_directory, TerminalIdentity::default())
+    }
+
+    /// Spawns an account login shell with an explicit child-program identity.
+    pub fn spawn_login_shell_with_identity(
+        &self,
+        size: PtySize,
+        working_directory: Option<&Path>,
+        identity: TerminalIdentity,
+    ) -> Result<PtySession, PtyError> {
         validate_size(size)?;
 
         #[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
         {
             let account = EffectiveAccount::current().map_err(account_error)?;
-            let builder = login_shell_builder(&account, working_directory, std::env::vars_os())?;
+            let builder =
+                login_shell_builder(&account, working_directory, std::env::vars_os(), identity)?;
             self.spawn_builder(builder, size)
         }
 
         #[cfg(not(all(unix, not(any(target_os = "android", target_os = "redox")))))]
         {
-            let _ = working_directory;
+            let _ = (working_directory, identity);
             Err(PtyError::UnsupportedPlatform {
                 operation: "current-account login shell",
             })
@@ -785,6 +831,7 @@ fn login_shell_builder(
     account: &EffectiveAccount,
     requested_cwd: Option<&Path>,
     daemon_environment: impl IntoIterator<Item = (OsString, OsString)>,
+    identity: TerminalIdentity,
 ) -> Result<CommandBuilder, PtyError> {
     validate_directory(account.home(), PtyPathKind::HomeDirectory)?;
     validate_executable(account.shell(), PtyPathKind::LoginShell)?;
@@ -805,7 +852,7 @@ fn login_shell_builder(
     builder.env("LOGNAME", account.name());
     builder.env("TERM", HOSTED_TERM);
     builder.env("COLORTERM", HOSTED_COLORTERM);
-    builder.env("TERM_PROGRAM", HOSTED_TERM_PROGRAM);
+    builder.env("TERM_PROGRAM", identity.as_str());
     builder.env("TERM_PROGRAM_VERSION", crate::build_identity().version);
     builder.cwd(cwd);
     Ok(builder)
@@ -850,7 +897,12 @@ mod tests {
     #[test]
     fn login_builder_uses_effective_account_defaults() -> Result<(), PtyError> {
         let account = EffectiveAccount::current().map_err(account_error)?;
-        let builder = login_shell_builder(&account, None, std::iter::empty())?;
+        let builder = login_shell_builder(
+            &account,
+            None,
+            std::iter::empty(),
+            TerminalIdentity::default(),
+        )?;
 
         assert!(builder.is_default_prog());
         assert_eq!(builder.get_env("HOME"), Some(account.home().as_os_str()));
@@ -919,7 +971,12 @@ mod tests {
             ("SSH_AUTH_SOCK", "/tmp/agent.sock"),
         ]
         .map(|(key, value)| (OsString::from(key), OsString::from(value)));
-        let builder = login_shell_builder(&account, None, daemon_environment)?;
+        let builder = login_shell_builder(
+            &account,
+            None,
+            daemon_environment,
+            TerminalIdentity::default(),
+        )?;
 
         let environment = builder
             .iter_full_env_as_str()
@@ -964,6 +1021,34 @@ mod tests {
                 ("USER", account.name()),
                 ("XDG_RUNTIME_DIR", "/run/user/501"),
             ])
+        );
+        Ok(())
+    }
+
+    #[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
+    #[test]
+    fn compatibility_identity_only_changes_the_child_program_name() -> Result<(), PtyError> {
+        let account = EffectiveAccount::current().map_err(account_error)?;
+        let native =
+            login_shell_builder(&account, None, std::iter::empty(), TerminalIdentity::Zterm)?;
+        let compatible = login_shell_builder(
+            &account,
+            None,
+            [(
+                OsString::from("TERM_PROGRAM_VERSION"),
+                OsString::from("9.9.9"),
+            )],
+            TerminalIdentity::Ghostty,
+        )?;
+        let mut expected = native
+            .iter_full_env_as_str()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        expected.insert("TERM_PROGRAM", "ghostty");
+        assert_eq!(
+            compatible
+                .iter_full_env_as_str()
+                .collect::<std::collections::BTreeMap<_, _>>(),
+            expected
         );
         Ok(())
     }
@@ -1023,7 +1108,13 @@ mod tests {
             missing_shell.clone(),
         );
         assert_eq!(
-            login_shell_builder(&invalid_account, None, std::iter::empty()).err(),
+            login_shell_builder(
+                &invalid_account,
+                None,
+                std::iter::empty(),
+                TerminalIdentity::default()
+            )
+            .err(),
             Some(PtyError::InvalidPath {
                 kind: PtyPathKind::LoginShell,
                 path: missing_shell,
@@ -1034,7 +1125,13 @@ mod tests {
         let missing_cwd =
             std::env::temp_dir().join(format!("zterm-missing-login-cwd-{}", std::process::id()));
         assert_eq!(
-            login_shell_builder(&account, Some(&missing_cwd), std::iter::empty()).err(),
+            login_shell_builder(
+                &account,
+                Some(&missing_cwd),
+                std::iter::empty(),
+                TerminalIdentity::default()
+            )
+            .err(),
             Some(PtyError::InvalidPath {
                 kind: PtyPathKind::WorkingDirectory,
                 path: missing_cwd,

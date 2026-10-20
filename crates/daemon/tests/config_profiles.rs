@@ -4,8 +4,8 @@
 mod state_fixture;
 
 use zterm_daemon::config::{
-    ConfigV1, InfrastructureConfig, ValidatedInfrastructure, load_config, validate_setup_input,
-    write_config,
+    ConfigV1, InfrastructureConfig, TerminalIdentity, ValidatedInfrastructure, load_config,
+    validate_setup_input, write_config,
 };
 use zterm_daemon::transport::InfrastructureProfile;
 
@@ -15,6 +15,7 @@ use state_fixture::TestState;
 fn official_and_self_hosted_profiles_are_mutually_exclusive_and_validated() {
     let official = ConfigV1 {
         schema_version: 1,
+        terminal_identity: Default::default(),
         device_name: "work-mac".to_owned(),
         infrastructure: InfrastructureConfig::OfficialN0,
     }
@@ -24,6 +25,7 @@ fn official_and_self_hosted_profiles_are_mutually_exclusive_and_validated() {
 
     let self_hosted = ConfigV1 {
         schema_version: 1,
+        terminal_identity: Default::default(),
         device_name: "relay-host".to_owned(),
         infrastructure: InfrastructureConfig::SelfHosted {
             relay_url: "https://relay.example.com".to_owned(),
@@ -39,6 +41,7 @@ fn official_and_self_hosted_profiles_are_mutually_exclusive_and_validated() {
     assert!(
         ConfigV1 {
             schema_version: 1,
+            terminal_identity: Default::default(),
             device_name: "bad".to_owned(),
             infrastructure: InfrastructureConfig::SelfHosted {
                 relay_url: "http://relay.example.com".to_owned(),
@@ -61,4 +64,34 @@ fn config_round_trip_uses_one_parser_and_preserves_validated_values() {
         .expect("setup input");
     write_config(&state.paths, &requested).expect("config writes");
     assert_eq!(load_config(&state.paths).expect("config loads"), requested);
+}
+
+#[test]
+fn terminal_identity_defaults_for_existing_configs_and_rejects_unknown_values() {
+    let legacy = "schema_version=1\ndevice_name='host'\n[infrastructure]\nprofile='official-n0'\n";
+    let config = toml::from_str::<ConfigV1>(legacy)
+        .expect("legacy config")
+        .validate()
+        .expect("valid");
+    assert_eq!(config.terminal_identity, TerminalIdentity::Zterm);
+    for identity in TerminalIdentity::VALUES {
+        let text = format!("terminal_identity='{identity}'\n{legacy}");
+        let raw = toml::from_str::<ConfigV1>(&text).expect("known identity");
+        let configured = raw.validate().expect("valid identity");
+        assert_eq!(configured.terminal_identity.as_str(), identity);
+        let encoded = toml::to_string(&ConfigV1::from_validated(&configured)).expect("encode");
+        assert_eq!(
+            toml::from_str::<ConfigV1>(&encoded)
+                .expect("decode")
+                .validate()
+                .expect("validate"),
+            configured
+        );
+    }
+    for identity in ["", "kitty", "Ghostty", "ghostty;extra"] {
+        assert!(
+            toml::from_str::<ConfigV1>(&format!("terminal_identity='{identity}'\n{legacy}"))
+                .is_err()
+        );
+    }
 }
