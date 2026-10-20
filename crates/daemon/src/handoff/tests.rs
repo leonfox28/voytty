@@ -9,6 +9,7 @@ use crate::session::SessionService;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use zterm_platform::local_unix::{DaemonLock, bind_owned_daemon_socket, detach_current_process};
@@ -56,17 +57,19 @@ fn executable_script(root: &Path, updated: bool) -> String {
     let json = serde_json::to_string(&check).expect("self check");
     let post_check = if updated {
         format!(
-            "if [ \"$0\" = {} ] && [ -f {} ]; then exit 1; fi; ",
+            "if [ \"$0\" = {} ] && [ -f {} ]; then printf failed > {}; exit 1; fi; ",
             quote(&root.join("zterm")),
-            quote(&root.join("fail-post-check"))
+            quote(&root.join("fail-post-check")),
+            quote(&root.join("post-check-failed"))
         )
     } else {
         String::new()
     };
     let startup = if updated {
         format!(
-            "if [ -f {} ]; then exit 1; fi; ",
-            quote(&root.join("fail-start"))
+            "if [ -f {} ]; then printf failed > {}; exit 1; fi; ",
+            quote(&root.join("fail-start")),
+            quote(&root.join("startup-failed"))
         )
     } else {
         String::new()
@@ -89,7 +92,16 @@ fn fixture_process() {
     let Some(root) = std::env::var_os(FIXTURE_ROOT).map(PathBuf::from) else {
         return;
     };
+    let panic_root = root.clone();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = fs::write(panic_root.join("child-panic"), info.to_string());
+    }));
     match std::env::var(FIXTURE_ROLE).expect("fixture role").as_str() {
+        "install" => {
+            fs::write(root.join("zterm"), executable_script(&root, false)).expect("old executable");
+            fs::set_permissions(root.join("zterm"), fs::Permissions::from_mode(0o700))
+                .expect("mode");
+        }
         "daemon" => {
             detach_current_process().expect("detach fixture daemon");
             fs::OpenOptions::new()
@@ -248,13 +260,47 @@ impl Fixture {
         let requested = validate_setup_input("update-test", ValidatedInfrastructure::OfficialN0)
             .expect("config");
         bootstrap(&paths(root), &requested).expect("bootstrap");
-        fs::write(root.join("zterm"), executable_script(root, false)).expect("old executable");
-        fs::set_permissions(root.join("zterm"), fs::Permissions::from_mode(0o700)).expect("mode");
+        // Another test's concurrent spawn can inherit a writable descriptor
+        // until exec, even with CLOEXEC. Linux then rejects this script with
+        // ETXTBSY after our own writer has closed. A dedicated child writes it
+        // without spawning, and its exit proves every writable handle is gone.
+        let mut installer =
+            std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args(["--exact", "handoff::tests::fixture_process", "--nocapture"])
+                .env(FIXTURE_ROOT, root)
+                .env(FIXTURE_ROLE, "install")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("fixture installer");
+        wait_for_child(&mut installer);
+        let installed = installer
+            .wait_with_output()
+            .expect("fixture installer output");
+        assert!(
+            installed.status.success(),
+            "fixture installation failed: {}\n{}",
+            String::from_utf8_lossy(&installed.stdout),
+            String::from_utf8_lossy(&installed.stderr)
+        );
         fixture
     }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            for name in [
+                "child-panic",
+                "worker-result",
+                "selected-version",
+                "staged-directory",
+            ] {
+                if let Ok(detail) = fs::read_to_string(self.root.path().join(name)) {
+                    eprintln!("handoff fixture {name}: {detail}");
+                }
+            }
+        }
         let _ = block_on(runtime(self.root.path()).stop(true));
     }
 }
@@ -551,7 +597,7 @@ fn wait_for_child(child: &mut Child) {
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("lifecycle owner did not exit after control cancellation");
+            panic!("fixture child did not exit within six seconds");
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -669,7 +715,12 @@ fn startup_failure_keeps_new_binary_and_records_partial_completion() {
     assert!(
         error
             .detail()
-            .contains("Updated zterm to 9.1.0, but the daemon could not start")
+            .contains("Updated zterm to 9.1.0, but the daemon could not start"),
+        "unexpected update failure: {error}"
+    );
+    assert_eq!(
+        fs::read(root.join("startup-failed")).expect("startup fault was reached"),
+        b"failed"
     );
     assert_eq!(
         fs::read_to_string(root.join("zterm")).expect("new binary"),
@@ -688,12 +739,22 @@ fn post_check_failure_restores_previous_binary_and_reports_failure() {
     let root = fixture.root.path();
     let original = fs::read(root.join("zterm")).expect("old binary");
     fs::write(root.join("fail-post-check"), b"fail").expect("activation fault");
-    direct_update(root).expect_err("post-check failure");
+    let error = direct_update(root).expect_err("post-check failure");
+    assert_eq!(
+        error.kind(),
+        DomainErrorKind::ReleaseArtifactInvalid,
+        "{error}"
+    );
+    assert_eq!(
+        fs::read(root.join("post-check-failed")).expect("activated candidate fault was reached"),
+        b"failed"
+    );
     assert_eq!(
         fs::read(root.join("zterm")).expect("restored binary"),
         original
     );
-    let log = fs::read_to_string(paths(root).daemon_log()).expect("outcome log");
+    let log = fs::read_to_string(paths(root).daemon_log())
+        .unwrap_or_else(|read_error| panic!("outcome log: {read_error}; update failed: {error}"));
     assert!(log.contains("\"outcome\":\"failed\""));
     assert!(
         !log.contains("\"outcome\":\"success\"")
