@@ -34,6 +34,9 @@ const SETUP_GUIDANCE: &str = "zterm is not configured. Run `zterm setup` first.\
     args_conflicts_with_subcommands = true
 )]
 pub struct Cli {
+    /// Show project licenses and the conditional commercial-use grant without starting zterm.
+    #[arg(long, conflicts_with_all = ["internal_daemon", "internal_daemon_foreground", "internal_handoff", "internal_release_self_check", "internal_release_verify", "internal_release_install"])]
+    license: bool,
     /// Internal detached daemon entry; never accepted as a state-path override.
     #[arg(
         long,
@@ -80,6 +83,7 @@ impl fmt::Debug for Cli {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Cli")
+            .field("license", &self.license)
             .field("internal_daemon", &self.internal_daemon)
             .field("internal_handoff", &self.internal_handoff)
             .field(
@@ -100,6 +104,19 @@ impl fmt::Debug for Cli {
 }
 
 impl Cli {
+    /// Project license text requested before constructing any runtime or state paths.
+    #[must_use]
+    pub fn license_text(&self) -> Option<String> {
+        self.license.then(|| {
+            [
+                include_str!("../../../NOTICE"),
+                include_str!("../../../LICENSE"),
+                include_str!("../../../COMMERCIAL-LICENSE.md"),
+            ]
+            .join("\n\n")
+        })
+    }
+
     /// Foreground operations which can produce persistent diagnostic outcomes.
     pub fn records_diagnostics(&self) -> bool {
         !matches!(
@@ -2079,6 +2096,24 @@ mod tests {
                 .to_string()
                 .contains("--internal-handoff")
         );
+    }
+
+    #[test]
+    fn license_display_cannot_be_combined_with_runtime_operations() {
+        let parsed = Cli::try_parse_from(["zterm", "--license"]).expect("license display");
+        let text = parsed.license_text().expect("license text");
+        assert!(text.contains("Required Notice: Copyright 2026 Leon"));
+        assert!(text.contains("# PolyForm Noncommercial License 1.0.0"));
+        assert!(text.contains("# zterm Commercial Use License"));
+        assert!(Cli::try_parse_from(["zterm", "--license", "setup"]).is_err());
+        for entry in [
+            "--internal-daemon",
+            "--internal-daemon-foreground",
+            "--internal-handoff",
+            "--internal-release-self-check",
+        ] {
+            assert!(Cli::try_parse_from(["zterm", "--license", entry]).is_err());
+        }
     }
 
     #[test]

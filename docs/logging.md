@@ -1,6 +1,6 @@
 # Local logs and diagnostics
 
-Zterm saves key events by default on desktop and Android release/debug builds:
+Zterm saves key events by default on desktop, Android and iOS release/debug builds:
 startup/shutdown, Session and controller changes, pairing/revocation, network and
 route changes, connection/reconnect, upload/update outcomes, and frontend failures.
 Records include safe IDs, timestamps, stable error categories and operation timing.
@@ -58,7 +58,7 @@ stops with the same finite detail window. An absent sample can mean the reader
 was not polled or a record was suppressed; check loss reports before concluding
 that the transport stopped.
 
-Android Settings → Diagnostics provides the same switch, remaining time and
+Android and iOS Settings → Diagnostics provide the same switch, remaining time and
 renewal control, plus Export logs. It remains usable when identity/network setup
 fails. Each application variant has its own private logs and control state.
 
@@ -70,8 +70,10 @@ zterm logs export --output ./zterm-detail.jsonl --include-debug
 ```
 
 Desktop export creates a new 0600 file, refuses overwrite and destinations inside
-managed state. Android uses the system document picker; select “Include saved
-detailed diagnostics” when needed. Cancelling leaves terminal work unchanged.
+managed state. Android and iOS use the system document picker. On Android, select
+“Include saved detailed diagnostics” when needed. iOS exports automatically include
+saved detailed diagnostics, even after recording is switched off or expires.
+Cancelling leaves terminal work unchanged.
 The JSONL header includes build/platform and omitted/truncated/pending-loss counts.
 Only validated event records follow; old text or arbitrary unknown fields are
 excluded. No config, identity or full status dump is included. Sharing the result
@@ -82,12 +84,14 @@ is your explicit action; Zterm does not upload it.
 | Platform | Key events | Detailed diagnostics | Total event files |
 | --- | --- | --- | --- |
 | Desktop | 4 MiB current + 4 MiB archive | 4 MiB current + 4 MiB archive | 16 MiB |
-| Android | 2 MiB current + 2 MiB archive | 2 MiB current + 2 MiB archive | 8 MiB |
+| Android / iOS | 2 MiB current + 2 MiB archive | 2 MiB current + 2 MiB archive | 8 MiB |
 
 Files rotate during runtime. Detailed traffic cannot evict key history. Retention
 is based on size, not days. Desktop files live below the effective account's
 `~/.zterm/logs`: `daemon.log[.1]`, `daemon.debug.log[.1]`, `diagnostics.json` and
-`writer.lock`. Android files are private and excluded from backup. Control files
+`writer.lock`. Android and iOS files are private and excluded from backup. iOS stores them in
+the application support directory, with file protection configured to permit
+access after the first device unlock following a restart; a cancelled/completed export removes its private staging copy. Control files
 are at most 1 KiB; records are at most 4 KiB. Bounded queues/sink failures may drop
 events; recovery emits a loss/suppression count. This is best-effort diagnostics,
 not a lossless audit trail or a terminal transcript.

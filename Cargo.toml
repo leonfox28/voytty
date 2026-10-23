@@ -13,9 +13,12 @@ members = [
     "tools/uniffi-bindgen",
 ]
 resolver = "3"
-exclude = ["vendor/noq-proto", "vendor/iroh"]
+exclude = ["vendor/noq-proto", "vendor/iroh", "vendor/askama_derive"]
 
 [patch.crates-io]
+# Backport the upstream replacement of unmaintained basic-toml for UniFFI.
+# Provenance and removal condition: vendor/askama_derive/ZTERM.md.
+askama_derive = { path = "vendor/askama_derive" }
 # Correct multipath idle expiry and active-path stateless reset handling.
 # Provenance, focused regression and removal condition: vendor/noq-proto/ZTERM.md.
 noq-proto = { path = "vendor/noq-proto" }
@@ -28,6 +31,7 @@ version = "0.1.46"
 edition = "2024"
 rust-version = "1.98"
 publish = false
+license = "PolyForm-Noncommercial-1.0.0"
 
 [workspace.dependencies]
 anyhow = "1"

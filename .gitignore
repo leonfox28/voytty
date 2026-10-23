@@ -17,3 +17,8 @@ __pycache__/
 *.jks
 *.keystore
 *.p12
+
+# iOS generated project, bindings and Xcode user state.
+/apps/ios/Generated/
+/apps/ios/Zterm.xcodeproj/
+*.xcuserstate

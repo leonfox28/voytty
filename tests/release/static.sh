@@ -318,12 +318,12 @@ grep -Fq 'name: CI gate' "$ci_workflow" \
     || fail "CI lacks the stable branch-protection gate"
 grep -Fq 'if: always()' "$ci_workflow" \
     || fail "CI gate must aggregate failed, cancelled, and skipped owners"
-[ "$(grep -Fc 'timeout-minutes:' "$ci_workflow")" -eq 10 ] \
+[ "$(grep -Fc 'timeout-minutes:' "$ci_workflow")" -eq 11 ] \
     || fail "every CI job must have an explicit timeout"
 grep -Fq 'actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7' "$ci_workflow" \
     || fail "CI must use the pinned cache owner"
 for profile in 'just ci-policy' 'just ci-unix' \
-    'just ci-dependencies' 'just ci-relay'; do
+    'just ci-dependencies' 'just ci-relay' 'just ios-device-build' 'just ios-check'; do
     grep -Fq "$profile" "$ci_workflow" \
         || fail "CI bypasses repository command owner: $profile"
 done

@@ -709,6 +709,35 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  ios:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
+    name: iOS device build and simulator tests
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check source checkout policy
+        run: sh tests/source-policy.sh
+      - name: Install exact Rust toolchain and Apple targets
+        run: >-
+          rustup toolchain install 1.98.0 --profile minimal
+          --target aarch64-apple-ios --target aarch64-apple-ios-sim
+      - uses: ./.github/actions/setup-ci-tools
+        with:
+          profile: rust
+      - name: Install Xcode project generator
+        run: brew install xcodegen
+      - name: Cross-build unsigned device app
+        run: just ios-device-build
+      - name: Run simulator checks with ad-hoc signing and Keychain access
+        run: just ios-check auto
+      - name: Explain evidence boundary
+        if: always()
+        run: echo 'iOS checks reproduce with just ios-device-build and just ios-check auto. Device signing, phone input, network switching and disposable-host acceptance remain separate.' >> "$GITHUB_STEP_SUMMARY"
+
   gate:
     name: CI gate
     if: always()
@@ -716,6 +745,7 @@ jobs:
       - changes
       - policy
       - android
+      - ios
       - rust
       - candidates-macos
       - candidates-linux

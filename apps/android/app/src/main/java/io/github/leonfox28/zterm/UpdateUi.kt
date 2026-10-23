@@ -141,6 +141,8 @@ internal fun updateMessage(code: String): Int = when (code) {
                 }
             }) { LineIcon("external", Modifier.size(18.dp), MaterialTheme.colorScheme.onSurfaceVariant) }
         GroupDivider(72.dp)
+        LicensesSettings()
+        GroupDivider(72.dp)
         val checking = state.phase == UpdatePhase.Checking && state.manual
         SettingsRow(stringResource(if (checking) R.string.update_checking else R.string.check_updates),
             Modifier.clickable(enabled = enabled && state.phase in setOf(UpdatePhase.Idle, UpdatePhase.Checking) && !checking) { updates.check() },

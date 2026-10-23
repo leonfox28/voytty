@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 
-HEAVY_JOBS = ("rust", "android", "relay", "candidates-macos", "candidates-linux")
+HEAVY_JOBS = ("rust", "android", "ios", "relay", "candidates-macos", "candidates-linux")
 
 
 def documentation_only(paths: list[str]) -> bool:

@@ -142,10 +142,32 @@ glibc builder, Docker/QEMU execution, a protected signing secret, final signed
 installers, GitHub attestation, or immutable publication; GitHub Actions owns
 those boundaries and the recipes print that distinction.
 
+`ci-unix` also runs `ci-askama`, the upstream library/config tests for the
+temporary UniFFI template-parser backport. Its provenance and removal condition
+are recorded in [the vendor note](../vendor/askama_derive/ZTERM.md).
+
+The terminal-identity integration test uses the real account's login shell.
+It waits for Bash/Zsh's bracketed-paste mode, or the default Bash `$`/`#` prompt
+at the live cursor for older Bash, before sending its first command. Custom Bash
+prompts without those suffixes need bracketed paste enabled for this fixture.
+This test precondition does not restrict product shell support.
+
 Run `just android-check` when Android or its inputs change: `apps/android`,
 `crates/android`, shared `client/core/proto/diagnostics` code, patched Iroh/noq,
 UniFFI, Cargo dependencies, or Android build tools. Directory names alone do not
 define the Android dependency boundary.
+
+For iOS or shared mobile bridge/client changes, also run `just ios-device-build`
+and `just ios-check <simulator-uuid>` on Apple Silicon macOS with Xcode. CI uses
+`just ios-check auto` with an available iPhone simulator. Simulator and unsigned
+cross-build evidence do not prove signed-device behavior. See [iOS](ios.md) for
+setup, architecture and disposable-host acceptance.
+The opt-in `just ios-ui-check <simulator-uuid> <fixture-json>` covers native
+pickers, keyboard routing, notifications/export, confirmed takeover and real
+transport interruption. It requires a paired disposable host, its marked root,
+daemon PID and an existing Session to restore. It never uses the user's daemon.
+Targeted `ios-ui-{files,photos,services,recovery,reconnect,connection,navigation,deletion,sessions,settings}-check` recipes use the
+same runner. iOS build recipes reject overlapping writers to generated resources.
 
 CI uses the same repository profiles:
 
@@ -154,6 +176,7 @@ CI uses the same repository profiles:
 | Policy and portable checks | `just ci-policy` |
 | Three Unix hosts (full CI) | `just ci-unix <docs>` on the matching host |
 | Dependency policy | `just ci-dependencies` |
+| iOS device compilation and simulator runtime | `just ios-device-build`, `just ios-check auto` |
 | Docker/QEMU relay bundle | `just ci-relay` on Docker-capable Linux |
 | Three native candidates (full CI; uploaded only by main) | `tools/release/build-native.sh <output-directory>` with explicit source identity on the native/pinned builder |
 
