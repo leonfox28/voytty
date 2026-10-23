@@ -26,7 +26,7 @@ confidence-threshold = 0.8
 # pinned Iroh and UniFFI instead of allowing them for future dependencies globally.
 exceptions = [
     # Pinned arboard's target-specific clipboard support uses the Boost license.
-    { crate = "clipboard-win@5.4.1", allow = ["BSL-1.0"] },
+    { crate = "clipboard-win@5.4.3", allow = ["BSL-1.0"] },
     { crate = "error-code@3.4.0", allow = ["BSL-1.0"] },
     { crate = "uniffi@0.32.0", allow = ["MPL-2.0"] },
     { crate = "uniffi_bindgen@0.32.0", allow = ["MPL-2.0"] },
@@ -39,14 +39,15 @@ exceptions = [
     { crate = "async_io_stream@0.3.3", allow = ["Unlicense"] },
     { crate = "attohttpc@0.30.1", allow = ["MPL-2.0"] },
     { crate = "pharos@0.5.3", allow = ["Unlicense"] },
-    { crate = "webpki-root-certs@1.0.9", allow = ["CDLA-Permissive-2.0"] },
-    { crate = "webpki-roots@1.0.9", allow = ["CDLA-Permissive-2.0"] },
+    { crate = "webpki-root-certs@1.0.10", allow = ["CDLA-Permissive-2.0"] },
+    { crate = "webpki-roots@1.0.10", allow = ["CDLA-Permissive-2.0"] },
     { crate = "ws_stream_wasm@0.7.5", allow = ["Unlicense"] },
 ]
 
 [licenses.private]
-# The project license is intentionally not selected during requirements work.
-# Workspace crates are unpublished; dependency licenses remain fully checked.
+# Unpublished first-party packages use PolyForm Noncommercial (see LICENSE).
+# Dependency licenses remain fully checked against the allowlist above;
+# do not allow noncommercial third-party dependencies globally.
 ignore = true
 
 [bans]

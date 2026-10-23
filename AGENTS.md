@@ -15,6 +15,13 @@
   Rust dependencies (`client`, `core`, `proto`, `diagnostics`, patched Iroh/noq),
   UniFFI, Cargo dependency changes, or Android build tools. Report any unavailable
   platform checks accurately; local macOS evidence does not prove Linux behavior.
+- Run `just ios-device-build` and `just ios-check <simulator-uuid>` for iOS or
+  shared mobile bridge/client changes. Simulator checks require Xcode and an iOS
+  runtime; they do not establish signed-device or background/network acceptance.
+- Prefer a visible foreground simulator for interactive review (Xcode 27 uses
+  Device Hub). Command-line, XCTest and XCUITest debugging may also run headlessly,
+  including while the Mac is locked, as authorized by the user. Record runtime
+  and visual acceptance separately; do not block command-line checks on window access.
 - Keep local and hosted checks in the shared `justfile` recipes. Do not skip
   tests, weaken assertions, or add automatic test retries to obtain a green run.
   Fix asynchronous tests by waiting for the state they assert, within their

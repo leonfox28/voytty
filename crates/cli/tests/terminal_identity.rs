@@ -203,47 +203,157 @@ async fn running_host_applies_identity_to_new_shells_and_delivers_their_notifica
         .expect("daemon shutdown");
 }
 
-async fn synchronize(client: &mut LocalAttachmentClient) {
-    let mut revision = client.take_initial_snapshot().expect("snapshot").revision;
+#[tokio::test]
+async fn legacy_bash_prompt_is_usable_without_bracketed_paste() {
+    use zterm_daemon::lifecycle::run_local_only_daemon_with_sessions_for_test;
+    use zterm_daemon::session::SessionService;
+    use zterm_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
+
+    let state = TestState::new();
+    let requested = validate_setup_profile("legacy-bash", "official-n0", None).expect("profile");
+    let setup = bootstrap(&state.paths, &requested).expect("setup");
+    let cwd = state.paths.state_root().to_path_buf();
+    let rc = cwd.join("bash.rc");
+    std::fs::write(&rc, format!(
+        "bind 'set enable-bracketed-paste off'\nPS1='fixture$ '\nTERM_PROGRAM=zterm\nTERM=xterm-256color\nCOLORTERM=truecolor\nTERM_PROGRAM_VERSION={}\n",
+        env!("CARGO_PKG_VERSION")
+    )).expect("private bash startup");
+    let sessions = SessionService::with_spawner(
+        setup.device_id,
+        zterm_core::ResourceLimits::default(),
+        move |size, _| {
+            let session = PtyHost::new()
+                .spawn(
+                    ExplicitPtyCommand::new("/bin/bash", &cwd)
+                        .arg("--noprofile")
+                        .arg("--rcfile")
+                        .arg(&rc)
+                        .arg("-i"),
+                    PtySize::new(size.rows, size.columns),
+                )
+                .map_err(|error| {
+                    zterm_daemon::error::DaemonError::new(
+                        DomainErrorKind::StoreUnavailable,
+                        error.to_string(),
+                    )
+                })?;
+            Ok((session, cwd.clone()))
+        },
+    );
+    let paths = state.paths.clone();
+    let daemon =
+        std::thread::spawn(move || run_local_only_daemon_with_sessions_for_test(&paths, sessions));
+    let client = LocalClient::new(state.paths.socket());
     let deadline = Instant::now() + DEADLINE;
+    while let Err(error) = client.readiness().await {
+        assert_eq!(error.kind(), DomainErrorKind::DaemonStopped);
+        assert!(Instant::now() < deadline, "daemon readiness");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let mut terminal = LocalAttachmentClient::connect_main(state.paths.socket(), None)
+        .await
+        .expect("bash attachment");
+    let modes = synchronize_prompt(&mut terminal, true).await;
+    assert!(!modes.bracketed_paste, "exercise the legacy prompt path");
+    assert_identity_notification(&mut terminal, "zterm").await;
+    client.stop(true).await.expect("stop fixture");
+    drop(terminal);
+    daemon
+        .join()
+        .expect("daemon thread")
+        .expect("daemon shutdown");
+}
+
+async fn synchronize(client: &mut LocalAttachmentClient) {
+    let account = zterm_platform::account::EffectiveAccount::current().expect("account");
+    synchronize_prompt(
+        client,
+        account
+            .shell()
+            .file_name()
+            .is_some_and(|name| name == "bash"),
+    )
+    .await;
+}
+
+async fn synchronize_prompt(
+    client: &mut LocalAttachmentClient,
+    bash: bool,
+) -> zterm_core::terminal::TerminalModes {
+    let mut snapshot = client.take_initial_snapshot().expect("snapshot");
+    let deadline = Instant::now() + DEADLINE;
+    // A quiet stream or arbitrary startup delta does not prove shell readiness:
+    // Zsh can discard typeahead before its first line editor. Modern Bash/Zsh
+    // advertise bracketed paste; macOS CI uses Bash 3, whose default prompt is
+    // the positive signal instead. Never replay input or extend the deadline.
     loop {
         assert!(
             Instant::now() < deadline,
             "snapshot synchronization deadline"
         );
         client
-            .snapshot_applied(revision)
+            .snapshot_applied(snapshot.revision)
             .await
             .expect("acknowledge");
-        match client.read_event(Duration::from_millis(100)).await {
-            Ok(LocalAttachmentEvent::SyncRequired(_)) => {
-                let LocalAttachmentEvent::Snapshot(snapshot) = client
-                    .read_event(deadline.saturating_duration_since(Instant::now()))
-                    .await
-                    .expect("replacement")
-                else {
-                    panic!("expected replacement snapshot");
-                };
-                revision = snapshot.revision;
+        loop {
+            if shell_prompt_ready(&snapshot.surface, bash) {
+                return snapshot.surface.modes;
             }
-            Ok(LocalAttachmentEvent::Delta(_)) => return,
-            Err(error) if error.kind() == DomainErrorKind::DeadlineExceeded => return,
-            event => panic!("unexpected synchronization event: {event:?}"),
+            match client
+                .read_event(deadline.saturating_duration_since(Instant::now()))
+                .await
+                .expect("login shell must display its prompt within the readiness deadline")
+            {
+                LocalAttachmentEvent::SyncRequired(_) => {
+                    let LocalAttachmentEvent::Snapshot(replacement) = client
+                        .read_event(deadline.saturating_duration_since(Instant::now()))
+                        .await
+                        .expect("replacement")
+                    else {
+                        panic!("expected replacement snapshot");
+                    };
+                    snapshot = replacement;
+                    break;
+                }
+                LocalAttachmentEvent::Delta(delta) => {
+                    delta
+                        .apply_to(snapshot.revision, &mut snapshot.surface)
+                        .expect("startup delta");
+                    snapshot.revision = delta.to_revision;
+                }
+                event => panic!("unexpected synchronization event: {event:?}"),
+            }
         }
     }
+}
+
+fn shell_prompt_ready(surface: &zterm_core::terminal::TerminalSurface, bash: bool) -> bool {
+    if surface.modes.bracketed_paste {
+        return true;
+    }
+    // Bash 3 has no bracketed-paste mode. Its default PS1 ends in "$ " (or
+    // "# " for root); require that suffix immediately before the live cursor,
+    // not a dollar sign in a completed startup/banner line. Custom Bash prompts
+    // without this suffix need bracketed paste enabled for this real-shell test.
+    bash && surface.rows[usize::from(surface.cursor.row)].cells
+        [..usize::from(surface.cursor.column)]
+        .iter()
+        .rev()
+        .flat_map(|cell| cell.contents.chars().rev())
+        .find(|character| !character.is_whitespace())
+        .is_some_and(|character| matches!(character, '$' | '#'))
 }
 
 async fn assert_identity_notification(client: &mut LocalAttachmentClient, expected: &str) {
     client.write_input(b"printf '\\033]9;%s|%s|%s|%s\\007' \"$TERM_PROGRAM\" \"$TERM\" \"$COLORTERM\" \"$TERM_PROGRAM_VERSION\"\n".to_vec()).await.expect("probe input");
     let deadline = Instant::now() + DEADLINE;
+    let mut last_rows = std::collections::VecDeque::new();
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         assert!(!remaining.is_zero(), "notification deadline");
-        match client
-            .read_event(remaining)
-            .await
-            .expect("notification event")
-        {
+        match client.read_event(remaining).await.unwrap_or_else(|error| {
+            panic!("{expected} notification event: {error}; recent shell rows: {last_rows:?}")
+        }) {
             LocalAttachmentEvent::Notification(notification) => {
                 assert_eq!(
                     notification.body(),
@@ -254,7 +364,20 @@ async fn assert_identity_notification(client: &mut LocalAttachmentClient, expect
                 );
                 return;
             }
-            LocalAttachmentEvent::Delta(_) => {}
+            LocalAttachmentEvent::Delta(delta) => {
+                for patch in delta.row_patches {
+                    let row = patch
+                        .replacement
+                        .cells
+                        .iter()
+                        .map(|cell| cell.contents.as_str())
+                        .collect::<String>();
+                    last_rows.push_back(row);
+                    if last_rows.len() > 24 {
+                        last_rows.pop_front();
+                    }
+                }
+            }
             event => panic!("unexpected environment probe event: {event:?}"),
         }
     }

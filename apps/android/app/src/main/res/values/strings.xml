@@ -164,4 +164,7 @@
     <string name="home_empty_body">Run this on your computer, then scan its QR code to add it here.</string>
     <string name="scan_hint">Scan the QR code shown by zterm pair create</string>
     <string name="back_to_hosts">Back to hosts</string>
+    <string name="licenses">Licenses and notices</string>
+    <string name="license_unavailable">Unable to read the license file.</string>
+    <string name="license_back">Back</string>
 </resources>

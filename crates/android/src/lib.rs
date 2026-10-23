@@ -1,4 +1,4 @@
-//! Android's application-scoped native runtime and typed Kotlin boundary.
+//! Shared mobile runtime and typed Kotlin/Swift boundary (legacy Android crate name).
 
 use std::fmt;
 use std::sync::Arc;
@@ -85,7 +85,7 @@ impl NativeRuntime {
     pub fn new() -> Result<Arc<Self>, NativeError> {
         let executor = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
-            .thread_name("zterm-android")
+            .thread_name("zterm-mobile")
             .enable_all()
             .build()
             .map_err(|_| NativeError::RuntimeUnavailable)?;

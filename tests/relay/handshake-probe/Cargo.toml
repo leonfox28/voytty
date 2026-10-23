@@ -6,6 +6,7 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.98"
 publish = false
+license = "PolyForm-Noncommercial-1.0.0"
 
 [dependencies]
 iroh = { version = "=1.0.3", default-features = false, features = ["tls-ring"] }

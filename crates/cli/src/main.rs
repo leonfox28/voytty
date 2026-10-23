@@ -7,6 +7,15 @@ use clap::Parser;
 
 fn main() -> ExitCode {
     let cli = zterm_cli::Cli::parse();
+    if let Some(text) = cli.license_text() {
+        return match write_output(&mut io::stdout().lock(), text.as_bytes()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("Error: Unable to write license text: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if cli.internal_handoff() {
         #[cfg(unix)]
         return match zterm_daemon::handoff::run_internal_handoff() {

@@ -161,4 +161,7 @@
     <string name="home_empty_body">在电脑上运行下面的命令，然后扫描二维码即可添加。</string>
     <string name="scan_hint">扫描 zterm pair create 显示的二维码</string>
     <string name="back_to_hosts">返回主机列表</string>
+    <string name="licenses">许可与声明</string>
+    <string name="license_unavailable">无法读取许可文件。</string>
+    <string name="license_back">返回</string>
 </resources>

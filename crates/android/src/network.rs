@@ -133,7 +133,7 @@ impl NativeRuntime {
                         .map_err(|_| NativeError::RequestFailed {
                             code: "transport_unavailable".to_owned(),
                         })?;
-                    let controller = IrohController::new(endpoint, "Zterm Android")?;
+                    let controller = IrohController::new(endpoint, controller_name())?;
                     for host in hosts {
                         controller.remember_host(
                             parse_device(&host.device_id)?,
@@ -325,6 +325,13 @@ impl NativeRuntime {
                 .into())
         })
         .await
+    }
+}
+fn controller_name() -> &'static str {
+    if cfg!(target_os = "ios") {
+        "Zterm iOS"
+    } else {
+        "Zterm Android"
     }
 }
 pub(crate) fn parse_device(value: &str) -> Result<DeviceId, NativeError> {

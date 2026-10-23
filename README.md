@@ -1,5 +1,13 @@
 # zterm
 
+Source-available under [PolyForm Noncommercial 1.0.0](LICENSE). Noncommercial
+use and modification do not require publishing your changes. Commercial use
+requires a separate entitlement; the [commercial-use grant](COMMERCIAL-LICENSE.md)
+covers an entitled user's official client and companion CLI/daemon on personal
+or authorized work computers. See [licensing / 许可说明](docs/licensing.md)
+and [contribution terms](CONTRIBUTING.md). Third-party components retain their
+original licenses. This is not an OSI-approved open-source license.
+
 zterm is a cross-platform remote-terminal project built around daemon-lifetime
 terminal Sessions and end-to-end encrypted Iroh connections. The current tree
 contains the shared terminal/domain model, versioned protobuf contract, secure
@@ -9,6 +17,12 @@ public raw-terminal CLI. The Android app adds native touch scrolling, cross-scre
 selection, system IME, QR pairing and Session management over the same shared
 client. See [Android build, usage and APK installation](docs/android.md) and the
 [session usability roadmap](docs/roadmap.md).
+
+The [Swift iOS app](docs/ios.md) follows the Android interface and Session workflow
+over the same client: QR/manual pairing, saved hosts, native terminal selection
+and keyboard input, image/file uploads, notifications and diagnostic export.
+See the [parity and acceptance record](docs/ios-parity.md) for platform differences.
+Build it locally with Xcode; signed-phone acceptance and iOS distribution remain pending.
 
 This is still a development build. The Linux real-Iroh remote Session target
 exists but its hosted runtime result and public multi-process CLI evidence are
@@ -53,6 +67,7 @@ zterm logs export --output <path> [--include-debug]
 zterm reset [-y|--yes]
 zterm update [--version <vSEMVER>] [-y|--yes]
 zterm uninstall [-y|--yes]
+zterm --license
 ```
 
 `setup`, `daemon restart`, and a successful update of a configured installation

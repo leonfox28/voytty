@@ -1,0 +1,4 @@
+[crates.zterm_android.bindings.swift]
+module_name = "ZtermNative"
+ffi_module_name = "ZtermNativeFFI"
+generate_module_map = true
