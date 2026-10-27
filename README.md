@@ -17,16 +17,11 @@ terminal Sessions and end-to-end encrypted Iroh connections. The current tree
 contains the shared terminal/domain model, versioned protobuf contract, secure
 per-user state, one same-UID daemon, pairing and directional authorization, a
 daemon-owned connection broker, local and remote Session adapters, and the
-public raw-terminal CLI. The Android app adds native touch scrolling, cross-screen
-selection, system IME, QR pairing and Session management over the same shared
-client. See [Android build, usage and APK installation](docs/android.md) and the
-[session usability roadmap](docs/roadmap.md).
+public raw-terminal CLI. The official Android and iOS applications now live in
+[the private voytty-app repository](https://github.com/leonfox28/voytty-app).
+This repository retains the shared client and protocol and builds independently
+of the mobile applications. See [repository boundaries](docs/mobile-repository.md).
 
-The [Swift iOS app](docs/ios.md) follows the Android interface and Session workflow
-over the same client: QR/manual pairing, saved hosts, native terminal selection
-and keyboard input, image/file uploads, notifications and diagnostic export.
-See the [parity and acceptance record](docs/ios-parity.md) for platform differences.
-Build it locally with Xcode; signed-phone acceptance and iOS distribution remain pending.
 
 This is still a development build. The Linux real-Iroh remote Session target
 exists but its hosted runtime result and public multi-process CLI evidence are
@@ -103,8 +98,8 @@ the signed native Release path and its trust/recovery boundaries.
 
 voytty uses one lockstep SemVer for the product rather than independent
 component versions. The root `[workspace.package].version` is the only source
-for all product crates; future CLI, daemon, desktop/mobile apps, protocol
-artifacts advance together. Relay image publication is currently paused.
+for all public product crates; CLI, daemon and protocol artifacts advance together.
+The mobile app has an independent version and pins an exact public-core commit. Relay image publication is currently paused.
 
 A GitHub Release tag must equal `v` plus Cargo's resolved workspace version.
 Default releases include macOS arm64 and Linux arm64/x64. macOS Intel,
@@ -115,14 +110,14 @@ version.
 
 ## Repository boundaries
 
-- `crates/` — six Rust crates owning core, protocol, platform, terminal-engine, daemon, and CLI boundaries.
+- `crates/` — eight Rust crates owning core, protocol, shared client, diagnostics, platform, terminal engine, daemon, and CLI boundaries.
 - `proto/voytty/v2/` — the semantic product wire schema compiled with vendored `protoc` binaries.
 - `deploy/relay/` — official relay artifact verification and Compose deployment.
 - `tests/relay/` — architecture, checksum, minimal configuration, and health checks.
 - `install/` and `tools/release/` — the reviewed bootstrap/template and private
   signed native-asset assembler.
 - `.github/workflows/release.yml` — protected exact-tag native Release workflow
-  for the three supported Unix targets and Android arm64, reusing exact main CI candidates.
+  for the three supported Unix targets, reusing exact main CI candidates.
 - `docs/development.md` — exact local toolchain baseline and repeatable commands.
 - `docs/releasing.md` — one-PR version preparation, exact main candidates, signing,
   publication, and resumable operator commands.

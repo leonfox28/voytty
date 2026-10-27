@@ -1,4 +1,0 @@
-[crates.voytty_android.bindings.kotlin]
-package_name = "com.voytty.app.nativebridge"
-cdylib_name = "voytty_android"
-android = true

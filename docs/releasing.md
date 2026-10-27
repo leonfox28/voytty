@@ -1,6 +1,6 @@
 # Release operations
 
-The default publication scope is **macOS arm64, Linux arm64, Linux x64, and Android arm64**.
+The default publication scope is **macOS arm64, Linux arm64, and Linux x64**.
 macOS Intel, Windows CI/distribution, and relay image publication are paused.
 Restore any of them only when a future task explicitly requests it. Existing
 immutable Releases and already published relay images remain historical assets.
@@ -11,7 +11,7 @@ do not enforce the presence, number, or support policy of other platforms.
 ```text
 reviewed feature branch + version commit in one PR
   -> PR CI -> merge the exact reviewed head
-  -> exact-SHA main CI + three native builds + Android APK + verified unsigned candidate
+  -> exact-SHA main CI + three native builds + verified unsigned candidate
   -> annotated vVERSION tag -> select that main candidate by artifact ID
   -> protected signing -> three final installer proofs -> immutable Release
 ```
@@ -86,19 +86,19 @@ source; remote tags and Release assets are never replaced.
 ## Build once, publish the verified bytes
 
 Main CI runs the normal test/policy graph and builds the three shipped
-native binaries plus the unsigned Android release APK. Linux uses the pinned glibc 2.28 builder; macOS declares the
+native binaries. Linux uses the pinned glibc 2.28 builder; macOS declares the
 13.0 deployment floor. The candidate jobs explicitly embed the exact source SHA,
 self-check, and run the CLI without arguments. Non-documentation PR CI runs the same three native
 jobs so floor or build breakage fails before merge, but never uploads them:
 a source-committed binary passes the official distribution check that guards
 `update` and `uninstall`. Other PR and development builds retain their
 development identity. PR native checks may reuse main's trimmed third-party
-compilation cache; main native and Android publication candidates remain cold
+compilation cache; main native publication candidates remain cold
 builds. The Rust workspace suite also assembles a complete synthetic unsigned
 inventory, verifies reproducible assets and rejects mixed-source or modified
 inputs without signing or uploading them.
 
-One Ubuntu job creates deterministic archives, the manifest, installer and Rust/Android SBOM,
+One Ubuntu job creates deterministic archives, the manifest, installer and Rust SBOM,
 verifies the unsigned inventory, and ShellChecks the generated installer. The
 candidate uses the source commit timestamp and is uploaded as
 `release-candidate-SHA-ATTEMPT`, retained for seven days. The main `CI gate`
@@ -113,45 +113,28 @@ and the downloader treats digest mismatches as errors.
 
 The tag workflow does not rebuild `voytty` or rerun ordinary CI. It rebuilds the
 small reviewed signing tool before exposing the key, re-verifies the candidate
-and source SHA, platform-signs the retained APK, signs the exact native manifest and complete
+and source SHA, signs the exact native manifest and complete
 SHA256SUMS inventory, and tests the final signed installers
 on all three targets. It then creates one late draft, downloads and verifies its
 assets, attests those exact bytes, publishes, and requires `immutable: true`.
-The eleven assets include the existing eight native assets, `voytty-android-arm64.apk`,
-`voytty-android.json`, and `SHA256SUMS.sig`. No relay image is published.
-The native schema-v1 manifest/installer stays unchanged; the signed checksum
-inventory authenticates all assets, including Android and its build metadata.
+The nine assets are the three native archives, manifest and signature, installer,
+Rust SBOM, and signed SHA256SUMS inventory. No mobile app or relay image is published.
+The native schema-v1 manifest/installer and protected signing checks stay unchanged.
 
 Only the signing job uses the protected `release`
 Environment. Confirm immutable Releases remain enabled, inspect the exact green
 main/candidate status, and approve access to the signing key. No second signing
 approval or extra full test suite is introduced.
 
-## Android package and signing
+## Mobile repository boundary
 
-Android is a directly installable APK for API 26+, arm64-v8a, targeting API 36.
-The formal package is `com.voytty.app`; `.dev` remains the separate
-local development package. No store or Android automatic updater is introduced.
-`release/android-certificate.sha256` pins the existing acceptance certificate,
-so subsequent voytty releases install over that package without deleting its
-data. The renamed package is a separate installation from zterm.
-
-The protected `release` environment retains `ZTERM_ANDROID_KEYSTORE_BASE64`
-(PKCS12, existing alias `zterm`) and `ZTERM_ANDROID_KEYSTORE_PASSWORD`, independently
-of `ZTERM_RELEASE_SIGNING_KEY`. The workflow maps these stored secret names to
-the corresponding `VOYTTY_*` process variables. The repository rename does not
-rotate signing keys or change the pinned certificate. Provision secrets through `gh secret set --env release`
-using stdin; never commit the keystore/password or expose them in command arguments.
-The signing helper deletes temporary credentials and verifies that signing changed
-no ZIP payload entry. It checks the package, source identity, certificate, ABI,
-SDK floors, and every packaged native library's 16 KB alignment.
-
-`tools/android/release.py` derives formal versionCode from Cargo SemVer:
-`major * 10000000 + minor * 100000 + patch * 100 + stage`. Minor is at most 99;
-patch at most 999. Stable stage is 99; `alpha.1..29`, `beta.1..29`, and `rc.1..38`
-occupy stages 1..29, 31..59, and 61..98. The result must fit Android's maximum
-2100000000. Thus v0.1.26 is 102699, newer than the prior acceptance build 1016.
-Local `-PvoyttyVersionCode` overrides are for acceptance builds, not formal CI.
+Android and iOS source, build tooling and mobile signing helpers now live in
+[private voytty-app](https://github.com/leonfox28/voytty-app). Public desktop
+releases no longer require an APK or Android signing secrets. Existing immutable
+Releases, tags, certificate pins and repository secrets remain untouched.
+Historical mixed native/Android draft recovery still checks out and executes the
+verifier from the original release SHA. Do not use a new desktop-only verifier
+against an old mixed inventory. See [repository boundaries](mobile-repository.md).
 
 ## Failure and recovery
 
