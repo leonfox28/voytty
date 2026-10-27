@@ -6,7 +6,7 @@ repository. Access is required. This repository builds the desktop CLI, daemon,
 shared protocol/client, diagnostics, terminal engine and optional Relay tools
 without credentials for or a checkout of that private repository.
 
-The app repository owns `apps/`, the historically named `crates/android` shared
+The app repository owns `apps/`, the `crates/mobile` (`voytty-mobile`) shared
 UniFFI bridge, bindgen, mobile build scripts, UI/unit tests, mobile acceptance
 runners and the askama parser backport. It imports this repository as `core/`,
 pinned to an exact Git commit. Shared code is not copied. The app workspace must
