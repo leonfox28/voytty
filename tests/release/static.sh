@@ -178,10 +178,10 @@ if grep -Fq 'python3 -m py_compile' "$justfile"; then
 fi
 grep -Fq 'sh tools/ci/check-python-syntax.sh' "$justfile" \
     || fail "portable policy bypasses the no-output Python syntax owner"
-for ci_gate in 'actions/workflows/ci.yml/runs' '-f branch=main' '-f event=push' \
+for ci_gate in 'actions/workflows/ci.yml/runs' '-f branch=main' 'workflow_dispatch' \
     '-f status=success' "-f head_sha=\"\$commit\""; do
     grep -Fq -- "$ci_gate" "$green_ci_lookup" \
-        || fail "release validation must require exact successful main push CI: $ci_gate"
+        || fail "release validation must require exact successful main validation: $ci_gate"
 done
 grep -Fq "sh tools/release/find-green-main-ci.sh \"\$commit\"" "$workflow" \
     || fail "tag validation bypasses the shared exact-main CI lookup"
@@ -199,8 +199,8 @@ for native_job in "$macos_build_job" "$linux_build_job"; do
     # Source-committed binaries pass the official distribution check; only
     # reviewed main may upload them.
     printf '%s\n' "$native_job" | grep -A1 -F -- '- name: Upload the main native candidate' \
-        | grep -Fxq "        if: github.event_name == 'push' && github.ref == 'refs/heads/main'" \
-        || fail "only main may upload source-committed native candidates"
+        | grep -Fxq "        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'" \
+        || fail "only explicit full main validation may upload source-committed native candidates"
     [ "$(printf '%s\n' "$native_job" | grep -Fc 'uses: actions/upload-artifact@')" -eq 1 ] \
         || fail "native candidate jobs must have exactly one gated upload"
     if printf '%s\n' "$native_job" | grep -Fq 'voytty-release-tool'; then
@@ -209,7 +209,7 @@ for native_job in "$macos_build_job" "$linux_build_job"; do
     printf '%s\n' "$native_job" | grep -Fq "lookup-only: \${{ github.event_name != 'pull_request' }}" \
         || fail "main native candidates must never restore compiled dependencies"
     printf '%s\n' "$native_job" | grep -A2 -F -- '- name: Bound the cold main native dependency cache' \
-        | grep -Fq "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" \
+        | grep -Fq "if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'" \
         || fail "only cold main native dependencies may become shared caches"
 done
 if grep -Fq 'build-native.sh' "$workflow"; then
@@ -242,13 +242,13 @@ for ordinary_ci in 'fmt --all' 'clippy --workspace' 'test --workspace' \
 done
 
 main_release_gates=$(grep -Fxc \
-    "    if: github.event_name == 'push' && github.ref == 'refs/heads/main'" \
+    "    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'" \
     "$ci_workflow" || true)
 [ "$main_release_gates" -eq 1 ] \
-    || fail "native builders run on every event; only candidate assembly is main-only"
+    || fail "only explicit full main validation may assemble a publication candidate"
 for native_job in candidates-macos candidates-linux; do
     sed -n '/^  gate:/,$p' "$ci_workflow" | grep -Fxq "      - $native_job" \
-        || fail "the CI gate must require every native build: $native_job"
+        || fail "the CI gate must account for every selected native build: $native_job"
 done
 rust_job=$(sed -n '/^  rust:/,/^  candidates-macos:/p' "$ci_workflow")
 [ "$(printf '%s\n' "$rust_job" | grep -Ec '^[[:space:]]{10}- label:')" -eq 3 ] \

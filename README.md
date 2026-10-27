@@ -132,7 +132,8 @@ version.
 ## Development and release entry points
 
 ```bash
-just check
+just check-changes
+just full-check  # explicit full validation; no publication
 just release-prepare <version>
 just release-publish <version>
 ```

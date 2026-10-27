@@ -38,7 +38,7 @@ runs:
           test "$(cargo deny --version)" = 'cargo-deny 0.20.2'
         fi
     - uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.tools.outputs.cache-hit != 'true'
+      if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.tools.outputs.cache-hit != 'true'
       with:
         path: |
           ~/.cargo/bin/just

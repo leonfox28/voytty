@@ -18,17 +18,17 @@ run=$(gh api --method GET \
     -H 'Accept: application/vnd.github+json' \
     -H 'X-GitHub-Api-Version: 2022-11-28' \
     "repos/$repository/actions/workflows/ci.yml/runs" \
-    -f branch=main -f event=push -f status=success \
+    -f branch=main -f status=success \
     -f head_sha="$commit" -f per_page=100 \
     --jq ".workflow_runs
-        | map(select(.event == \"push\"
+        | map(select((.event == \"push\" or .event == \"workflow_dispatch\")
             and .head_branch == \"main\"
             and .head_sha == \"$commit\"
             and .status == \"completed\"
             and .conclusion == \"success\"))
         | sort_by(.created_at) | reverse | .[0]
         | select(.) | \"\(.id) \(.html_url)\"")
-[ -n "$run" ] || fail "commit $commit has no successful completed ci.yml push run on main"
+[ -n "$run" ] || fail "commit $commit has no successful completed ci.yml validation on main"
 
 run_id=${run%% *}
 run_url=${run#* }

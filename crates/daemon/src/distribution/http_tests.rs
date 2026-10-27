@@ -168,26 +168,47 @@ fn stalled_and_slow_streams_are_bounded() {
     }
 }
 
-#[test]
-fn retry_count_and_total_budget_both_limit_requests() {
-    let server = Server::new(|_, stream| {
-        let _ = stream.write_all(
-            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        );
-    });
+#[tokio::test(start_paused = true)]
+async fn retry_count_and_total_budget_both_limit_requests() {
+    // Loopback scheduling/read timeouts can exhaust the wall-clock budget before
+    // four HTTP requests reach the server. Exercise the real retry scheduler
+    // with a paused clock; the other fixtures cover actual HTTP error mapping.
+    let calls = AtomicUsize::new(0);
+    let budget = Duration::from_millis(500);
+    let request = |_| {
+        calls.fetch_add(1, Ordering::AcqRel);
+        std::future::ready(Err(FetchFailure::Transient))
+    };
     assert_eq!(
-        fetcher().fetch(&server.url, 64),
+        fetch_with_retry(budget, Duration::from_millis(1), request).await,
         Err(DistributionError::Fetch)
     );
-    assert_eq!(server.count(), 4);
+    assert_eq!(calls.load(Ordering::Acquire), 4);
+    assert_eq!(
+        fetch_with_retry(budget, Duration::from_secs(1), request).await,
+        Err(DistributionError::Fetch)
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 5);
+}
 
-    let mut bounded = fetcher();
-    bounded.policy.retry_delay = Duration::from_secs(1);
+#[tokio::test(start_paused = true)]
+async fn request_time_consumes_the_same_total_retry_budget() {
+    let calls = AtomicUsize::new(0);
+    let budget = Duration::from_millis(500);
+    let start = tokio::time::Instant::now();
     assert_eq!(
-        bounded.fetch(&server.url, 64),
+        fetch_with_retry(budget, Duration::from_millis(1), |remaining| {
+            calls.fetch_add(1, Ordering::AcqRel);
+            async move {
+                tokio::time::advance(remaining.min(Duration::from_millis(300))).await;
+                Err(FetchFailure::Transient)
+            }
+        })
+        .await,
         Err(DistributionError::Fetch)
     );
-    assert_eq!(server.count(), 5);
+    assert_eq!(calls.load(Ordering::Acquire), 2);
+    assert_eq!(start.elapsed(), budget);
 }
 
 #[test]

@@ -13,9 +13,9 @@ pinned to an exact Git commit. Shared code is not copied. The app workspace must
 apply the pinned Iroh/noq patches itself because Cargo does not inherit patches
 from a dependency workspace.
 
-Public CI still compiles `voytty-client` for Android, iOS devices and iOS
-simulators. It retains all desktop, dependency, Relay and exact-SHA native
-candidate gates. App CI owns Kotlin/Swift builds, bridge tests, Android lint/unit
+For shared-input changes and explicit full validation, public CI compiles `voytty-client` for Android, iOS devices and iOS
+simulators. Full validation retains all desktop, dependency, Relay and exact-SHA native
+candidate checks; ordinary PRs select the affected owners. App CI owns Kotlin/Swift builds, bridge tests, Android lint/unit
 tests and iOS simulator runtime. A shared change needs both layers of evidence:
 the public build alone does not prove mobile app compatibility.
 

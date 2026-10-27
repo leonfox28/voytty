@@ -80,7 +80,7 @@ if [ "$repo_root" != "$default_repo_root" ] && [ "$test_mode" != 1 ]; then
     fail "worktree override is allowed only in the isolated operator fixture"
 fi
 
-for required in cargo gh git; do
+for required in cargo gh git python3; do
     command -v "$required" >/dev/null 2>&1 || fail "$required is required; run just doctor"
 done
 
@@ -520,6 +520,9 @@ publish_release() {
     require_clean_main
     require_protected_main
     require_release_vacancy
+    python3 "$script_dir/../ci/full-check.py" --reuse --commit "$commit"
+    # Main may have advanced while validation was running; never tag another source.
+    require_clean_main
     green_run=$(VOYTTY_RELEASE_REPOSITORY="$repository" \
         sh "$script_dir/find-green-main-ci.sh" "$commit")
     parse_run_info "$green_run"
@@ -592,12 +595,7 @@ finish_release() {
     git merge-base --is-ancestor "$commit" refs/remotes/origin/main \
         || fail "the PR merge commit does not belong to origin/main"
 
-    # Resume a pushed tag directly; otherwise wait for this exact main commit.
-    if ! remote_ref_state tags "refs/tags/$tag"; then
-        main_run=$(discover_run ci.yml main)
-        parse_run_info "$main_run"
-        gh run watch "$parsed_run_id" --repo "$repository" --exit-status --compact --interval 15
-    fi
+    # Publication owns the exact full dispatch; ordinary main CI stays quick.
     finish_root=$(mktemp -d)
     finish_worktree="$finish_root/source"
     git worktree add --detach "$finish_worktree" "$commit"

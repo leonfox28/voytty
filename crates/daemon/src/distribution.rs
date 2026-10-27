@@ -348,33 +348,49 @@ fn classify_fetch_error(error: reqwest::Error) -> FetchFailure {
     FetchFailure::Permanent
 }
 
+async fn fetch_with_retry<F, A>(
+    budget: Duration,
+    mut delay: Duration,
+    mut request: F,
+) -> Result<Vec<u8>, DistributionError>
+where
+    F: FnMut(Duration) -> A,
+    A: std::future::Future<Output = Result<Vec<u8>, FetchFailure>>,
+{
+    // Use the async runtime's clock for both the overall budget and backoff.
+    // This is monotonic in production and can be paused in scheduling tests.
+    let deadline = tokio::time::Instant::now() + budget;
+    for attempt in 0..4 {
+        let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now()) else {
+            break;
+        };
+        match request(remaining).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(FetchFailure::Permanent) => break,
+            Err(FetchFailure::Transient) => {}
+        }
+        if attempt == 3 || deadline.saturating_duration_since(tokio::time::Instant::now()) <= delay
+        {
+            break;
+        }
+        tokio::time::sleep(delay).await;
+        delay *= 2;
+    }
+    Err(DistributionError::Fetch)
+}
+
 impl ReleaseFetcher for HttpReleaseFetcher {
     fn fetch(&self, url: &str, maximum: u64) -> Result<Vec<u8>, DistributionError> {
-        self.runtime.block_on(async {
-            let budget = if maximum > 1024 * 1024 {
-                self.policy.archive_budget
-            } else {
-                self.policy.metadata_budget
-            };
-            let deadline = Instant::now() + budget;
-            let mut delay = self.policy.retry_delay;
-            for attempt in 0..4 {
-                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                    break;
-                };
-                match self.attempt(url, maximum, remaining).await {
-                    Ok(bytes) => return Ok(bytes),
-                    Err(FetchFailure::Permanent) => break,
-                    Err(FetchFailure::Transient) => {}
-                }
-                if attempt == 3 || deadline.saturating_duration_since(Instant::now()) <= delay {
-                    break;
-                }
-                tokio::time::sleep(delay).await;
-                delay *= 2;
-            }
-            Err(DistributionError::Fetch)
-        })
+        let budget = if maximum > 1024 * 1024 {
+            self.policy.archive_budget
+        } else {
+            self.policy.metadata_budget
+        };
+        self.runtime.block_on(fetch_with_retry(
+            budget,
+            self.policy.retry_delay,
+            |remaining| self.attempt(url, maximum, remaining),
+        ))
     }
 }
 

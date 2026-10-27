@@ -118,136 +118,96 @@ identity key, or move OS/Session ownership into adapters. Hosted Linux
 remote-runtime evidence remains a separate acceptance gate; see
 [Remote sessions and the public CLI](remote-cli.md).
 
-## Local command owner
+## Local commands and lightweight PRs
 
 ```bash
 just doctor
-just check-fast
-just check
+just check-changes                 # complete branch diff plus local edits
+just check-changes <base-commit>   # explicit reviewed comparison base
+just check                         # optional full current-host checkpoint
 ```
 
-`just check` is the authoritative pre-push gate for product, test, build, dependency,
-and workflow changes on the current host. For changes limited to `README.md`,
-`AGENTS.md`, and Markdown under `docs/` (except `docs/relay.md`, which relay tests
-consume), `just ci-policy` is sufficient locally. PR dependency policy still runs.
-Ordinary commits can use targeted checks; `check-fast` is an optional checkpoint,
-not a mandatory full-workspace check before every commit.
+Start substantive work from current `origin/main`, run targeted checks while
+editing, then use `just check-changes` before pushing a PR. This command uses the
+same classifier and recipes as CI. It always runs policy/dependency checks and
+selects native workspace or Relay checks from the complete branch diff, including
+uncommitted/untracked files. It does not require another full `just check` or
+mobile build after those selected checks pass. Hosted CI owns other OS/CPU,
+Android/iOS cross targets, Docker and the glibc/macOS packaging floors.
 
-The full local gate composes the hosted profiles rather than repeating their commands:
-`ci-policy`, `ci-unix` with docs, `ci-dependencies`, and the Docker-free
-`relay-static` part of `ci-relay`, so a change to a hosted profile reaches the
-local gate too. `just check-fast` is the shorter edit loop: source policy,
-`ci-policy`, and native Clippy. Neither command claims evidence from a different OS/CPU, the pinned
-glibc builder, Docker/QEMU execution, a protected signing secret, final signed
-installers, GitHub attestation, or immutable publication; GitHub Actions owns
-those boundaries and the recipes print that distinction.
-
-The UniFFI bridge and its parser-backport tests now belong to `voytty-app`.
-
-The terminal-identity integration test uses the real account's login shell.
-It waits for Bash/Zsh's bracketed-paste mode, or the default Bash `$`/`#` prompt
-at the live cursor for older Bash, before sending its first command. Custom Bash
-prompts without those suffixes need bracketed paste enabled for this fixture.
-This test precondition does not restrict product shell support.
-
-Run `just android-check` and `just mobile-core-check ios` when shared
-`client/core/proto/diagnostics`, Iroh/noq, or Cargo dependencies change. These
-recipes compile the public client for mobile targets without a private checkout.
-They do not replace application runtime tests. For shared changes, also update
-the pin in `voytty-app` and run its `just android-check`, `just ios-device-build`
-and `just ios-check <simulator-uuid>` before accepting the integration. Report
-unavailable platform evidence accurately. See [the split boundary](mobile-repository.md).
-
-CI uses the same repository profiles:
-
-| Hosted owner | Reproduction entry |
+| Changed inputs | PR checks in addition to policy/dependencies |
 | --- | --- |
-| Policy and portable checks | `just ci-policy` |
-| Three Unix hosts (full CI) | `just ci-unix <docs>` on the matching host |
-| Dependency policy | `just ci-dependencies` |
-| Shared Android/iOS client compilation | `just mobile-core-check android`, `just mobile-core-check ios` |
-| Docker/QEMU relay bundle | `just ci-relay` on Docker-capable Linux |
-| Three native candidates (full CI; uploaded only by main) | `tools/release/build-native.sh <output-directory>` with explicit source identity on the native/pinned builder |
+| README, AGENTS, Markdown under docs (except executable `docs/relay.md`) | None |
+| CLI, daemon, platform, terminal Rust | Three supported Unix Rust hosts |
+| Shared client/core/proto/diagnostics or protocol schemas | Unix Rust plus Android/iOS shared-client compilation |
+| Relay deployment/probe or `docs/relay.md` | Relay contracts and Docker runtime |
+| Release tools, installers, native build inputs | Rust and three native packaging/floor checks |
+| Cargo/toolchain, vendor, CI, unknown inputs or unavailable diff history | All owners |
 
-Workspace version, every format check (workspace, patched Iroh, relay probe)
-and the secret scan each run once in `ci-policy`, docs run on Linux x64, and the
-no-argument CLI smoke runs against each of the three native release candidates
-instead of a separate debug rebuild. Source checkout policy
-runs before compilation in every supported OS matrix entry. macOS Intel and
-Windows CI are paused until a future task explicitly restores them.
+Patched Iroh/noq suites run for broad dependency/vendor changes and explicit full
+validation. They are not repeated for unrelated workspace edits. All assertions
+and existing suites remain enabled whenever their owner is selected. Unix jobs
+also run the debug CLI already built by integration tests without arguments;
+the release-mode CLI smoke remains part of native packaging checks.
+
+PR CI runs once per PR revision; newer revisions supersede older runs. The stable
+`CI gate` verifies the exact selected job inventory and rejects failures, missing
+results and unexpected skips. Selection compares the entire tested merge tree to
+its base, including deletions and both rename ends. Workflow-level path filters
+are not used, so the required gate is always reported.
+
+Merge after the PR gate passes; no outside review is required for the solo
+maintainer. Ordinary `main` pushes run policy/dependencies and the gate without
+repeating platform builds or generating release candidates. The branch must
+remain PR-protected. Full/manual and PR runs have separate concurrency groups.
+
+## Explicit full validation and release candidates
+
+```bash
+just full-check
+```
+
+From clean, exact current main, this dispatches `ci.yml` with an expected source
+SHA, watches that exact new run, and runs every owner, including cold native
+builds and unsigned candidate assembly. It does not tag, sign or publish. A main
+movement during dispatch fails instead of substituting another source. Existing
+failed runs are never automatically retried. When publication is requested,
+`just release` / `just release-publish` rejoin an existing exact full run or start
+one before tagging; see [release operations](releasing.md).
+
+Full validation retains the three Unix hosts, Android/iOS shared compilation,
+patched transport suites, dependency policy, Relay runtime, native packaging
+floors, CLI smoke and unsigned installer/manifest verification. macOS Intel and
+Windows remain paused. Cross-platform runtime evidence cannot be inferred from
+a local macOS pass.
+
+Shared changes need app integration too: update the pin in `voytty-app` and run
+its selected Android/iOS checks. The public compile checks do not establish app
+runtime compatibility. See [the split boundary](mobile-repository.md).
 
 ## Cache ownership
 
-Command caches are keyed by OS/architecture, profile and pinned tool versions,
-independently of the product lockfile. Only main writes these small caches.
-Version checks follow the installation owner: Go-installed actionlint reports
-`v1.7.12`, while Homebrew's build reports `1.7.12`.
-Cargo downloads use lockfile keys with an OS/architecture/toolchain fallback.
-The same download namespace is usable by main candidates and tag publication;
-no compiled PR output becomes a publication input.
+PR checks may restore third-party compiled dependencies. Only reviewed main
+writes them, after removing all path-package and test outputs. Explicit native
+candidate builds always start without compiled caches; successful full runs save
+trimmed dependencies for later PRs. Cargo downloads and command tools have
+separate versioned caches. The 2.5 GiB compiled-cache limit, exact tool versions,
+no incremental CI builds and exclusion of product binaries remain unchanged.
+Do not weaken tests or introduce automatic retries to obtain a green run.
 
-PRs only restore compiled dependency caches. Main strips path-package
-(workspace and patched vendor) and test outputs before saving
-`target/debug/{deps,build,.fingerprint}` and skips entries larger than
-2.5 GiB. Path packages are fingerprinted by source mtime, so a fresh checkout
-rebuilds them regardless. The Rust matrix builds without dev debuginfo
-(`CARGO_PROFILE_DEV_DEBUG=0`): with debuginfo the trimmed sets were 3.1–5.2 GiB
-and were never saved; without it they measured 1.5–2.0 GiB on 2026-10-10, Linux
-x64 being largest because it also builds docs (and then still built the smoke binary). An
-oversized set raises a workflow warning and is not saved; restores keep using
-the last saved entry until the key version is bumped. Incremental compilation is disabled in CI. The whole `target` tree,
-large test fixtures and product release outputs are not cached. Measure restore/save
-and test durations together before changing this policy.
+Local/hosted owners remain shared `justfile` recipes: `ci-policy`,
+`ci-dependencies`, `ci-unix <docs> <transport>`, `ci-relay`, and
+`mobile-core-check <android|ios>`. `just check` composes the complete current-host
+profiles; it is useful before broad infrastructure work, not mandatory after each
+ordinary change. The installer, signing, final native installer proofs and
+immutable publication checks retain their separate release responsibilities.
 
-Android app/Gradle and iOS application jobs, caches and test recipes moved to
-`voytty-app`; their historical measurements remain in ci-release-optimization.md.
+The terminal-identity integration test uses the account's login shell and waits
+for bracketed-paste mode or the default Bash prompt. Custom Bash prompts without
+that suffix need bracketed-paste support for this fixture, not for product use.
+Never use real `~/.voytty` for mutation tests; use explicitly disposable fixtures.
 
-The independent `target/noq-tests` and `target/iroh-tests` roots also cache only
-third-party `debug/{deps,build,.fingerprint}` outputs, keyed by their own manifest
-and lockfile, toolchain, OS and architecture. Main trims using each vendor
-manifest, so the patched path packages and their tests always rebuild.
-
-Native candidate jobs cache third-party `target/release` dependencies for PRs.
-Main uses `lookup-only`, always builds cold, then strips every path package before
-saving a missing key. Native keys separate target and builder floor and include
-the lockfile and build scripts. Restored PR candidates still run the complete
-floor checks, release self-check and no-argument CLI check. No source-identified
-product binary is included in these caches.
-
-## Branch and pull-request flow
-
-Normal substantive work uses a branch and pull request:
-
-```bash
-git switch -c <topic>
-just check
-git push --set-upstream origin <topic>
-gh pr create
-```
-
-CI runs for the pull request, not a duplicate branch-push workflow. Updating
-the branch cancels the older PR-head run. Main runs are never cancelled: each
-merge commit keeps its own exact-SHA run and candidate even when another merge
-follows quickly. Merge only after the stable `CI gate`
-is green. A lightweight job compares the complete tested PR merge tree with
-its exact base using a NUL-delimited Git diff, including deletions and both rename
-paths. Only the documentation allowlist above can skip Rust, shared mobile compilation, relay and
-native jobs. Missing history, unknown paths or classification errors select full
-checks. Policy and dependency jobs always run. `CI gate` always runs and verifies
-all job results against the explicit classification; failed, cancelled, missing
-or accidentally skipped required jobs cannot pass.
-
-All other PRs build and check the three native candidates without uploading
-them; the `CI gate` requires their success. The resulting `main`
-push runs the full integration graph, uploads all three exact-SHA native
-candidates, and runs one unsigned desktop assembly. Tag publication
-reuses that candidate instead of compiling the product again.
-
-The deterministic two-file release-version commit is the narrow exception to
-the local `just check` step: `just release-prepare VERSION` runs focused
-version/lock validation, in the current feature PR or a standalone release PR;
-its PR CI owns the complete gate. See
-[Release operations](releasing.md) for that path.
+## Branch protection and ongoing checks
 
 Repository administrators own the following `main` protection settings.
 The release operator checks them and does not mutate them:
@@ -259,10 +219,8 @@ The release operator checks them and does not mutate them:
    normal path;
 4. disable force pushes and branch deletion.
 
-Apply protection only after `CI gate` exists on the default branch. After
-20–30 PR/main runs, review critical path, cache hit rate, flaky failures and
-unique platform catches before considering nextest, path classification, or
-compile-only secondary targets. Weekly `dependencies.yml` also runs both
+Apply protection only after `CI gate` exists on the default branch. Review critical path, cache hit rate, flaky failures and unique platform catches
+after enough scoped PR/full runs to measure steady-state behavior. Weekly `dependencies.yml` also runs both
 dependency-policy owners to detect new advisories while the project is idle.
 This is early detection; PR/main dependency failures remain blocking.
 

@@ -108,6 +108,7 @@ case "$command_name" in
         ;;
     api)
         case " $* " in
+            *'/branches/main --jq .commit.sha'*) git rev-parse refs/remotes/origin/main ;;
             *'/branches/main/protection '*)
                 printf '%s\n' "${FAKE_PROTECTION:-true}"
                 ;;
@@ -144,6 +145,10 @@ case "$command_name" in
         case "${1:-}" in
             list)
                 case " $* " in
+                    *'--event workflow_dispatch '*)
+                        head=$(git rev-parse HEAD)
+                        printf '[{"databaseId":123,"url":"https://example.invalid/actions/runs/123","headSha":"%s","headBranch":"main","event":"workflow_dispatch","status":"completed","conclusion":"success"}]\n' "$head"
+                        ;;
                     *'--event pull_request '*) printf '%s\n' '122 https://example.invalid/actions/runs/122' ;;
                     *'--workflow ci.yml '*) printf '%s\n' '123 https://example.invalid/actions/runs/123' ;;
                     *) printf '%s\n' '456 https://example.invalid/actions/runs/456' ;;

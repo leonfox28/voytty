@@ -14,13 +14,21 @@ android-check:
 doctor:
     sh tools/ci/doctor.sh
 
+# Check the complete branch diff and local edits before an ordinary push.
+check-changes base='origin/main':
+    python3 tools/ci/workflow-policy.py local {{ quote(base) }}
+
+# Explicit full hosted validation and unsigned candidates; never publishes.
+full-check:
+    python3 tools/ci/full-check.py
+
 # Fast edit-loop checks: source and portable policy plus native Clippy.
 check-fast:
     sh tests/source-policy.sh
     just ci-policy
     cargo +1.98.0 clippy --workspace --all-targets --all-features -- -D warnings
 
-# Authoritative pre-push gate: every hosted profile that runs on the current host.
+# Optional full current-host checkpoint; ordinary pushes use check-changes.
 check:
     sh tests/source-policy.sh
     just ci-policy
@@ -40,7 +48,7 @@ ci-policy:
     cargo +1.98.0 fmt --manifest-path tests/relay/handshake-probe/Cargo.toml -- --check
     sh tests/secret-scan.sh
     sh tests/secret-scan-fixture.sh
-    PYTHONDONTWRITEBYTECODE=1 python3 tests/ci/workflow_policy_test.py
+    PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests/ci -p '*_test.py'
     sh tests/ci/trim-cache-fixture.sh
     actionlint
     sh tests/release/static.sh
@@ -56,14 +64,13 @@ installer-check:
     PYTHONDONTWRITEBYTECODE=1 python3 tests/release/installer_test.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/release/installer_download_test.py
 
-# Full Unix runtime evidence; CI assigns docs to its canonical host. The
-# no-argument CLI smoke runs against each native release candidate instead.
-ci-unix docs='false':
+# Unix workspace evidence; patched transport suites run when their inputs change.
+ci-unix docs='false' transport='true':
     case {{ quote(docs) }} in true|false) ;; *) echo 'docs must be true or false' >&2; exit 64;; esac
     cargo +1.98.0 clippy --workspace --all-targets --all-features -- -D warnings
     cargo +1.98.0 test --workspace --all-features
-    just ci-noq
-    just ci-iroh
+    "${CARGO_TARGET_DIR:-target}/debug/voytty"
+    case {{ quote(transport) }} in true) just ci-noq; just ci-iroh ;; false) ;; *) exit 64 ;; esac
     if [ {{ quote(docs) }} = true ]; then cargo +1.98.0 doc --workspace --no-deps; fi
 
 # Validate the canonical project license metadata. Mobile bundles live in voytty-app.
