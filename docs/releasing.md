@@ -162,7 +162,7 @@ against an old mixed inventory. See [repository boundaries](mobile-repository.md
   [Install, update, and uninstall](install.md#one-time-migration-from-the-four-target-updater).
 
 Repository administrators own immutable Releases, the signing Environment/key,
-and [main protection](development.md#branch-and-pull-request-flow). The operator
+and [main protection](development.md#branch-protection-and-ongoing-checks). The operator
 checks visible prerequisites and never changes those settings.
 
 ## Recover an existing signed draft
