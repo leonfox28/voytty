@@ -15,7 +15,7 @@ spec = importlib.util.spec_from_file_location("multi_device", Path(__file__).wit
 md = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(md)
 BASE = md.BASE
-PACKAGE = "io.github.leonfox28.voytty.dev"
+PACKAGE = "com.voytty.app.dev"
 SDK = Path(os.environ.get("ANDROID_HOME", Path.home() / "Library/Android/sdk"))
 
 

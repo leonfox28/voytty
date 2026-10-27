@@ -17,7 +17,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 APK_NAME = "voytty-android-arm64.apk"
 METADATA_NAME = "voytty-android.json"
-PACKAGE = "io.github.leonfox28.voytty"
+PACKAGE = "com.voytty.app"
 
 
 def version_code(version: str) -> int:

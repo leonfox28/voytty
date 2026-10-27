@@ -130,7 +130,7 @@ approval or extra full test suite is introduced.
 ## Android package and signing
 
 Android is a directly installable APK for API 26+, arm64-v8a, targeting API 36.
-The formal package is `io.github.leonfox28.voytty`; `.dev` remains the separate
+The formal package is `com.voytty.app`; `.dev` remains the separate
 local development package. No store or Android automatic updater is introduced.
 `release/android-certificate.sha256` pins the existing acceptance certificate,
 so subsequent voytty releases install over that package without deleting its

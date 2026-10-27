@@ -21,11 +21,11 @@ the UI: for example, the current toolbar has a Session chip, image/file uploads,
 Esc, Ctrl, four arrows and the keyboard toggle; Tab/Alt are no longer standalone
 buttons in that row.
 
-- [Screens, home and settings](../apps/android/app/src/main/java/io/github/leonfox28/voytty/AppUi.kt)
-- [Theme, colors and typography](../apps/android/app/src/main/java/io/github/leonfox28/voytty/Theme.kt)
-- [Terminal layout and Session panel](../apps/android/app/src/main/java/io/github/leonfox28/voytty/TerminalScreen.kt)
-- [Navigation and connection behavior](../apps/android/app/src/main/java/io/github/leonfox28/voytty/AppRepository.kt)
-- [Persisted state](../apps/android/app/src/main/java/io/github/leonfox28/voytty/AppStore.kt)
+- [Screens, home and settings](../apps/android/app/src/main/java/com/voytty/app/AppUi.kt)
+- [Theme, colors and typography](../apps/android/app/src/main/java/com/voytty/app/Theme.kt)
+- [Terminal layout and Session panel](../apps/android/app/src/main/java/com/voytty/app/TerminalScreen.kt)
+- [Navigation and connection behavior](../apps/android/app/src/main/java/com/voytty/app/AppRepository.kt)
+- [Persisted state](../apps/android/app/src/main/java/com/voytty/app/AppStore.kt)
 - [Android behavior and acceptance boundaries](android.md)
 
 ## Gap inventory

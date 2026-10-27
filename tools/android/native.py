@@ -28,6 +28,10 @@ def main() -> None:
     run("cargo", "+1.98.0", "build", "--locked", "-p", "voytty-android", "-p", "voytty-uniffi-bindgen")
     target = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")).resolve()
     library = target / "debug" / ("libvoytty_android.dylib" if sys.platform == "darwin" else "libvoytty_android.so")
+    # UniFFI creates package directories but does not remove old ones after a
+    # package rename. This output is generator-owned; keep only current bindings.
+    if args.kotlin_out.exists():
+        shutil.rmtree(args.kotlin_out)
     args.kotlin_out.mkdir(parents=True, exist_ok=True)
     run(str(target / "debug" / "voytty-uniffi-bindgen"), "generate", str(library),
         "--language", "kotlin", "--config", str(ROOT / "crates/android/uniffi.toml"),

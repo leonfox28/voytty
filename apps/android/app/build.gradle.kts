@@ -18,12 +18,12 @@ val releaseSourceCommit = providers.environmentVariable("VOYTTY_SOURCE_COMMIT").
 val androidSourceCommit = providers.environmentVariable("VOYTTY_ANDROID_SOURCE_COMMIT").orElse(releaseSourceCommit)
 
 android {
-    namespace = "io.github.leonfox28.voytty"
+    namespace = "com.voytty.app"
     compileSdk = 36
     ndkVersion = "28.2.13676358"
     testBuildType = providers.gradleProperty("voyttyTestBuildType").orElse("debug").get()
     defaultConfig {
-        applicationId = "io.github.leonfox28.voytty"
+        applicationId = "com.voytty.app"
         minSdk = 26
         targetSdk = 36
         versionCode = androidVersionCode

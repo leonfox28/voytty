@@ -119,9 +119,9 @@ After the three-device runner has paired C with the owned hosts, run them with:
 "$LAB/venv/bin/python" tests/e2e/multi-device-hosts.py \
   --output "$LAB/checks/android-hosts-01.json"
 adb -s emulator-5586 shell am instrument -w -r \
-  -e class io.github.leonfox28.voytty.TerminalUiTest#gesturesCopyOverlayAndActivityRetention,io.github.leonfox28.voytty.TerminalUiTest#childMouseAndAlternateScrollUseTouchWithoutStealingLongPress \
+  -e class com.voytty.app.TerminalUiTest#gesturesCopyOverlayAndActivityRetention,com.voytty.app.TerminalUiTest#childMouseAndAlternateScrollUseTouchWithoutStealingLongPress \
   -e hostName multi-device-A \
-  io.github.leonfox28.voytty.dev.test/androidx.test.runner.AndroidJUnitRunner
+  com.voytty.app.dev.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
 Use the environment's recorded serial and the exact paired test-host name when
@@ -332,12 +332,12 @@ The pair action writes a private ticket file; don't print or commit its contents
 
 Use a disposable emulator or a read-only emulator instance, install the debug
 APK and instrumentation APK, and copy that ticket via `adb shell run-as` into
-`files/background-ticket.txt` of `io.github.leonfox28.voytty.dev`. Regenerate a fresh
+`files/background-ticket.txt` of `com.voytty.app.dev`. Regenerate a fresh
 ticket before each test that pairs, removing only the prior fixture ticket file.
 Select an explicit emulator serial for every adb command.
 
 Run the instrumentation class
-`io.github.leonfox28.voytty.BackgroundConnectionTest` with `-e backgroundFixture 1`:
+`com.voytty.app.BackgroundConnectionTest` with `-e backgroundFixture 1`:
 
 - `#connectionSurvivesActivityAndServiceLifecycle` tests a real Session, foreground
   start eligibility, notification grant/denial, lock/unlock, Activity recreation,
