@@ -185,7 +185,8 @@ final class DiagnosticsTests: XCTestCase {
         XCTAssertFalse(diagnostics.busy)
         XCTAssertFalse(FileManager.default.fileExists(atPath: second.url.path))
     }
-    private func wait(_ predicate: () -> Bool) async throws {
+    /// Runs on the caller's isolation, so a main-actor predicate never crosses actors.
+    private func wait(isolation: isolated (any Actor)? = #isolation, _ predicate: () -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(3))
         while !predicate() {
             guard ContinuousClock.now < deadline else { XCTFail("recorder did not observe control within its bounded deadline"); return }

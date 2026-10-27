@@ -17,6 +17,13 @@ final class ZtermTests: XCTestCase {
         XCTAssertThrowsError(try runtime.currentState())
     }
 
+    /// One AppModel owns the attachment, viewport and input; a second iPad window must not share it.
+    /// iPhone always reports one scene at runtime, so check the shipped manifest itself.
+    func testApplicationDeclaresSingleWindowScene() throws {
+        let manifest = try XCTUnwrap(Bundle.main.object(forInfoDictionaryKey: "UIApplicationSceneManifest") as? [String: Any])
+        XCTAssertEqual(manifest["UIApplicationSupportsMultipleScenes"] as? Bool, false)
+    }
+
     func testKeychainIdentityAndHostsSurviveReload() throws {
         let service = "zterm.tests.\(UUID().uuidString)"
         defer { removeKeychain(service) }

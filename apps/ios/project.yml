@@ -38,6 +38,11 @@ targets:
           - font/terminal_mono_bold.ttf
           - font/terminal_mono_italic.ttf
           - font/terminal_mono_bold_italic.ttf
+        # One AppModel owns the connection, viewport and input; a second iPad
+        # window would share and resize the same terminal. The generated
+        # manifest always enables multiple scenes, so declare it explicitly.
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.leonfox28.zterm
@@ -45,7 +50,6 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: zterm
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: Connect to your paired computer and its terminal sessions.
         INFOPLIST_KEY_NSCameraUsageDescription: Scan a pairing QR code to connect to your computer.
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight

@@ -40,6 +40,19 @@ enum PairingCodes {
     }
 }
 
+/// Manual entry reverts an over-limit edit. The notice stays until the user changes
+/// the restored text; the revert's own change notification must not clear it.
+struct TicketDraft {
+    var text = ""
+    private(set) var restored: String?
+    var overLimit: Bool { restored != nil }
+
+    mutating func changed(from old: String, limit: UInt32) {
+        if text.utf8.count > limit { restored = old; text = old }
+        else if text != restored { restored = nil }
+    }
+}
+
 enum QRImageReader {
     /// Decode a transformed thumbnail, not a full-resolution photo. The provider's
     /// temporary URL is used only inside its callback and is never persisted.
@@ -96,6 +109,12 @@ final class PairingScannerState: ObservableObject {
         }
     }
     func reset() { issue = nil; candidates = []; cameraGeneration = UUID() }
+    /// Leaving the foreground stops capture and invalidates its late callbacks. A
+    /// pending device choice or image result stays; a camera interruption is retried.
+    func suspendCamera() {
+        if issue == .cameraUnavailable { issue = nil }
+        cameraGeneration = UUID()
+    }
     func disappear() {
         visible = false; imageRequest = nil; progress?.cancel(); progress = nil
         reading = false; candidates = []; cameraGeneration = UUID()
@@ -209,7 +228,7 @@ struct ScannerScreen: View {
         .onChange(of: scenePhase) { _, phase in
             scanner.foreground = phase == .active
             if phase == .active { scanner.refreshPermission() }
-            else { scanner.reset() }
+            else { scanner.suspendCamera() }
         }
         .sheet(isPresented: $scanner.choosingPhoto) {
             NativePhotoPicker { provider in
@@ -275,8 +294,7 @@ private struct ManualTicketSheet: View {
     @ObservedObject var model: AppModel
     let connect: (String) async -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var ticket = ""
-    @State private var overLimit = false
+    @State private var draft = TicketDraft()
     private var strings: AppStrings { model.strings }
     var body: some View {
         NavigationStack {
@@ -287,23 +305,22 @@ private struct ManualTicketSheet: View {
                     Text(strings("粘贴完整的一次性配对码。")).font(.footnote).foregroundStyle(.secondary)
                 }
                 Section(strings("配对码")) {
-                    TextEditor(text: $ticket).font(.footnote.monospaced()).frame(minHeight: 130)
+                    TextEditor(text: $draft.text).font(.footnote.monospaced()).frame(minHeight: 130)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().disabled(model.busy)
                         .accessibilityIdentifier("pairingTicket")
-                        .onChange(of: ticket) { old, new in
-                            overLimit = new.utf8.count > (model.runtime?.ticketTextLimit() ?? 0)
-                            if overLimit { ticket = old }
+                        .onChange(of: draft.text) { old, _ in
+                            draft.changed(from: old, limit: model.runtime?.ticketTextLimit() ?? 0)
                         }
                 }
-                if overLimit { Text(strings("配对码过长，请仅粘贴完整配对码。")) }
+                if draft.overLimit { Text(strings("配对码过长，请仅粘贴完整配对码。")).accessibilityIdentifier("pairingTicketTooLong") }
                 if let error = model.error { Text(error).foregroundStyle(AppTheme.error) }
-                Button { Task { await connect(ticket); if model.route == .terminal { ticket = ""; dismiss() } } } label: {
+                Button { Task { await connect(draft.text); if model.route == .terminal { draft = TicketDraft(); dismiss() } } } label: {
                     HStack { Text(strings("配对并连接")); Spacer(); if model.busy { ProgressView() } }
-                }.disabled(ticket.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.busy)
+                }.disabled(draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.busy)
             }.navigationTitle(strings("手动输入")).navigationBarTitleDisplayMode(.inline)
-                .toolbar { Button(strings("取消")) { ticket = ""; model.error = nil; dismiss() }.disabled(model.busy) }
+                .toolbar { Button(strings("取消")) { draft = TicketDraft(); model.error = nil; dismiss() }.disabled(model.busy) }
                 .interactiveDismissDisabled(model.busy)
-        }.onDisappear { ticket = "" }
+        }.onDisappear { draft = TicketDraft() }
     }
 }
 

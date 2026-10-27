@@ -139,7 +139,10 @@ without replacing UIKit recognizer delegates or selection controls.
 
 The terminal uses the same four LXGW Bright Code NF GB font files as Android,
 preserves the host's cell widths
-and colors, and fits wide glyphs into their declared cells. UIKit owns Chinese
+and colors, and fits wide glyphs into their declared cells. A frame repaints only
+the rows and cursor cells that changed, rounded out to whole device pixels;
+repeated frames, unrelated SwiftUI updates and cursor blinking do not redraw the
+grid. Glyphs are shaped once per text and face. UIKit owns Chinese
 and other marked-text composition; only committed text is sent. Input captures
 its synchronization epoch and is discarded when that epoch is no longer valid.
 The shared Rust driver owns automatic reconnect while the attachment is alive.
@@ -198,7 +201,9 @@ preserve one-cell Latin/Nerd glyphs and two-cell Chinese text at every supported
 size. Font changes clear an active selection before changing the terminal grid.
 
 Camera QR capture uses AVFoundation on a serial capture queue and stops when
-covered, inactive or dismissed. Denied/restricted/unavailable-camera states keep
+covered, inactive or dismissed. Leaving the foreground keeps a pending multi-code
+device choice or image result; an interrupted camera restarts on return.
+Denied/restricted/unavailable-camera states keep
 image and manual entry available. Photo selection uses `PHPickerViewController`
 without requesting photo-library access. The temporary provider file is decoded
 to an orientation-corrected image no larger than 2,048 pixels per side, with a
@@ -234,7 +239,9 @@ acceptance; simulator tests do not establish these behaviors.
 ## Ownership and storage
 
 SwiftUI owns navigation; UIKit owns the terminal canvas, measured size and input.
-The shared `zterm-client` and UniFFI bridge own protocol, transport, synchronization,
+The app declares a single window scene: one application model owns the attachment,
+viewport and input, so iPad multiwindow is disabled rather than letting windows
+share and resize the same terminal. The shared `zterm-client` and UniFFI bridge own protocol, transport, synchronization,
 history and terminal input encoding. No shell, PTY or ANSI parser runs on iOS.
 
 For this initial slice, both mobile apps use `crates/android` (its historical
@@ -248,7 +255,9 @@ The controller seed, saved hosts, preferences, recent connection and exact activ
 Session record share one atomic Keychain item, accessible
 while unlocked and restricted to this device. Pairing saves the authenticated
 host before committing the connection. Corrupt or inaccessible existing state
-fails visibly instead of silently replacing the identity. Keychain data may
+fails visibly instead of silently replacing the identity. When a Session ends while
+the device is locked, clearing its restoration record waits for the next
+activation instead of reporting a Keychain failure. Keychain data may
 survive uninstall/reinstall; debug and release remain separate. This follows
 [Apple's Keychain accessibility guidance](https://developer.apple.com/documentation/security/ksecattraccessiblewhenunlockedthisdeviceonly)
 and [application identity/access group rules](https://developer.apple.com/documentation/security/sharing-access-to-keychain-items-among-a-collection-of-apps).

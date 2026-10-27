@@ -208,6 +208,67 @@ final class SessionWorkflowTests: XCTestCase {
         XCTAssertNil(try store.load().recent)
     }
 
+    func testSessionEndingBehindLockedKeychainFinishesCleanupOnActivation() async throws {
+        var store = try fixtureStore(active: "exact")
+        defer { remove(store) }
+        let keychain = KeychainAvailability()
+        store.update = { keychain.locked ? errSecInteractionNotAllowed : SecItemUpdate($0, $1) }
+        let script = SessionScript(); script.sessions = [session("exact")]
+        script.terminal = ScriptedTerminal(script: script, id: "exact", frame: TerminalGestureTests.frame())
+        let spy = BackgroundTaskSpy()
+        let model = AppModel(store: store, monitorsNetwork: false, backgroundConnection: BackgroundConnection(work: spy.work),
+                             makeRuntime: { FakeSessionRuntime(script: script) })
+        await model.start()
+        XCTAssertTrue(model.ownsSession)
+        try await waitUntil { script.frameWaiter != nil }
+        model.sceneChanged(.background)
+        keychain.locked = true
+        script.end()
+        try await waitUntil { model.frame?.state == "ended" }
+        XCTAssertNil(model.error, "a locked Keychain must not turn Session end into a storage failure")
+        XCTAssertEqual(model.connectionNotice?.kind, .ended)
+        XCTAssertEqual(try store.load().activeTerminal, SessionRecord(host: host.id, session: "exact"))
+        keychain.locked = false
+        model.sceneChanged(.active)
+        XCTAssertNil(try store.load().activeTerminal, "activation finishes the deferred cleanup")
+        XCTAssertNil(model.error)
+        model.goHome()
+    }
+
+    func testDeletingTheAttachedSessionEndsInThePanelWithoutAnEndedAlert() async throws {
+        let store = try fixtureStore(active: "exact")
+        defer { remove(store) }
+        let script = SessionScript(); script.sessions = [session("exact"), session("other")]
+        script.terminal = ScriptedTerminal(script: script, id: "exact", frame: TerminalGestureTests.frame())
+        let model = AppModel(store: store, monitorsNetwork: false, makeRuntime: { FakeSessionRuntime(script: script) })
+        await model.start()
+        try await waitUntil { script.frameWaiter != nil }
+        var observedDuringDelete: ConnectionNotice.Kind?
+        script.afterDelete = {
+            // The host ends the attachment before closeSession returns.
+            script.end()
+            try? await self.waitUntil { model.frame?.state == "ended" }
+            XCTAssertTrue(model.busy, "the terminal screen suppresses notices while an operation is busy")
+            observedDuringDelete = model.connectionNotice?.kind
+        }
+        await model.delete(try XCTUnwrap(model.currentSession))
+        XCTAssertEqual(observedDuringDelete, .ended)
+        XCTAssertNil(model.connectionNotice, "deleting the current Session must not leave an ended alert")
+        XCTAssertNil(model.terminal)
+        XCTAssertNil(model.error)
+        XCTAssertTrue(model.panel)
+        XCTAssertNil(try store.load().activeTerminal)
+        model.goHome()
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !condition() {
+            guard ContinuousClock.now < deadline else { XCTFail("condition timed out"); throw CancellationError() }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     private func fixtureStore(active: String? = nil) throws -> HostStore {
         let store = HostStore(service: "zterm.workflow.\(UUID().uuidString)")
         var saved = try store.load(); saved.hosts = [host]
@@ -235,6 +296,15 @@ private final class SessionScript {
     var lateDetached = false
     var waiter: CheckedContinuation<[NativeSession], Never>?
     var connectionWaiter: CheckedContinuation<NativeTerminal, Never>?
+    var terminal: NativeTerminal?
+    var frameWaiter: CheckedContinuation<NativeFrame, Never>?
+    var afterDelete: (@MainActor () async -> Void)?
+
+    func nextFrame() async -> NativeFrame { await withCheckedContinuation { frameWaiter = $0 } }
+    func end() {
+        var frame = TerminalGestureTests.frame(); frame.state = "ended"; frame.generation = 2; frame.inputReady = false
+        frameWaiter?.resume(returning: frame); frameWaiter = nil
+    }
 
     func list() async throws -> [NativeSession] {
         if listFailure { throw NativeError.RequestFailed(code: "transport_unavailable") }
@@ -244,6 +314,7 @@ private final class SessionScript {
     func connect(_ id: String?, takeover: Bool = false) async throws -> NativeTerminal {
         if let id { connections.append(id) } else { defaults += 1 }
         takeovers.append(takeover)
+        if let terminal { return terminal }
         if holdConnection { return await withCheckedContinuation { connectionWaiter = $0 } }
         throw NativeError.RequestFailed(code: connectionError)
     }
@@ -258,11 +329,35 @@ private final class SessionScript {
         sessions[index].name = name
         return sessions[index]
     }
-    func delete(_ id: String) throws -> NativeSession {
+    func delete(_ id: String) async throws -> NativeSession {
         guard let row = sessions.first(where: { $0.sessionId == id }) else { throw NativeError.Closed }
         sessions.removeAll { $0.sessionId == id }
+        await afterDelete?()
         return row
     }
+}
+
+/// Read by the store's Keychain update on the main actor; the test flips it there too.
+private final class KeychainAvailability: @unchecked Sendable { var locked = false }
+
+/// An attached Session whose next frame the script releases.
+private final class ScriptedTerminal: NativeTerminal, @unchecked Sendable {
+    let script: SessionScript
+    let id: String
+    let frame: NativeFrame
+    init(script: SessionScript, id: String, frame: NativeFrame) {
+        self.script = script; self.id = id; self.frame = frame
+        super.init(noHandle: NoHandle())
+    }
+    required init(unsafeFromHandle handle: UInt64) { fatalError("test fake") }
+    override func sessionId() -> String { id }
+    override func currentFrame() -> NativeFrame { frame }
+    override func waitForFrame(afterGeneration: UInt64) async throws -> NativeFrame { await script.nextFrame() }
+    override func nextNotification() async throws -> NativeNotification { throw NativeError.Closed }
+    override func setVisible(visible: Bool) async throws {}
+    override func resize(viewport: NativeViewport) async throws {}
+    override func setDark(dark: Bool) async throws {}
+    override func detach() async throws {}
 }
 
 private final class LateTerminal: NativeTerminal, @unchecked Sendable {
