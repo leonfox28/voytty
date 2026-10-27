@@ -3,7 +3,7 @@
 日期：2026-09-30。开发主机：macOS arm64。按用户要求使用 Android 模拟器验证：
 API 36、arm64、独立只读 AVD 实例 `emulator-5580`，仅安装 debug 包和 instrumentation 包。
 主机使用 `presentation_fixture`，所有身份、配对、Session 和运行目录位于
-`/tmp/zterm-continuity-host-0930`。未修改真实 `~/.zterm`、用户登录项或真实会话。
+`/tmp/voytty-continuity-host-0930`。未修改真实 `~/.voytty`、用户登录项或真实会话。
 复现方法见 [端到端测试说明](../../tests/e2e/README.md)。
 
 ## 连接可靠性复核
@@ -74,7 +74,7 @@ Android 撤销通知权限会结束正在运行的应用进程，因此权限矩
 等待上限，未改变产品超时。最终包含 shell 变量连续性的用例用时 77 秒，通过后
 确认测试添加的全部 IPv4/IPv6 规则已移除。另一次较早的断网流程用时 65 秒并通过。
 
-本机原始日志保存在 `/tmp/zterm-*.log`，通过的关键日志另复制到
+本机原始日志保存在 `/tmp/voytty-*.log`，通过的关键日志另复制到
 `target/verification/2026-09-30/`。验收录屏及抽帧图位于
 `target/verification/2026-09-30/android-ime-open-close.mp4` 和
 `android-ime-contact-sheet.png`，新设置截图为 `android-background-settings.png`。
@@ -82,7 +82,7 @@ Android 撤销通知权限会结束正在运行的应用进程，因此权限矩
 
 ## 合并前 CI 复核（2026-10-03）
 
-[PR #59 的首轮 CI](https://github.com/leonfox28/zterm/actions/runs/37088152247)
+[PR #59 的首轮 CI](https://github.com/leonfox28/voytty/actions/runs/37088152247)
 中，Linux x64/arm64、Android、策略、依赖和 Relay 检查通过，macOS 的既有
 `authenticated_duplex_eof_moves_checkpoint_but_explicit_and_protocol_end_do_not`
 暴露结束任务的竞争：reader 释放响应队列后、JoinHandle 发布结果前，writer 可能

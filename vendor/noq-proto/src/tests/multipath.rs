@@ -2296,7 +2296,7 @@ fn regression_discarded_path_stats_are_up_to_date() -> TestResult {
 
 // Unanswered new paths must not extend the connection-wide idle deadline.
 #[test]
-fn zterm_new_path_without_peer_packets_must_not_extend_connection_idle() -> TestResult {
+fn voytty_new_path_without_peer_packets_must_not_extend_connection_idle() -> TestResult {
     let mut builder = ConnPair::builder()
         .enable_multipath()
         .disable_mtud_discovery();
@@ -2346,7 +2346,7 @@ fn zterm_new_path_without_peer_packets_must_not_extend_connection_idle() -> Test
 }
 
 #[test]
-fn zterm_abandoned_slow_path_does_not_extend_connection_idle() -> TestResult {
+fn voytty_abandoned_slow_path_does_not_extend_connection_idle() -> TestResult {
     for abandon_after in [Some(Duration::ZERO), Some(Duration::from_secs(20)), None] {
         let mut builder = ConnPair::builder()
             .enable_multipath()

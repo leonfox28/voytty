@@ -1,6 +1,6 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use zterm_core::terminal::{
+use voytty_core::terminal::{
     MAX_SIDE_EVENTS_PER_UPDATE, MAX_TITLE_BYTES, RejectedEffect, TerminalClipboardWrite,
     TerminalHostEffect, TerminalHostEffects, TerminalNotification, TerminalSideEvent, TerminalSize,
     UnsupportedSequenceKind,

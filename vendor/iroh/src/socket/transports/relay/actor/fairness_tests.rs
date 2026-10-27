@@ -54,17 +54,17 @@ impl n0_future::Sink<ClientToRelayMsg> for WritableRelay {
 }
 
 #[tokio::test]
-async fn zterm_relay_backlog_keeps_both_directions_progressing() {
+async fn voytty_relay_backlog_keeps_both_directions_progressing() {
     exercise_ready_io(false, false).await;
 }
 
 #[tokio::test]
-async fn zterm_relay_backlog_consumes_ready_pong() {
+async fn voytty_relay_backlog_consumes_ready_pong() {
     exercise_ready_io(false, true).await;
 }
 
 #[tokio::test]
-async fn zterm_relay_cancel_preempts_ready_traffic() {
+async fn voytty_relay_cancel_preempts_ready_traffic() {
     exercise_ready_io(true, false).await;
 }
 

@@ -3,10 +3,10 @@ set -eu
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 default_repo_root=$(CDPATH='' cd -- "$script_dir/../.." && pwd)
-canonical_repository=leonfox28/zterm
-test_mode=${ZTERM_RELEASE_TEST_MODE:-0}
-repository=${ZTERM_RELEASE_REPOSITORY:-$canonical_repository}
-repo_root=${ZTERM_RELEASE_WORKTREE:-$default_repo_root}
+canonical_repository=leonfox28/voytty
+test_mode=${VOYTTY_RELEASE_TEST_MODE:-0}
+repository=${VOYTTY_RELEASE_REPOSITORY:-$canonical_repository}
+repo_root=${VOYTTY_RELEASE_WORKTREE:-$default_repo_root}
 phase=preflight
 tag_created=false
 tag_pushed=false
@@ -112,8 +112,8 @@ require_canonical_context() {
     if [ "$test_mode" != 1 ]; then
         origin_url=$(git remote get-url origin)
         case "$origin_url" in
-            git@github.com:leonfox28/zterm.git|https://github.com/leonfox28/zterm.git|ssh://git@github.com/leonfox28/zterm.git) ;;
-            *) fail "origin is not the canonical zterm GitHub repository" ;;
+            git@github.com:leonfox28/voytty.git|https://github.com/leonfox28/voytty.git|ssh://git@github.com/leonfox28/voytty.git) ;;
+            *) fail "origin is not the canonical voytty GitHub repository" ;;
         esac
     fi
 }
@@ -167,7 +167,7 @@ require_prepare_branch_vacancy() {
 }
 
 workspace_version() {
-    package_id=$(cargo +1.98.0 pkgid --locked --package zterm-cli 2>/dev/null) \
+    package_id=$(cargo +1.98.0 pkgid --locked --package voytty-cli 2>/dev/null) \
         || fail "Cargo could not resolve the workspace product version"
     case "$package_id" in
         *@*) printf '%s\n' "${package_id##*@}" ;;
@@ -413,7 +413,7 @@ prepare_release() {
         phase=prepare-branch
         require_exact_release_commit
     else
-        cargo +1.98.0 run --quiet --locked --package zterm-release-tool -- \
+        cargo +1.98.0 run --quiet --locked --package voytty-release-tool -- \
             validate-next-version "$version"
         if [ "$current_branch" = main ]; then
             git switch -c "$release_branch"
@@ -452,8 +452,8 @@ discover_run() {
     workflow=$1
     run_branch=$2
     run_event=${3:-push}
-    attempts=${ZTERM_RELEASE_POLL_ATTEMPTS:-30}
-    delay=${ZTERM_RELEASE_POLL_SECONDS:-2}
+    attempts=${VOYTTY_RELEASE_POLL_ATTEMPTS:-30}
+    delay=${VOYTTY_RELEASE_POLL_SECONDS:-2}
     if [ "$test_mode" != 1 ]; then
         attempts=30
         delay=2
@@ -520,11 +520,11 @@ publish_release() {
     require_clean_main
     require_protected_main
     require_release_vacancy
-    green_run=$(ZTERM_RELEASE_REPOSITORY="$repository" \
+    green_run=$(VOYTTY_RELEASE_REPOSITORY="$repository" \
         sh "$script_dir/find-green-main-ci.sh" "$commit")
     parse_run_info "$green_run"
     printf '%s\n' "Exact green main CI: $parsed_run_url"
-    candidate_id=$(ZTERM_RELEASE_REPOSITORY="$repository" \
+    candidate_id=$(VOYTTY_RELEASE_REPOSITORY="$repository" \
         sh "$script_dir/find-candidate.sh" "$parsed_run_id" "$commit")
     printf '%s\n' "Exact release candidate artifact: $candidate_id"
 
@@ -534,7 +534,7 @@ publish_release() {
             fail "existing local tag does not identify this exact annotated source"
         fi
     else
-        git tag -a "$tag" -m "zterm $tag"
+        git tag -a "$tag" -m "voytty $tag"
     fi
     tag_created=true
     git push origin "refs/tags/$tag:refs/tags/$tag"
@@ -602,7 +602,7 @@ finish_release() {
     finish_worktree="$finish_root/source"
     git worktree add --detach "$finish_worktree" "$commit"
     if [ "$test_mode" = 1 ]; then
-        ZTERM_RELEASE_WORKTREE="$finish_worktree" \
+        VOYTTY_RELEASE_WORKTREE="$finish_worktree" \
             sh "$script_dir/operator.sh" publish "$version"
     else
         sh "$finish_worktree/tools/release/operator.sh" publish "$version"

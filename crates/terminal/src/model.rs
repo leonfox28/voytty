@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Line;
-use zterm_core::Revision;
-use zterm_core::terminal::{
+use voytty_core::Revision;
+use voytty_core::terminal::{
     ActiveScreen, TerminalHistoryWindowAnchor, TerminalHistoryWindowQuery, TerminalScrollMetrics,
     TerminalSize, TerminalSurfaceDelta, TerminalSurfaceDeltaResult,
     TerminalSurfaceHistoryWindowFrame, TerminalSurfaceHistoryWindowResult, TerminalSurfaceRowPatch,
@@ -280,7 +280,7 @@ impl TerminalModel {
     /// Installs observations from the authorized controller without waiting on it.
     pub fn update_base_colors(
         &mut self,
-        base: zterm_core::terminal::TerminalColorProfile,
+        base: voytty_core::terminal::TerminalColorProfile,
     ) -> Result<TerminalUpdate, TerminalError> {
         if !base.is_valid() {
             return Err(TerminalError::InvalidColors);

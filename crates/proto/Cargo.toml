@@ -1,5 +1,5 @@
 [package]
-name = "zterm-proto"
+name = "voytty-proto"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,7 +12,7 @@ flate2.workspace = true
 base64.workspace = true
 prost.workspace = true
 zeroize.workspace = true
-zterm-core.workspace = true
+voytty-core.workspace = true
 
 [build-dependencies]
 prost-build.workspace = true

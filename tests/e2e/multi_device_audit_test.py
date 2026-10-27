@@ -56,7 +56,7 @@ class SoakDurationAuditTests(unittest.TestCase):
             command = [sys.executable, str(Path(__file__).with_name("multi-device-audit.py")), "run"]
             if required is not None:
                 command += ["--soak-seconds", str(required)]
-            result = subprocess.run(command, env={**os.environ, "ZTERM_MULTI_DEVICE_ROOT": directory},
+            result = subprocess.run(command, env={**os.environ, "VOYTTY_MULTI_DEVICE_ROOT": directory},
                                     capture_output=True, text=True)
             report = root / "acceptance-audit.json"
             return result, json.loads(report.read_text()) if report.exists() else None

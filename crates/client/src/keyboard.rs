@@ -1,5 +1,5 @@
 //! Mode-aware typed key encoding shared by native input and the desktop adapter.
-use zterm_core::terminal::{TerminalKeyboardFlags, TerminalModes};
+use voytty_core::terminal::{TerminalKeyboardFlags, TerminalModes};
 
 /// Keyboard protocol modifier bit.
 pub const MOD_SHIFT: u8 = 1 << 0;

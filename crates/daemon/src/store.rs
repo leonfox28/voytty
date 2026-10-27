@@ -10,11 +10,11 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior, params};
-use zterm_core::{
+use voytty_core::{
     AuthGeneration, AuthorizationSnapshot, AuthorizationStatus, DeviceAlias, DeviceDisplayName,
     DeviceId, DomainErrorKind, RelayHint, STATE_SCHEMA_VERSION,
 };
-use zterm_platform::user_state::{UserPaths, open_append, validate_regular_file};
+use voytty_platform::user_state::{UserPaths, open_append, validate_regular_file};
 
 use crate::error::DaemonError;
 
@@ -595,7 +595,7 @@ impl StateStore {
             Some(cache) => {
                 validate_input_timestamp(cache.verified_at_unix, "route verification timestamp")?;
                 (
-                    Some(i64::from(zterm_proto::RELAY_ROUTE_CACHE_VERSION)),
+                    Some(i64::from(voytty_proto::RELAY_ROUTE_CACHE_VERSION)),
                     Some(encode_route_cache(cache)?),
                     Some(cache.verified_at_unix),
                 )
@@ -666,7 +666,7 @@ impl StateStore {
                             endpoint_id.as_bytes().as_slice(),
                             local_alias.as_str(),
                             remote_name.as_str(),
-                            i64::from(zterm_proto::RELAY_ROUTE_CACHE_VERSION),
+                            i64::from(voytty_proto::RELAY_ROUTE_CACHE_VERSION),
                             bytes,
                             route.verified_at_unix,
                         ],
@@ -715,7 +715,7 @@ impl StateStore {
                  WHERE endpoint_id=?1",
                 params![
                     endpoint_id.as_bytes().as_slice(),
-                    i64::from(zterm_proto::RELAY_ROUTE_CACHE_VERSION),
+                    i64::from(voytty_proto::RELAY_ROUTE_CACHE_VERSION),
                     bytes,
                     route.verified_at_unix,
                 ],
@@ -1169,7 +1169,7 @@ impl StoreActor {
     pub fn start(store: StateStore) -> Result<Self, DaemonError> {
         let (sender, receiver) = mpsc::sync_channel(STORE_COMMAND_CAPACITY);
         let thread = thread::Builder::new()
-            .name("zterm-state-store".to_owned())
+            .name("voytty-state-store".to_owned())
             .spawn(move || run_store_actor(store, receiver))
             .map_err(|error| {
                 DaemonError::new(DomainErrorKind::StoreUnavailable, error.to_string())
@@ -1604,7 +1604,7 @@ fn project_known_device(
         (None, None, None) => (None, None),
         (Some(version), Some(bytes), Some(verified_at_unix)) => {
             validate_timestamp(verified_at_unix, "route verification timestamp")?;
-            if version != i64::from(zterm_proto::RELAY_ROUTE_CACHE_VERSION) {
+            if version != i64::from(voytty_proto::RELAY_ROUTE_CACHE_VERSION) {
                 (
                     None,
                     Some(RouteCacheDiagnostic::UnsupportedVersion { actual: version }),
@@ -1635,14 +1635,14 @@ fn project_known_device(
 }
 
 fn encode_route_cache(cache: &RelayRouteCache) -> Result<Vec<u8>, DaemonError> {
-    zterm_proto::encode_relay_route_cache(&cache.relay_hints)
+    voytty_proto::encode_relay_route_cache(&cache.relay_hints)
         .map_err(|error| corrupt_store(format!("route cache: {error}")))
 }
 
 /// Decodes the persisted relay route cache; any malformed, oversized, excess,
 /// invalid, or unknown-version cache is a typed corrupt-store error.
 fn decode_relay_hints(bytes: &[u8]) -> Result<Vec<RelayHint>, DaemonError> {
-    zterm_proto::decode_relay_route_cache(bytes)
+    voytty_proto::decode_relay_route_cache(bytes)
         .map_err(|error| corrupt_store(format!("route cache: {error}")))
 }
 

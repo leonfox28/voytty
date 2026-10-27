@@ -3,8 +3,8 @@
 use crate::NativeError;
 use std::fs::File;
 use std::sync::Arc;
-use zterm_core::release::android::{AndroidRelease, AndroidReleaseFiles, CERTIFICATE, PACKAGE};
-use zterm_core::release::{official_release_public_key, require_official_distribution_build};
+use voytty_core::release::android::{AndroidRelease, AndroidReleaseFiles, CERTIFICATE, PACKAGE};
+use voytty_core::release::{official_release_public_key, require_official_distribution_build};
 
 fn invalid() -> NativeError {
     NativeError::RequestFailed {
@@ -75,7 +75,7 @@ pub fn validate_android_update_build(
 ) -> Result<(), NativeError> {
     if package != PACKAGE
         || certificate != CERTIFICATE.trim()
-        || require_official_distribution_build(&zterm_core::BuildIdentity::current()).is_err()
+        || require_official_distribution_build(&voytty_core::BuildIdentity::current()).is_err()
     {
         return Err(NativeError::RequestFailed {
             code: "update_unsupported".to_owned(),
@@ -87,7 +87,7 @@ pub fn validate_android_update_build(
 /// Checks a discovery tag before the Android HTTP adapter constructs asset URLs.
 #[uniffi::export]
 pub fn validate_android_update_tag(tag: String) -> Result<(), NativeError> {
-    zterm_core::release::android::validate_stable_tag(&tag).map_err(|_| invalid())
+    voytty_core::release::android::validate_stable_tag(&tag).map_err(|_| invalid())
 }
 
 /// Verifies exact release bytes and returns one opaque candidate.

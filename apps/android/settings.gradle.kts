@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "Zterm"
+rootProject.name = "Voytty"
 include(":app")

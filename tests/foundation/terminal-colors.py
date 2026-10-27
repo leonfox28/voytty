@@ -49,7 +49,7 @@ def main():
     # Never replay terminal response bytes as controls.
     print(repr(bytes(replies)))
     try:
-        print("Indexed palette (compare all 256 cells between outer and ZTerm):")
+        print("Indexed palette (compare all 256 cells between outer and Voytty):")
         for row in range(16):
             print("".join(
                 f"\x1b[48;5;{row * 16 + column}m  \x1b[0m"

@@ -1,5 +1,5 @@
 [package]
-name = "zterm-uniffi-bindgen"
+name = "voytty-uniffi-bindgen"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

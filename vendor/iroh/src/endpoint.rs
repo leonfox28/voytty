@@ -2130,7 +2130,7 @@ mod tests {
     const TEST_ALPN: &[u8] = b"n0/iroh/test";
 
     #[test]
-    fn zterm_persistent_reset_requires_explicit_opt_in() {
+    fn voytty_persistent_reset_requires_explicit_opt_in() {
         assert!(!super::Builder::empty().persistent_stateless_reset);
         assert!(!Endpoint::builder(presets::Minimal).persistent_stateless_reset);
         assert!(

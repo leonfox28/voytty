@@ -2,16 +2,16 @@
 
 use std::time::{Duration, Instant};
 
-use zterm_core::TransportLimits;
-use zterm_daemon::authorization::AuthorizationRegistry;
-use zterm_daemon::connection_broker::ConnectionIdentity;
-use zterm_daemon::identity::DeviceIdentity;
-use zterm_daemon::network::{
+use voytty_core::TransportLimits;
+use voytty_daemon::authorization::AuthorizationRegistry;
+use voytty_daemon::connection_broker::ConnectionIdentity;
+use voytty_daemon::identity::DeviceIdentity;
+use voytty_daemon::network::{
     AddressServiceState, NetworkDiagnostic, NetworkObservation, NetworkObserver, NetworkStartup,
     NetworkState, NetworkTestHooks,
 };
-use zterm_daemon::store::{StateStore, StoreActor};
-use zterm_daemon::transport::InfrastructureProfile;
+use voytty_daemon::store::{StateStore, StoreActor};
+use voytty_daemon::transport::InfrastructureProfile;
 
 #[path = "support/state_fixture.rs"]
 mod state_fixture;
@@ -19,7 +19,7 @@ use state_fixture::TestState;
 
 #[test]
 fn retry_backoff_and_jitter_are_deterministic_and_capped() {
-    let device_id = zterm_core::DeviceId::from_array([0x5a; 32]);
+    let device_id = voytty_core::DeviceId::from_array([0x5a; 32]);
     let hooks = NetworkTestHooks::injected_bind_failures_with_backoff(
         usize::MAX,
         Duration::from_millis(250),
@@ -48,7 +48,7 @@ fn retry_backoff_and_jitter_are_deterministic_and_capped() {
 
 #[test]
 fn disabled_observation_is_passive_and_truthful() {
-    let device_id = zterm_core::DeviceId::from_array([0x2c; 32]);
+    let device_id = voytty_core::DeviceId::from_array([0x2c; 32]);
     let observation = NetworkObserver::disabled(device_id).snapshot();
 
     assert_eq!(observation.device_id, device_id);
@@ -76,7 +76,7 @@ async fn injected_failures_never_bind_and_keep_local_owners_responsive() {
         .expect("connection diagnostics");
     let (startup, handle) = NetworkStartup::prepare(
         identity,
-        InfrastructureProfile::zterm(),
+        InfrastructureProfile::voytty(),
         connection_identity,
         store.handle(),
         authorization,
@@ -142,7 +142,7 @@ async fn injected_failures_never_bind_and_keep_local_owners_responsive() {
     assert_eq!(close_observer.endpoint_close_count(), 0);
 }
 
-fn assert_initializing(observation: &NetworkObservation, device_id: zterm_core::DeviceId) {
+fn assert_initializing(observation: &NetworkObservation, device_id: voytty_core::DeviceId) {
     assert_eq!(observation.device_id, device_id);
     assert_eq!(observation.state, NetworkState::Initializing);
     assert!(!observation.endpoint_bound);

@@ -4,8 +4,8 @@ use crate::{
     protocol::{malformed, protocol_error},
 };
 use std::{fmt, path::PathBuf};
-use zterm_core::{DeviceId, Revision, SessionId, SessionName, terminal::TerminalSize};
-use zterm_proto::v2;
+use voytty_core::{DeviceId, Revision, SessionId, SessionName, terminal::TerminalSize};
+use voytty_proto::v2;
 
 /// Opaque exact Session target returned by the daemon-side resolver.
 ///

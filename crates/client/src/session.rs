@@ -18,20 +18,20 @@ use std::{
     },
     time::Duration,
 };
-use zterm_core::terminal::{
+use voytty_core::terminal::{
     TerminalClipboardWrite, TerminalColorProfile, TerminalHistoryWindowQuery, TerminalNotification,
     TerminalSurfaceDelta, TerminalSurfaceHistoryWindowResult, TerminalSurfaceSnapshot,
 };
-use zterm_core::{
+use voytty_core::{
     AttachmentId, DomainErrorKind, OperationId, OperationLease, ResumeViewId, Revision, SessionId,
     SessionSelector,
 };
 #[cfg(test)]
-use zterm_proto::FrameDecoder;
-use zterm_proto::{DecodedFrame, WireKind, encode_message, v2};
+use voytty_proto::FrameDecoder;
+use voytty_proto::{DecodedFrame, WireKind, encode_message, v2};
 
 #[cfg(test)]
-use zterm_core::DeviceId;
+use voytty_core::DeviceId;
 
 const MAX_DEFERRED_FRAMES: usize = 8;
 
@@ -144,13 +144,13 @@ struct ReconnectedAttachment {
     attachment_id: AttachmentId,
     initial: LocalAttachmentEvent,
     paths: Vec<v2::LocalSessionTunnelPath>,
-    terminal_size: zterm_core::terminal::TerminalSize,
+    terminal_size: voytty_core::terminal::TerminalSize,
 }
 
 /// Real same-UID duplex socket adapter for one frontend-owned terminal attachment.
 #[doc(hidden)]
 pub struct SessionClient {
-    reconnect_diagnostic: Option<zterm_diagnostics::Operation>,
+    reconnect_diagnostic: Option<voytty_diagnostics::Operation>,
     last_diagnostic_path: Option<i32>,
     latest_colors: TerminalColorProfile,
     color_sequence: u64,
@@ -165,7 +165,7 @@ pub struct SessionClient {
     target: ResolvedSessionTarget,
     resume_view_id: Option<ResumeViewId>,
     applied_revision: Arc<AtomicU64>,
-    latest_viewport: zterm_core::terminal::TerminalSize,
+    latest_viewport: voytty_core::terminal::TerminalSize,
     reconnect_pending: bool,
     force_full_sync: bool,
     initial_snapshot: Option<TerminalSurfaceSnapshot>,
@@ -215,7 +215,7 @@ impl SessionClient {
         }
         Ok(crate::upload::UploadOrigin {
             target: self.target,
-            binding: zterm_core::upload::UploadBinding {
+            binding: voytty_core::upload::UploadBinding {
                 session_id: self.session_id,
                 attachment_id: self.attachment_id,
             },
@@ -229,7 +229,7 @@ impl SessionClient {
         selector: Option<SessionSelector>,
         create_main: bool,
         takeover: bool,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
         base_colors: TerminalColorProfile,
     ) -> Result<Self, DaemonError> {
         Self::connect_with_progress(
@@ -256,13 +256,13 @@ impl SessionClient {
         selector: Option<SessionSelector>,
         create_main: bool,
         takeover: bool,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
         base_colors: TerminalColorProfile,
         progress: crate::progress::ProgressObserver,
     ) -> Result<Self, DaemonError> {
-        use zterm_diagnostics::{Event, Kind, Level, Operation, Outcome, Stage};
+        use voytty_diagnostics::{Event, Kind, Level, Operation, Outcome, Stage};
         let operation = Operation::default();
-        zterm_diagnostics::record(
+        voytty_diagnostics::record(
             Event::new(Kind::ConnectionStarted)
                 .operation(&operation)
                 .connection(operation.id()),
@@ -309,7 +309,7 @@ impl SessionClient {
             // Session operation still gets at most five seconds and never
             // extends the original absolute deadline.
             let deadline = deadline.min(crate::protocol::control_deadline());
-            progress.report(zterm_core::connection_progress::ConnectionStage::RequestingSession);
+            progress.report(voytty_core::connection_progress::ConnectionStage::RequestingSession);
             if let Err(error) = transport.write_until(&bytes, deadline).await {
                 return Err(if create_main {
                     create_main_outcome_unknown()
@@ -322,7 +322,7 @@ impl SessionClient {
             // reserved for a decoded, correlated ServiceError, which is already a
             // definitive result and must retain its exact domain category.
             progress.report(
-                zterm_core::connection_progress::ConnectionStage::ReceivingTerminalSnapshot,
+                voytty_core::connection_progress::ConnectionStage::ReceivingTerminalSnapshot,
             );
             let response = tokio::time::timeout_at(deadline, async {
             let mut pre_snapshot_states = Vec::new();
@@ -367,7 +367,7 @@ impl SessionClient {
                 let snapshot: v2::TerminalSemanticSnapshot = frame
                     .decode_message(WireKind::TerminalSemanticSnapshot)
                     .map_err(protocol_error)?;
-                break zterm_proto::terminal_surface_snapshot_from_message(snapshot)
+                break voytty_proto::terminal_surface_snapshot_from_message(snapshot)
                     .map_err(protocol_error)?;
             };
             let (session_id, attachment_id, initial_snapshot) = initial_snapshot;
@@ -422,7 +422,7 @@ impl SessionClient {
                 Ok(Ok(result)) => {
                     if result.is_ok() {
                         progress.report(
-                        zterm_core::connection_progress::ConnectionStage::TerminalSnapshotReceived,
+                        voytty_core::connection_progress::ConnectionStage::TerminalSnapshotReceived,
                     );
                     }
                     result
@@ -456,7 +456,7 @@ impl SessionClient {
                     Outcome::Failed
                 }),
         };
-        zterm_diagnostics::record(event.operation(&operation).connection(operation.id()));
+        voytty_diagnostics::record(event.operation(&operation).connection(operation.id()));
         result
     }
 
@@ -468,15 +468,15 @@ impl SessionClient {
             match self.reconnect_remote_once(resume_view_id).await {
                 Ok(reconnected) => {
                     if let Some(operation) = self.reconnect_diagnostic.take() {
-                        zterm_diagnostics::record(
-                            zterm_diagnostics::Event::new(
-                                zterm_diagnostics::Kind::ReconnectCompleted,
+                        voytty_diagnostics::record(
+                            voytty_diagnostics::Event::new(
+                                voytty_diagnostics::Kind::ReconnectCompleted,
                             )
                             .session(self.session_id)
                             .attachment(reconnected.attachment_id)
                             .operation(&operation)
-                            .stage(zterm_diagnostics::Stage::Synchronizing)
-                            .outcome(zterm_diagnostics::Outcome::Success),
+                            .stage(voytty_diagnostics::Stage::Synchronizing)
+                            .outcome(voytty_diagnostics::Outcome::Success),
                         );
                     }
                     self.transport = reconnected.transport;
@@ -521,12 +521,14 @@ impl SessionClient {
                 }
                 Err(error) => {
                     if let Some(operation) = &self.reconnect_diagnostic {
-                        zterm_diagnostics::record(
-                            zterm_diagnostics::Event::new(zterm_diagnostics::Kind::ReconnectFailed)
-                                .session(self.session_id)
-                                .operation(operation)
-                                .level(zterm_diagnostics::Level::Warn)
-                                .error(error.kind()),
+                        voytty_diagnostics::record(
+                            voytty_diagnostics::Event::new(
+                                voytty_diagnostics::Kind::ReconnectFailed,
+                            )
+                            .session(self.session_id)
+                            .operation(operation)
+                            .level(voytty_diagnostics::Level::Warn)
+                            .error(error.kind()),
                         );
                     }
                     return Err(error);
@@ -597,7 +599,7 @@ impl SessionClient {
                             .decode_message(WireKind::TerminalSemanticSnapshot)
                             .map_err(protocol_error)?;
                         let (session_id, attachment_id, snapshot) =
-                            zterm_proto::terminal_surface_snapshot_from_message(snapshot)
+                            voytty_proto::terminal_surface_snapshot_from_message(snapshot)
                                 .map_err(protocol_error)?;
                         if session_id != self.session_id {
                             return Err(malformed(
@@ -616,7 +618,7 @@ impl SessionClient {
                             .decode_message(WireKind::TerminalSemanticDelta)
                             .map_err(protocol_error)?;
                         let (attachment_id, delta) =
-                            zterm_proto::terminal_surface_delta_from_message(delta)
+                            voytty_proto::terminal_surface_delta_from_message(delta)
                                 .map_err(protocol_error)?;
                         if delta.from_revision
                             != Revision::new(self.applied_revision.load(Ordering::Acquire))
@@ -660,9 +662,9 @@ impl SessionClient {
         if self.reconnect_pending {
             return;
         }
-        let diagnostic = zterm_diagnostics::Operation::default();
-        zterm_diagnostics::record(
-            zterm_diagnostics::Event::new(zterm_diagnostics::Kind::ReconnectStarted)
+        let diagnostic = voytty_diagnostics::Operation::default();
+        voytty_diagnostics::record(
+            voytty_diagnostics::Event::new(voytty_diagnostics::Kind::ReconnectStarted)
                 .session(self.session_id)
                 .attachment(self.attachment_id)
                 .operation(&diagnostic),
@@ -765,32 +767,32 @@ impl SessionClient {
                 target,
                 resume_view_id: None,
                 applied_revision: Arc::new(AtomicU64::new(1)),
-                latest_viewport: zterm_core::terminal::TerminalSize::new(24, 80),
+                latest_viewport: voytty_core::terminal::TerminalSize::new(24, 80),
                 reconnect_pending: false,
                 force_full_sync: false,
                 initial_snapshot: Some(TerminalSurfaceSnapshot {
                     revision: Revision::new(1),
-                    surface: zterm_core::terminal::TerminalSurface {
+                    surface: voytty_core::terminal::TerminalSurface {
                         application_title: String::new(),
                         colors: Default::default(),
 
-                        size: zterm_core::terminal::TerminalSize::new(24, 80),
-                        active_screen: zterm_core::terminal::ActiveScreen::Main,
+                        size: voytty_core::terminal::TerminalSize::new(24, 80),
+                        active_screen: voytty_core::terminal::ActiveScreen::Main,
                         rows: (0..24)
-                            .map(|_| zterm_core::terminal::TerminalSurfaceRow {
-                                cells: vec![zterm_core::terminal::TerminalCell::default(); 80],
+                            .map(|_| voytty_core::terminal::TerminalSurfaceRow {
+                                cells: vec![voytty_core::terminal::TerminalCell::default(); 80],
                                 wrapped: false,
                             })
                             .collect(),
-                        cursor: zterm_core::terminal::TerminalCursor {
+                        cursor: voytty_core::terminal::TerminalCursor {
                             presentation: Default::default(),
                             row: 0,
                             column: 0,
                             visible: true,
-                            style: zterm_core::terminal::TerminalStyle::default(),
+                            style: voytty_core::terminal::TerminalStyle::default(),
                         },
-                        modes: zterm_core::terminal::TerminalModes::default(),
-                        scroll_metrics: Some(zterm_core::terminal::TerminalScrollMetrics {
+                        modes: voytty_core::terminal::TerminalModes::default(),
+                        scroll_metrics: Some(voytty_core::terminal::TerminalScrollMetrics {
                             epoch: Revision::ZERO,
                             revision: Revision::new(1),
                             offset_from_bottom: 0,
@@ -830,13 +832,13 @@ impl SessionClient {
             )
             .await
             .map(|_| ());
-        if result.is_ok() && zterm_diagnostics::detail_enabled() {
-            zterm_diagnostics::record(
-                zterm_diagnostics::Event::new(zterm_diagnostics::Kind::SyncChanged)
-                    .level(zterm_diagnostics::Level::Debug)
+        if result.is_ok() && voytty_diagnostics::detail_enabled() {
+            voytty_diagnostics::record(
+                voytty_diagnostics::Event::new(voytty_diagnostics::Kind::SyncChanged)
+                    .level(voytty_diagnostics::Level::Debug)
                     .session(self.session_id)
                     .attachment(self.attachment_id)
-                    .stage(zterm_diagnostics::Stage::SnapshotApplied)
+                    .stage(voytty_diagnostics::Stage::SnapshotApplied)
                     .epoch(revision.get()),
             );
         }
@@ -882,12 +884,12 @@ impl SessionClient {
     /// Requests one validated native/model viewport change.
     pub async fn resize(
         &mut self,
-        size: zterm_core::terminal::TerminalSize,
+        size: voytty_core::terminal::TerminalSize,
     ) -> Result<(), DaemonError> {
-        if size != self.latest_viewport && zterm_diagnostics::detail_enabled() {
-            zterm_diagnostics::record(
-                zterm_diagnostics::Event::new(zterm_diagnostics::Kind::ViewportChanged)
-                    .level(zterm_diagnostics::Level::Debug)
+        if size != self.latest_viewport && voytty_diagnostics::detail_enabled() {
+            voytty_diagnostics::record(
+                voytty_diagnostics::Event::new(voytty_diagnostics::Kind::ViewportChanged)
+                    .level(voytty_diagnostics::Level::Debug)
                     .session(self.session_id)
                     .attachment(self.attachment_id)
                     .viewport(size.columns, size.rows),
@@ -910,13 +912,13 @@ impl SessionClient {
 
     /// Discards the client baseline and requests a fresh snapshot.
     pub async fn request_sync(&mut self, known_revision: Revision) -> Result<(), DaemonError> {
-        if zterm_diagnostics::detail_enabled() {
-            zterm_diagnostics::record(
-                zterm_diagnostics::Event::new(zterm_diagnostics::Kind::SyncChanged)
-                    .level(zterm_diagnostics::Level::Debug)
+        if voytty_diagnostics::detail_enabled() {
+            voytty_diagnostics::record(
+                voytty_diagnostics::Event::new(voytty_diagnostics::Kind::SyncChanged)
+                    .level(voytty_diagnostics::Level::Debug)
                     .session(self.session_id)
                     .attachment(self.attachment_id)
-                    .reason(zterm_diagnostics::Reason::SyncRequired)
+                    .reason(voytty_diagnostics::Reason::SyncRequired)
                     .epoch(known_revision.get()),
             );
         }
@@ -1107,12 +1109,12 @@ impl SessionClient {
         {
             self.last_diagnostic_path = Some(status.path);
             let stage = match v2::TerminalConnectionPath::try_from(status.path) {
-                Ok(v2::TerminalConnectionPath::Direct) => zterm_diagnostics::Stage::Direct,
-                Ok(v2::TerminalConnectionPath::Relay) => zterm_diagnostics::Stage::Relay,
-                _ => zterm_diagnostics::Stage::Unknown,
+                Ok(v2::TerminalConnectionPath::Direct) => voytty_diagnostics::Stage::Direct,
+                Ok(v2::TerminalConnectionPath::Relay) => voytty_diagnostics::Stage::Relay,
+                _ => voytty_diagnostics::Stage::Unknown,
             };
-            zterm_diagnostics::record(
-                zterm_diagnostics::Event::new(zterm_diagnostics::Kind::RouteChanged)
+            voytty_diagnostics::record(
+                voytty_diagnostics::Event::new(voytty_diagnostics::Kind::RouteChanged)
                     .session(self.session_id)
                     .attachment(self.attachment_id)
                     .stage(stage),
@@ -1229,7 +1231,7 @@ impl SessionClient {
                     .map_err(protocol_error)?;
                 let frame_sequence = snapshot.frame_sequence;
                 let (session_id, attachment_id, surface) =
-                    zterm_proto::terminal_surface_snapshot_from_message(snapshot)
+                    voytty_proto::terminal_surface_snapshot_from_message(snapshot)
                         .map_err(protocol_error)?;
                 if session_id != self.session_id || attachment_id != self.attachment_id {
                     return Err(malformed("semantic terminal snapshot identity mismatch"));
@@ -1237,13 +1239,13 @@ impl SessionClient {
                 self.observe_surface_frame(frame_sequence)?;
                 self.force_full_sync = false;
                 self.terminal_rows = u32::from(surface.surface.size.rows);
-                if zterm_diagnostics::detail_enabled() {
-                    zterm_diagnostics::record(
-                        zterm_diagnostics::Event::new(zterm_diagnostics::Kind::SyncChanged)
-                            .level(zterm_diagnostics::Level::Debug)
+                if voytty_diagnostics::detail_enabled() {
+                    voytty_diagnostics::record(
+                        voytty_diagnostics::Event::new(voytty_diagnostics::Kind::SyncChanged)
+                            .level(voytty_diagnostics::Level::Debug)
                             .session(self.session_id)
                             .attachment(self.attachment_id)
-                            .stage(zterm_diagnostics::Stage::SnapshotReceived)
+                            .stage(voytty_diagnostics::Stage::SnapshotReceived)
                             .epoch(surface.revision.get())
                             .viewport(surface.surface.size.columns, surface.surface.size.rows),
                     );
@@ -1256,7 +1258,7 @@ impl SessionClient {
                     .map_err(protocol_error)?;
                 let frame_sequence = delta.frame_sequence;
                 let (attachment_id, semantic) =
-                    zterm_proto::terminal_surface_delta_from_message(delta)
+                    voytty_proto::terminal_surface_delta_from_message(delta)
                         .map_err(protocol_error)?;
                 if attachment_id != self.attachment_id {
                     return Err(malformed("semantic terminal delta attachment_id mismatch"));
@@ -1280,7 +1282,7 @@ impl SessionClient {
                     .decode_message(WireKind::TerminalSemanticHistoryWindowFrame)
                     .map_err(protocol_error)?;
                 let (attachment_id, result) =
-                    zterm_proto::terminal_surface_history_window_from_message(window, query)
+                    voytty_proto::terminal_surface_history_window_from_message(window, query)
                         .map_err(protocol_error)?;
                 if attachment_id != self.attachment_id {
                     return Err(malformed(
@@ -1298,7 +1300,7 @@ impl SessionClient {
                     .decode_message(WireKind::TerminalNotification)
                     .map_err(protocol_error)?;
                 let (attachment_id, notification) =
-                    zterm_proto::terminal_notification_from_message(message)
+                    voytty_proto::terminal_notification_from_message(message)
                         .map_err(protocol_error)?;
                 if attachment_id != self.attachment_id {
                     return Err(malformed("terminal notification attachment_id mismatch"));
@@ -1315,7 +1317,7 @@ impl SessionClient {
                     .decode_message(WireKind::TerminalClipboardWrite)
                     .map_err(protocol_error)?;
                 let (attachment_id, write) =
-                    zterm_proto::terminal_clipboard_write_from_message(message)
+                    voytty_proto::terminal_clipboard_write_from_message(message)
                         .map_err(protocol_error)?;
                 if attachment_id != self.attachment_id {
                     return Err(malformed(
@@ -1343,11 +1345,11 @@ impl SessionClient {
                     .decode_message(WireKind::TerminalLeaseLost)
                     .map_err(protocol_error)?;
                 self.require_attachment(lost.attachment_id.clone())?;
-                zterm_diagnostics::record(
-                    zterm_diagnostics::Event::new(zterm_diagnostics::Kind::TerminalLeaseLost)
+                voytty_diagnostics::record(
+                    voytty_diagnostics::Event::new(voytty_diagnostics::Kind::TerminalLeaseLost)
                         .session(self.session_id)
                         .attachment(self.attachment_id)
-                        .reason(zterm_diagnostics::Reason::LeaseLost),
+                        .reason(voytty_diagnostics::Reason::LeaseLost),
                 );
                 Ok(LocalAttachmentEvent::LeaseLost(lost))
             }
@@ -1375,20 +1377,20 @@ impl SessionClient {
 
     /// Detaches this view while leaving the session and PTY running.
     pub async fn detach(&mut self) -> Result<(), DaemonError> {
-        let operation = zterm_diagnostics::Operation::default();
+        let operation = voytty_diagnostics::Operation::default();
         let session_id = self.session_id;
         let attachment_id = self.attachment_id;
         let record = |stage| {
-            zterm_diagnostics::record(
-                zterm_diagnostics::Event::new(zterm_diagnostics::Kind::ControllerDetached)
-                    .level(zterm_diagnostics::Level::Debug)
+            voytty_diagnostics::record(
+                voytty_diagnostics::Event::new(voytty_diagnostics::Kind::ControllerDetached)
+                    .level(voytty_diagnostics::Level::Debug)
                     .operation(&operation)
                     .session(session_id)
                     .attachment(attachment_id)
                     .stage(stage),
             );
         };
-        record(zterm_diagnostics::Stage::WritingDetach);
+        record(voytty_diagnostics::Stage::WritingDetach);
         self.send(
             WireKind::TerminalDetach,
             &v2::TerminalDetach {
@@ -1399,12 +1401,12 @@ impl SessionClient {
         if self.reconnect_pending {
             return Ok(());
         }
-        record(zterm_diagnostics::Stage::AwaitingDetach);
+        record(voytty_diagnostics::Stage::AwaitingDetach);
         let result = self.transport.shutdown().await;
         record(if result.is_ok() {
-            zterm_diagnostics::Stage::Detached
+            voytty_diagnostics::Stage::Detached
         } else {
-            zterm_diagnostics::Stage::Failed
+            voytty_diagnostics::Stage::Failed
         });
         result
     }
@@ -1517,7 +1519,7 @@ impl SessionClient {
         // Sideband statuses have fixed identity and scalar fields, bounded by 64 bytes.
         let sideband_bytes = self.pending_transport_events.len() * 64;
         if self.deferred.len() + self.pending_transport_events.len() >= MAX_DEFERRED_FRAMES
-            || retained + sideband_bytes + bytes > zterm_proto::MAX_FRAME_BYTES
+            || retained + sideband_bytes + bytes > voytty_proto::MAX_FRAME_BYTES
         {
             self.invalidate_transport();
             return Err(resource_error(
@@ -1569,11 +1571,11 @@ impl SessionClient {
                         .decode_message(WireKind::TerminalLeaseLost)
                         .map_err(protocol_error)?;
                     self.require_attachment(lost.attachment_id)?;
-                    zterm_diagnostics::record(
-                        zterm_diagnostics::Event::new(zterm_diagnostics::Kind::TerminalLeaseLost)
+                    voytty_diagnostics::record(
+                        voytty_diagnostics::Event::new(voytty_diagnostics::Kind::TerminalLeaseLost)
                             .session(self.session_id)
                             .attachment(self.attachment_id)
-                            .reason(zterm_diagnostics::Reason::LeaseLost),
+                            .reason(voytty_diagnostics::Reason::LeaseLost),
                     );
                     let error = DaemonError::new(
                         DomainErrorKind::LeaseLost,
@@ -1745,7 +1747,7 @@ impl SessionClient {
         selector: Option<SessionSelector>,
         create_main: bool,
         takeover: bool,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
     ) -> Result<Self, DaemonError> {
         Self::connect_inner(
             socket.as_ref(),
@@ -1762,7 +1764,7 @@ impl SessionClient {
     /// Attaches to the daemon-lifetime default `main` session, creating it if absent.
     pub async fn connect_main(
         socket: impl AsRef<Path>,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
     ) -> Result<Self, DaemonError> {
         Self::connect_inner(
             socket.as_ref(),
@@ -1781,7 +1783,7 @@ impl SessionClient {
         socket: impl AsRef<Path>,
         selector: SessionSelector,
         takeover: bool,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
     ) -> Result<Self, DaemonError> {
         Self::connect_inner(
             socket.as_ref(),
@@ -1800,7 +1802,7 @@ impl SessionClient {
     pub async fn connect_remote_main(
         socket: impl AsRef<Path>,
         target: DeviceId,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
     ) -> Result<Self, DaemonError> {
         Self::connect_inner(
             socket.as_ref(),
@@ -1821,7 +1823,7 @@ impl SessionClient {
         target: DeviceId,
         selector: SessionSelector,
         takeover: bool,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
     ) -> Result<Self, DaemonError> {
         Self::connect_inner(
             socket.as_ref(),
@@ -1841,7 +1843,7 @@ impl SessionClient {
         selector: Option<SessionSelector>,
         create_main: bool,
         takeover: bool,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
         base_colors: TerminalColorProfile,
     ) -> Result<Self, DaemonError> {
         Self::connect_inner(
@@ -1862,7 +1864,7 @@ impl SessionClient {
         selector: Option<SessionSelector>,
         create_main: bool,
         takeover: bool,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
         base_colors: TerminalColorProfile,
     ) -> Result<Self, DaemonError> {
         Self::connect(
@@ -1973,7 +1975,7 @@ mod tests {
         let retry_owner = LocalTakeoverRetryToken {
             operation_id: OperationId {
                 lease: OperationLease {
-                    daemon_incarnation: zterm_core::DaemonIncarnation::from_array(
+                    daemon_incarnation: voytty_core::DaemonIncarnation::from_array(
                         *b"TAKEOVER_TOKEN_1",
                     ),
                     ordinal: 8_675_309,
@@ -2060,7 +2062,7 @@ mod tests {
                     &v2::SessionOperationLeaseResponse {
                         lease: Some(
                             OperationLease {
-                                daemon_incarnation: zterm_core::DaemonIncarnation::from_array(
+                                daemon_incarnation: voytty_core::DaemonIncarnation::from_array(
                                     [4; 16],
                                 ),
                                 ordinal: 1,
@@ -2272,7 +2274,7 @@ mod tests {
             AttachmentId::from_array([2; 16]),
         );
         client.operation_lease = Some(OperationLease {
-            daemon_incarnation: zterm_core::DaemonIncarnation::from_array([3; 16]),
+            daemon_incarnation: voytty_core::DaemonIncarnation::from_array([3; 16]),
             ordinal: 1,
         });
         client
@@ -2613,32 +2615,32 @@ mod tests {
         session_id: SessionId,
         attachment_id: AttachmentId,
     ) -> v2::TerminalSemanticSnapshot {
-        zterm_proto::terminal_surface_snapshot_message(
+        voytty_proto::terminal_surface_snapshot_message(
             session_id,
             attachment_id,
             TerminalSurfaceSnapshot {
                 revision: Revision::new(1),
-                surface: zterm_core::terminal::TerminalSurface {
+                surface: voytty_core::terminal::TerminalSurface {
                     application_title: String::new(),
                     colors: Default::default(),
 
-                    size: zterm_core::terminal::TerminalSize::new(24, 80),
-                    active_screen: zterm_core::terminal::ActiveScreen::Main,
+                    size: voytty_core::terminal::TerminalSize::new(24, 80),
+                    active_screen: voytty_core::terminal::ActiveScreen::Main,
                     rows: (0..24)
-                        .map(|_| zterm_core::terminal::TerminalSurfaceRow {
-                            cells: vec![zterm_core::terminal::TerminalCell::default(); 80],
+                        .map(|_| voytty_core::terminal::TerminalSurfaceRow {
+                            cells: vec![voytty_core::terminal::TerminalCell::default(); 80],
                             wrapped: false,
                         })
                         .collect(),
-                    cursor: zterm_core::terminal::TerminalCursor {
+                    cursor: voytty_core::terminal::TerminalCursor {
                         presentation: Default::default(),
                         row: 0,
                         column: 0,
                         visible: true,
                         style: Default::default(),
                     },
-                    modes: zterm_core::terminal::TerminalModes::default(),
-                    scroll_metrics: Some(zterm_core::terminal::TerminalScrollMetrics {
+                    modes: voytty_core::terminal::TerminalModes::default(),
+                    scroll_metrics: Some(voytty_core::terminal::TerminalScrollMetrics {
                         epoch: Revision::ZERO,
                         revision: Revision::new(1),
                         offset_from_bottom: 0,
@@ -2721,7 +2723,7 @@ mod tests {
                     0,
                     &v2::LocalSessionTunnelOpened {
                         remote_capabilities: None,
-                        protocol_version: zterm_proto::LOCAL_SESSION_TUNNEL_VERSION,
+                        protocol_version: voytty_proto::LOCAL_SESSION_TUNNEL_VERSION,
                     },
                 )
                 .expect("encode replacement tunnel Opened"),
@@ -2754,7 +2756,7 @@ mod tests {
             .expect("decode replacement resume request");
         assert!(attach.accept_zlib_frames);
         assert!(attach.acknowledge_surface_frames);
-        let viewport = zterm_core::terminal::TerminalSize::try_from(
+        let viewport = voytty_core::terminal::TerminalSize::try_from(
             attach
                 .viewport
                 .expect("replacement resume advertises its latest viewport"),
@@ -2774,17 +2776,17 @@ mod tests {
                     .expect("replacement revision fits"),
             ),
             size: viewport,
-            active_screen: zterm_core::terminal::ActiveScreen::Main,
+            active_screen: voytty_core::terminal::ActiveScreen::Main,
             row_patches: Vec::new(),
-            cursor: zterm_core::terminal::TerminalCursor {
+            cursor: voytty_core::terminal::TerminalCursor {
                 presentation: Default::default(),
                 row: 0,
                 column: 0,
                 visible: true,
                 style: Default::default(),
             },
-            modes: zterm_core::terminal::TerminalModes::default(),
-            scroll_metrics: Some(zterm_core::terminal::TerminalScrollMetrics {
+            modes: voytty_core::terminal::TerminalModes::default(),
+            scroll_metrics: Some(voytty_core::terminal::TerminalScrollMetrics {
                 epoch: Revision::ZERO,
                 revision: Revision::new(known_revision + 1),
                 offset_from_bottom: 0,
@@ -2796,7 +2798,7 @@ mod tests {
             WireKind::TerminalSemanticDelta,
             request_id,
             0,
-            &zterm_proto::terminal_surface_delta_message(new_attachment, delta),
+            &voytty_proto::terminal_surface_delta_message(new_attachment, delta),
         )
         .expect("encode replacement resume delta");
         stream
@@ -3036,18 +3038,18 @@ mod tests {
 
             from_revision: Revision::new(1),
             to_revision: Revision::new(2),
-            size: zterm_core::terminal::TerminalSize::new(24, 80),
-            active_screen: zterm_core::terminal::ActiveScreen::Main,
+            size: voytty_core::terminal::TerminalSize::new(24, 80),
+            active_screen: voytty_core::terminal::ActiveScreen::Main,
             row_patches: Vec::new(),
-            cursor: zterm_core::terminal::TerminalCursor {
+            cursor: voytty_core::terminal::TerminalCursor {
                 presentation: Default::default(),
                 row: 3,
                 column: 7,
                 visible: true,
                 style: Default::default(),
             },
-            modes: zterm_core::terminal::TerminalModes::default(),
-            scroll_metrics: Some(zterm_core::terminal::TerminalScrollMetrics {
+            modes: voytty_core::terminal::TerminalModes::default(),
+            scroll_metrics: Some(voytty_core::terminal::TerminalScrollMetrics {
                 epoch: Revision::ZERO,
                 revision: Revision::new(2),
                 offset_from_bottom: 0,
@@ -3061,7 +3063,7 @@ mod tests {
             WireKind::TerminalSemanticDelta,
             0,
             0,
-            &zterm_proto::terminal_surface_delta_message(attachment_id, delta.clone()),
+            &voytty_proto::terminal_surface_delta_message(attachment_id, delta.clone()),
         )
         .expect("encode paired delta");
         target_trace.extend_from_slice(
@@ -3069,7 +3071,7 @@ mod tests {
                 WireKind::TerminalClipboardWrite,
                 0,
                 0,
-                &zterm_proto::terminal_clipboard_write_message(attachment_id, clipboard),
+                &voytty_proto::terminal_clipboard_write_message(attachment_id, clipboard),
             )
             .expect("encode paired clipboard effect"),
         );
@@ -3102,7 +3104,7 @@ mod tests {
         // The target has emitted the ordinary delta, but the frontend submits
         // resize before consuming it. Framing/batching must not promote it to a
         // reconnect barrier on either adapter.
-        let viewport = zterm_core::terminal::TerminalSize::new(31, 97);
+        let viewport = voytty_core::terminal::TerminalSize::new(31, 97);
         direct
             .snapshot_applied(Revision::new(1))
             .await
@@ -3196,8 +3198,8 @@ mod tests {
         let second_view = ResumeViewId::from_array([0x3b; ResumeViewId::LENGTH]);
         let first_attachment = AttachmentId::from_array([0x3c; AttachmentId::LENGTH]);
         let second_attachment = AttachmentId::from_array([0x3d; AttachmentId::LENGTH]);
-        let first_viewport = zterm_core::terminal::TerminalSize::new(23, 79);
-        let second_viewport = zterm_core::terminal::TerminalSize::new(41, 119);
+        let first_viewport = voytty_core::terminal::TerminalSize::new(23, 79);
+        let second_viewport = voytty_core::terminal::TerminalSize::new(41, 119);
         let (mut first, stale_first_peer) = SessionClient::terminal_driver_test_pair(
             ResolvedSessionTarget::device(target_device),
             SessionId::from_array([0x3e; SessionId::LENGTH]),
@@ -3282,8 +3284,8 @@ mod tests {
         let second_view = ResumeViewId::from_array([0x44; ResumeViewId::LENGTH]);
         let first_new_attachment = AttachmentId::from_array([0x45; AttachmentId::LENGTH]);
         let second_new_attachment = AttachmentId::from_array([0x46; AttachmentId::LENGTH]);
-        let first_viewport = zterm_core::terminal::TerminalSize::new(27, 83);
-        let second_viewport = zterm_core::terminal::TerminalSize::new(43, 127);
+        let first_viewport = voytty_core::terminal::TerminalSize::new(27, 83);
+        let second_viewport = voytty_core::terminal::TerminalSize::new(43, 127);
 
         let server = tokio::spawn(async move {
             let (mut first_stream, _) = listener
@@ -3364,7 +3366,7 @@ mod tests {
             );
             assert_eq!(request.known_revision, Some(expected_revision));
             assert_eq!(
-                zterm_core::terminal::TerminalSize::try_from(
+                voytty_core::terminal::TerminalSize::try_from(
                     request.viewport.expect("resume viewport")
                 )
                 .expect("valid resume viewport"),
@@ -3436,7 +3438,7 @@ mod tests {
     #[tokio::test]
     async fn startup_progress_precedes_opened_and_preserves_coalesced_tunnel_bytes() {
         use crate::progress::ProgressObserver;
-        use zterm_core::connection_progress::ConnectionStage;
+        use voytty_core::connection_progress::ConnectionStage;
         for chunk_size in [1, 4096] {
             let (observer, history) = ProgressObserver::channel(|_| {});
             let stages = [
@@ -3451,7 +3453,7 @@ mod tests {
                         WireKind::LocalConnectionProgress,
                         1,
                         0,
-                        &zterm_proto::connection_stage_to_message(stage)
+                        &voytty_proto::connection_stage_to_message(stage)
                             .expect("tunnel progress fixture"),
                     )
                     .expect("tunnel progress fixture"),
@@ -3464,7 +3466,7 @@ mod tests {
                     0,
                     &v2::LocalSessionTunnelOpened {
                         remote_capabilities: None,
-                        protocol_version: zterm_proto::LOCAL_SESSION_TUNNEL_VERSION,
+                        protocol_version: voytty_proto::LOCAL_SESSION_TUNNEL_VERSION,
                     },
                 )
                 .expect("tunnel progress fixture"),
@@ -3519,7 +3521,7 @@ mod tests {
             0,
             &v2::LocalSessionTunnelOpened {
                 remote_capabilities: None,
-                protocol_version: zterm_proto::LOCAL_SESSION_TUNNEL_VERSION,
+                protocol_version: voytty_proto::LOCAL_SESSION_TUNNEL_VERSION,
             },
         )
         .expect("encode Opened envelope");
@@ -3580,11 +3582,11 @@ mod tests {
         let old_attachment = AttachmentId::from_array([0x53; AttachmentId::LENGTH]);
         let new_attachment = AttachmentId::from_array([0x54; AttachmentId::LENGTH]);
         let resume_view_id = ResumeViewId::from_array([0x55; ResumeViewId::LENGTH]);
-        let viewport = zterm_core::terminal::TerminalSize::new(31, 97);
+        let viewport = voytty_core::terminal::TerminalSize::new(31, 97);
 
         let mut colors = TerminalColorProfile::default();
-        colors.values[1] = zterm_core::terminal::TerminalColorValue::Rgb(17, 18, 19);
-        colors.appearance = zterm_core::terminal::TerminalAppearance::Dark;
+        colors.values[1] = voytty_core::terminal::TerminalColorValue::Rgb(17, 18, 19);
+        colors.appearance = voytty_core::terminal::TerminalAppearance::Dark;
         let expected_colors = colors.clone();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("accept reconnect tunnel");
@@ -3596,7 +3598,7 @@ mod tests {
                 .expect("decode tunnel Open");
             assert_eq!(
                 open.protocol_version,
-                zterm_proto::LOCAL_SESSION_TUNNEL_VERSION
+                voytty_proto::LOCAL_SESSION_TUNNEL_VERSION
             );
             let opened_target: DeviceId = open
                 .target_device_id
@@ -3611,7 +3613,7 @@ mod tests {
                 0,
                 &v2::LocalSessionTunnelOpened {
                     remote_capabilities: None,
-                    protocol_version: zterm_proto::LOCAL_SESSION_TUNNEL_VERSION,
+                    protocol_version: voytty_proto::LOCAL_SESSION_TUNNEL_VERSION,
                 },
             )
             .expect("encode tunnel Opened");
@@ -3684,7 +3686,7 @@ mod tests {
                 .expect("resume view ID is valid");
             assert_eq!(attached_view, resume_view_id);
             assert_eq!(attach.known_revision, Some(11));
-            let requested_viewport: zterm_core::terminal::TerminalSize = attach
+            let requested_viewport: voytty_core::terminal::TerminalSize = attach
                 .viewport
                 .expect("resume request keeps the latest viewport")
                 .try_into()
@@ -3694,24 +3696,24 @@ mod tests {
                 resolved_target_from_wire(attach.target).expect("resume target selector is valid");
             assert_eq!(attached_target.device_id(), Some(target_device));
 
-            let delta = zterm_core::terminal::TerminalSurfaceDelta {
+            let delta = voytty_core::terminal::TerminalSurfaceDelta {
                 application_title: String::new(),
                 colors: Default::default(),
 
                 from_revision: Revision::new(11),
                 to_revision: Revision::new(12),
                 size: viewport,
-                active_screen: zterm_core::terminal::ActiveScreen::Main,
+                active_screen: voytty_core::terminal::ActiveScreen::Main,
                 row_patches: Vec::new(),
-                cursor: zterm_core::terminal::TerminalCursor {
+                cursor: voytty_core::terminal::TerminalCursor {
                     presentation: Default::default(),
                     row: 0,
                     column: 0,
                     visible: true,
                     style: Default::default(),
                 },
-                modes: zterm_core::terminal::TerminalModes::default(),
-                scroll_metrics: Some(zterm_core::terminal::TerminalScrollMetrics {
+                modes: voytty_core::terminal::TerminalModes::default(),
+                scroll_metrics: Some(voytty_core::terminal::TerminalScrollMetrics {
                     epoch: Revision::ZERO,
                     revision: Revision::new(12),
                     offset_from_bottom: 0,
@@ -3723,7 +3725,7 @@ mod tests {
                 WireKind::TerminalSemanticDelta,
                 request_id,
                 0,
-                &zterm_proto::terminal_surface_delta_message(new_attachment, delta),
+                &voytty_proto::terminal_surface_delta_message(new_attachment, delta),
             )
             .expect("encode resume delta");
             stream
@@ -3848,18 +3850,18 @@ mod tests {
     async fn diagnostics_reconnect_child() {
         #[derive(Default)]
         struct Memory(std::sync::Mutex<Vec<Vec<u8>>>);
-        impl zterm_diagnostics::Sink for Memory {
+        impl voytty_diagnostics::Sink for Memory {
             fn append(&self, _: bool, bytes: &[u8]) -> std::io::Result<()> {
                 self.0.lock().expect("records").push(bytes.into());
                 Ok(())
             }
-            fn control(&self) -> std::io::Result<zterm_diagnostics::Control> {
-                Ok(zterm_diagnostics::Control::disabled())
+            fn control(&self) -> std::io::Result<voytty_diagnostics::Control> {
+                Ok(voytty_diagnostics::Control::disabled())
             }
         }
         let sink = Arc::new(Memory::default());
-        let recorder = zterm_diagnostics::Recorder::new(sink.clone()).expect("recorder");
-        assert!(zterm_diagnostics::install(recorder.clone()));
+        let recorder = voytty_diagnostics::Recorder::new(sink.clone()).expect("recorder");
+        assert!(voytty_diagnostics::install(recorder.clone()));
         reconnect_checkpoint_fixture().await;
         let (mut client, _peer) = SessionClient::terminal_driver_test_pair(
             ResolvedSessionTarget::local(),
@@ -3884,9 +3886,9 @@ mod tests {
             .lock()
             .expect("records")
             .iter()
-            .map(|bytes| zterm_diagnostics::Record::decode(bytes).expect("safe record"))
+            .map(|bytes| voytty_diagnostics::Record::decode(bytes).expect("safe record"))
             .collect();
-        use zterm_diagnostics::Kind;
+        use voytty_diagnostics::Kind;
         let start = records
             .iter()
             .find(|r| r.event == Kind::ReconnectStarted)
@@ -3917,7 +3919,7 @@ mod tests {
         assert!(
             records
                 .iter()
-                .all(|r| r.level != zterm_diagnostics::Level::Debug)
+                .all(|r| r.level != voytty_diagnostics::Level::Debug)
         );
     }
 
@@ -3975,7 +3977,7 @@ mod tests {
         let old_attachment = AttachmentId::from_array([0x5f; AttachmentId::LENGTH]);
         let new_attachment = AttachmentId::from_array([0x60; AttachmentId::LENGTH]);
         let resume_view_id = ResumeViewId::from_array([0x61; ResumeViewId::LENGTH]);
-        let viewport = zterm_core::terminal::TerminalSize::new(33, 101);
+        let viewport = voytty_core::terminal::TerminalSize::new(33, 101);
         let calls = Arc::new(AtomicU64::new(0));
         let restarter = Arc::new(AcceptingRemoteDaemonRestarter {
             socket: socket.clone(),
@@ -4034,7 +4036,7 @@ mod tests {
             resume_view_id
         );
         assert_eq!(
-            zterm_core::terminal::TerminalSize::try_from(
+            voytty_core::terminal::TerminalSize::try_from(
                 attach.viewport.expect("resumed viewport")
             )
             .expect("valid resumed viewport"),
@@ -4090,11 +4092,11 @@ mod tests {
             AttachmentId::from_array([0x63; AttachmentId::LENGTH]),
         );
         let query = TerminalHistoryWindowQuery {
-            anchor: zterm_core::terminal::TerminalHistoryWindowAnchor {
+            anchor: voytty_core::terminal::TerminalHistoryWindowAnchor {
                 epoch: Revision::new(7),
                 revision: Revision::new(9),
                 max_offset_from_bottom: 20,
-                viewport: zterm_core::terminal::TerminalSize::new(24, 80),
+                viewport: voytty_core::terminal::TerminalSize::new(24, 80),
             },
             target_offset_from_bottom: 4,
             older_margin_rows: 8,
@@ -4133,11 +4135,11 @@ mod tests {
             AttachmentId::from_array([0x44; 16]),
         );
         let query = TerminalHistoryWindowQuery {
-            anchor: zterm_core::terminal::TerminalHistoryWindowAnchor {
+            anchor: voytty_core::terminal::TerminalHistoryWindowAnchor {
                 epoch: Revision::new(1),
                 revision: Revision::new(2),
                 max_offset_from_bottom: 12,
-                viewport: zterm_core::terminal::TerminalSize::new(4, 10),
+                viewport: voytty_core::terminal::TerminalSize::new(4, 10),
             },
             target_offset_from_bottom: 1,
             older_margin_rows: 8,
@@ -4284,7 +4286,7 @@ mod tests {
         let wrong = AttachmentId::from_array([0xb3; 16]);
         for target in [
             ResolvedSessionTarget::local(),
-            ResolvedSessionTarget::device(zterm_core::DeviceId::from_array([0xb4; 32])),
+            ResolvedSessionTarget::device(voytty_core::DeviceId::from_array([0xb4; 32])),
         ] {
             for (request, deadline, recipient, valid) in [
                 (0, 0, id, true),
@@ -4296,7 +4298,7 @@ mod tests {
                     SessionClient::terminal_driver_test_pair(target, session, id);
                 let value = TerminalNotification::osc777("标题".into(), "结果;body".into())
                     .expect("valid notification");
-                let message = zterm_proto::terminal_notification_message(recipient, value.clone());
+                let message = voytty_proto::terminal_notification_message(recipient, value.clone());
                 stream
                     .write_all(
                         &encode_message(
@@ -4335,7 +4337,7 @@ mod tests {
         );
         let write = TerminalClipboardWrite::new("typed clipboard".to_owned())
             .expect("valid clipboard fixture");
-        let event = zterm_proto::terminal_clipboard_write_message(attachment_id, write);
+        let event = voytty_proto::terminal_clipboard_write_message(attachment_id, write);
         daemon_stream
             .write_all(
                 &encode_message(WireKind::TerminalClipboardWrite, 0, 0, &event)
@@ -4378,7 +4380,7 @@ mod tests {
             session_id,
             attachment_id,
         );
-        let wrong = zterm_proto::terminal_clipboard_write_message(
+        let wrong = voytty_proto::terminal_clipboard_write_message(
             AttachmentId::from_array([0xa4; AttachmentId::LENGTH]),
             TerminalClipboardWrite::new("wrong owner".to_owned())
                 .expect("valid wrong-owner fixture"),
@@ -4736,7 +4738,7 @@ mod tests {
                             0,
                             &v2::LocalSessionTunnelOpened {
                                 remote_capabilities: None,
-                                protocol_version: zterm_proto::LOCAL_SESSION_TUNNEL_VERSION,
+                                protocol_version: voytty_proto::LOCAL_SESSION_TUNNEL_VERSION,
                             },
                         )
                         .expect("bounded tunnel Opened"),

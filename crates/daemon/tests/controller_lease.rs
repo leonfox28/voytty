@@ -7,8 +7,8 @@ mod support;
 #[cfg(unix)]
 #[test]
 fn takeover_requires_snapshot_and_invalidates_the_old_controller() -> Result<(), String> {
-    use zterm_core::{DomainErrorKind, ResourceLimits, SessionSelector};
-    use zterm_daemon::session::AttachmentLifecycle;
+    use voytty_core::{DomainErrorKind, ResourceLimits, SessionSelector};
+    use voytty_daemon::session::AttachmentLifecycle;
 
     let fixture = support::Fixture::new(ResourceLimits::default())?;
     let first = fixture
@@ -130,7 +130,7 @@ fn takeover_requires_snapshot_and_invalidates_the_old_controller() -> Result<(),
 #[test]
 fn same_operation_continuation_reacquires_authority_after_old_controller_detaches()
 -> Result<(), String> {
-    use zterm_core::{ResourceLimits, Revision, SessionSelector};
+    use voytty_core::{ResourceLimits, Revision, SessionSelector};
 
     let fixture = support::Fixture::new(ResourceLimits::default())?;
     let original = fixture
@@ -187,7 +187,7 @@ fn same_operation_continuation_reacquires_authority_after_old_controller_detache
 #[cfg(unix)]
 #[test]
 fn stale_same_operation_continuation_cannot_clobber_a_later_controller() -> Result<(), String> {
-    use zterm_core::{DomainErrorKind, ResourceLimits, SessionSelector};
+    use voytty_core::{DomainErrorKind, ResourceLimits, SessionSelector};
 
     let fixture = support::Fixture::new(ResourceLimits::default())?;
     let original = fixture
@@ -256,11 +256,11 @@ fn stale_same_operation_continuation_cannot_clobber_a_later_controller() -> Resu
 #[cfg(unix)]
 #[test]
 fn remote_created_session_survives_bidirectional_cross_principal_takeover() -> Result<(), String> {
-    use zterm_core::{
+    use voytty_core::{
         AttachmentPrincipal, DeviceId, DomainErrorKind, OperationId, ResourceLimits, SessionName,
         SessionSelector,
     };
-    use zterm_daemon::session::AttachmentLifecycle;
+    use voytty_daemon::session::AttachmentLifecycle;
 
     let fixture = support::Fixture::new(ResourceLimits::default())?;
     let remote = AttachmentPrincipal::RemoteEndpoint {
@@ -313,7 +313,7 @@ fn remote_created_session_survives_bidirectional_cross_principal_takeover() -> R
     );
     remote_controller
         .attachment
-        .write_input(b"ZTERM_STEP8_PROCESS=origin; printf 'REMOTE-READY\\n'\n")
+        .write_input(b"VOYTTY_STEP8_PROCESS=origin; printf 'REMOTE-READY\\n'\n")
         .map_err(support::display)?;
     wait_for_safe_marker(&remote_controller.attachment, "REMOTE-READY")?;
 
@@ -343,7 +343,7 @@ fn remote_created_session_survives_bidirectional_cross_principal_takeover() -> R
     support::activate(&other_controller)?;
     other_controller
         .attachment
-        .write_input(b"ZTERM_STEP8_OTHER=alive; printf 'OTHER-%s\\n' \"$ZTERM_STEP8_OTHER\"\n")
+        .write_input(b"VOYTTY_STEP8_OTHER=alive; printf 'OTHER-%s\\n' \"$VOYTTY_STEP8_OTHER\"\n")
         .map_err(support::display)?;
     wait_for_safe_marker(&other_controller.attachment, "OTHER-alive")?;
 
@@ -408,7 +408,7 @@ fn remote_created_session_survives_bidirectional_cross_principal_takeover() -> R
     // observing it proves the remote-created shell process retained state.
     local_takeover
         .attachment
-        .write_input(b"printf 'LOCAL-%s\\n' \"$ZTERM_STEP8_PROCESS\"\n")
+        .write_input(b"printf 'LOCAL-%s\\n' \"$VOYTTY_STEP8_PROCESS\"\n")
         .map_err(support::display)?;
     wait_for_safe_marker(&local_takeover.attachment, "LOCAL-origin")?;
 
@@ -480,7 +480,7 @@ fn remote_created_session_survives_bidirectional_cross_principal_takeover() -> R
     // controller transfers rather than only preserving a copied screen.
     remote_return
         .attachment
-        .write_input(b"printf 'REMOTE-%s\\n' \"$ZTERM_STEP8_PROCESS\"\n")
+        .write_input(b"printf 'REMOTE-%s\\n' \"$VOYTTY_STEP8_PROCESS\"\n")
         .map_err(support::display)?;
     wait_for_safe_marker(&remote_return.attachment, "REMOTE-origin")?;
 
@@ -493,7 +493,7 @@ fn remote_created_session_survives_bidirectional_cross_principal_takeover() -> R
     }
     other_controller
         .attachment
-        .write_input(b"printf 'OTHER-STILL-%s\\n' \"$ZTERM_STEP8_OTHER\"\n")
+        .write_input(b"printf 'OTHER-STILL-%s\\n' \"$VOYTTY_STEP8_OTHER\"\n")
         .map_err(support::display)?;
     wait_for_safe_marker(&other_controller.attachment, "OTHER-STILL-alive")?;
 
@@ -517,7 +517,7 @@ fn remote_created_session_survives_bidirectional_cross_principal_takeover() -> R
 
 #[cfg(unix)]
 fn wait_for_safe_marker(
-    attachment: &zterm_daemon::session::SessionAttachment,
+    attachment: &voytty_daemon::session::SessionAttachment,
     marker: &str,
 ) -> Result<(), String> {
     let deadline = std::time::Instant::now() + support::DEADLINE;
@@ -536,7 +536,7 @@ fn wait_for_safe_marker(
 
 #[cfg(unix)]
 fn safe_snapshot_contains(
-    snapshot: &zterm_core::terminal::TerminalSurfaceSnapshot,
+    snapshot: &voytty_core::terminal::TerminalSurfaceSnapshot,
     marker: &str,
 ) -> Result<bool, String> {
     support::snapshot_text(snapshot)
@@ -547,7 +547,7 @@ fn safe_snapshot_contains(
 #[cfg(unix)]
 #[test]
 fn explicit_takeover_of_a_vacant_session_commits_once_after_snapshot() -> Result<(), String> {
-    use zterm_core::{DomainErrorKind, ResourceLimits};
+    use voytty_core::{DomainErrorKind, ResourceLimits};
     let fixture = support::Fixture::new(ResourceLimits::default())?;
     // Covers an initially vacant Session and the race where its old controller
     // has detached before this explicit takeover attach reaches the actor.

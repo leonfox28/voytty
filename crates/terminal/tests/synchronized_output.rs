@@ -1,10 +1,10 @@
 //! Publication boundaries must not depend on PTY read chunking.
 
-use zterm_core::terminal::{
+use voytty_core::terminal::{
     ActiveScreen, TerminalHistoryWindowAnchor, TerminalHistoryWindowQuery, TerminalSize,
     TerminalSurfaceHistoryWindowResult, TerminalSurfaceSnapshot,
 };
-use zterm_terminal::TerminalModel;
+use voytty_terminal::TerminalModel;
 
 fn text(snapshot: &TerminalSurfaceSnapshot) -> String {
     snapshot

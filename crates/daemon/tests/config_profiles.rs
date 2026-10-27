@@ -3,11 +3,11 @@
 #[path = "support/state_fixture.rs"]
 mod state_fixture;
 
-use zterm_daemon::config::{
+use voytty_daemon::config::{
     ConfigV1, InfrastructureConfig, TerminalIdentity, ValidatedInfrastructure, load_config,
     validate_setup_input, write_config,
 };
-use zterm_daemon::transport::InfrastructureProfile;
+use voytty_daemon::transport::InfrastructureProfile;
 
 use state_fixture::TestState;
 
@@ -73,7 +73,7 @@ fn terminal_identity_defaults_for_existing_configs_and_rejects_unknown_values() 
         .expect("legacy config")
         .validate()
         .expect("valid");
-    assert_eq!(config.terminal_identity, TerminalIdentity::Zterm);
+    assert_eq!(config.terminal_identity, TerminalIdentity::Voytty);
     for identity in TerminalIdentity::VALUES {
         let text = format!("terminal_identity='{identity}'\n{legacy}");
         let raw = toml::from_str::<ConfigV1>(&text).expect("known identity");

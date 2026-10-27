@@ -4,9 +4,9 @@
 mod state_fixture;
 
 use clap::{CommandFactory, Parser, error::ErrorKind};
-use zterm_cli::{Cli, InteractionMode, execute};
-use zterm_daemon::lifecycle::DaemonLauncher;
-use zterm_daemon::operations::LocalRuntime;
+use voytty_cli::{Cli, InteractionMode, execute};
+use voytty_daemon::lifecycle::DaemonLauncher;
+use voytty_daemon::operations::LocalRuntime;
 
 use state_fixture::TestState;
 
@@ -38,7 +38,7 @@ async fn help_version_status_doctor_logs_and_stop_never_spawn() {
     assert!(logs_command.find_subcommand("export").is_some());
     assert!(logs_command.find_subcommand("debug").is_some());
     for control in ["on", "off", "status"] {
-        assert!(Cli::try_parse_from(["zterm", "logs", "debug", control]).is_ok());
+        assert!(Cli::try_parse_from(["voytty", "logs", "debug", control]).is_ok());
     }
     for available in [
         "setup",
@@ -63,10 +63,10 @@ async fn help_version_status_doctor_logs_and_stop_never_spawn() {
     for forbidden in ["--state", "--identity-path", "--socket", "--ticket"] {
         assert!(!help.contains(forbidden));
     }
-    let version = Cli::try_parse_from(["zterm", "--version"]).expect_err("clap prints version");
+    let version = Cli::try_parse_from(["voytty", "--version"]).expect_err("clap prints version");
     assert_eq!(version.kind(), ErrorKind::DisplayVersion);
     assert!(version.to_string().contains(env!("CARGO_PKG_VERSION")));
-    let binary = env!("CARGO_BIN_EXE_zterm");
+    let binary = env!("CARGO_BIN_EXE_voytty");
     assert!(
         std::process::Command::new(binary)
             .arg("--help")
@@ -97,46 +97,49 @@ async fn help_version_status_doctor_logs_and_stop_never_spawn() {
         Some(2)
     );
 
-    let human = run(&runtime, ["zterm", "status"]).await;
+    let human = run(&runtime, ["voytty", "status"]).await;
     assert!(human.contains("Setup:           Not configured"));
     assert!(human.contains("Sessions:        0"));
-    let doctor = run(&runtime, ["zterm", "doctor"]).await;
+    let doctor = run(&runtime, ["voytty", "doctor"]).await;
     assert!(doctor.contains("[ok] autostart:"));
     assert!(doctor.contains("[ok] network:") && doctor.contains("not attempted"));
     assert!(doctor.contains("[error] state_paths:"));
     assert!(doctor.contains(state.paths.state_root().to_string_lossy().as_ref()));
     assert!(doctor.contains("[ok] local_ipc:"));
-    assert!(Cli::try_parse_from(["zterm", "daemon", "status"]).is_err());
-    let stop = run(&runtime, ["zterm", "daemon", "stop"]).await;
+    assert!(Cli::try_parse_from(["voytty", "daemon", "status"]).is_err());
+    let stop = run(&runtime, ["voytty", "daemon", "stop"]).await;
     assert_eq!(stop, "Daemon already stopped.\n");
-    let logs = run(&runtime, ["zterm", "logs", "--lines", "10"]).await;
+    let logs = run(&runtime, ["voytty", "logs", "--lines", "10"]).await;
     assert_eq!(logs, "No daemon logs yet.\n");
     for action in ["on", "off", "status"] {
         let error = execute(
-            Cli::try_parse_from(["zterm", "logs", "debug", action]).expect("control parses"),
+            Cli::try_parse_from(["voytty", "logs", "debug", action]).expect("control parses"),
             &runtime,
             InteractionMode::NonInteractive,
         )
         .await
         .expect_err("requires existing setup");
-        assert!(error.to_string().contains("run `zterm setup`"));
+        assert!(error.to_string().contains("run `voytty setup`"));
     }
 
-    let bare = run(&runtime, ["zterm"]).await;
-    assert_eq!(bare, "zterm is not configured. Run `zterm setup` first.\n");
+    let bare = run(&runtime, ["voytty"]).await;
+    assert_eq!(
+        bare,
+        "voytty is not configured. Run `voytty setup` first.\n"
+    );
     let restart = execute(
-        Cli::try_parse_from(["zterm", "daemon", "restart"]).expect("restart parses"),
+        Cli::try_parse_from(["voytty", "daemon", "restart"]).expect("restart parses"),
         &runtime,
         InteractionMode::NonInteractive,
     )
     .await
     .expect_err("restart must validate setup before spawning");
-    assert!(restart.to_string().contains("run `zterm setup`"));
+    assert!(restart.to_string().contains("run `voytty setup`"));
 
     for arguments in [
-        vec!["zterm", "pair", "create"],
-        vec!["zterm", "device", "list"],
-        vec!["zterm", "session", "list", "--target", "local"],
+        vec!["voytty", "pair", "create"],
+        vec!["voytty", "device", "list"],
+        vec!["voytty", "session", "list", "--target", "local"],
     ] {
         let error = execute(
             Cli::try_parse_from(arguments).expect("daemon-required command parses"),
@@ -145,24 +148,24 @@ async fn help_version_status_doctor_logs_and_stop_never_spawn() {
         )
         .await
         .expect_err("daemon-required command validates setup before spawning");
-        assert!(error.to_string().contains("run `zterm setup`"));
+        assert!(error.to_string().contains("run `voytty setup`"));
     }
     let no_tty_ticket = execute(
-        Cli::try_parse_from(["zterm", "pair", "accept"]).expect("pair accept parses"),
+        Cli::try_parse_from(["voytty", "pair", "accept"]).expect("pair accept parses"),
         &runtime,
         InteractionMode::NonInteractive,
     )
     .await
     .expect_err("pair accept validates setup before reading a ticket");
-    assert!(no_tty_ticket.to_string().contains("run `zterm setup`"));
+    assert!(no_tty_ticket.to_string().contains("run `voytty setup`"));
 
     assert!(
-        Cli::try_parse_from(["zterm", "pair", "accept", "secret-ticket"]).is_err(),
+        Cli::try_parse_from(["voytty", "pair", "accept", "secret-ticket"]).is_err(),
         "pair tickets are never accepted from argv"
     );
-    assert!(Cli::try_parse_from(["zterm", "reset", "--identity"]).is_err());
+    assert!(Cli::try_parse_from(["voytty", "reset", "--identity"]).is_err());
     assert!(
-        run(&runtime, ["zterm", "reset"])
+        run(&runtime, ["voytty", "reset"])
             .await
             .contains("already absent")
     );
@@ -187,15 +190,15 @@ async fn run<const N: usize>(runtime: &LocalRuntime, arguments: [&str; N]) -> St
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn autostart_requires_setup_never_launches_and_reset_cleans_registration() {
-    use zterm_daemon::bootstrap::bootstrap;
-    use zterm_daemon::config::{ValidatedInfrastructure, validate_setup_input};
+    use voytty_daemon::bootstrap::bootstrap;
+    use voytty_daemon::config::{ValidatedInfrastructure, validate_setup_input};
     let state = TestState::new();
     let executable = std::env::current_exe().expect("test executable");
     let runtime = LocalRuntime::for_test(
         state.paths.clone(),
         DaemonLauncher::for_test(executable, "--must-not-run".into()),
     );
-    let status = Cli::try_parse_from(["zterm", "daemon", "autostart", "status"]).expect("parse");
+    let status = Cli::try_parse_from(["voytty", "daemon", "autostart", "status"]).expect("parse");
     assert!(!status.records_diagnostics());
     assert!(
         execute(status, &runtime, InteractionMode::NonInteractive)
@@ -238,7 +241,7 @@ async fn autostart_requires_setup_never_launches_and_reset_cleans_registration()
 
 #[test]
 fn foreground_daemon_entry_is_hidden_and_exclusive() {
-    let cli = Cli::try_parse_from(["zterm", "--internal-daemon-foreground"]).expect("parse");
+    let cli = Cli::try_parse_from(["voytty", "--internal-daemon-foreground"]).expect("parse");
     assert!(cli.internal_daemon_foreground());
     assert!(cli.has_internal_entry());
     for other in [
@@ -247,6 +250,6 @@ fn foreground_daemon_entry_is_hidden_and_exclusive() {
         "--internal-release-self-check",
         "status",
     ] {
-        assert!(Cli::try_parse_from(["zterm", "--internal-daemon-foreground", other]).is_err());
+        assert!(Cli::try_parse_from(["voytty", "--internal-daemon-foreground", other]).is_err());
     }
 }

@@ -277,7 +277,7 @@ enum DialError {
 }
 
 impl RelayConnectionError {
-    // Codes are consumed by zterm-diagnostics' closed TransportFailure enum.
+    // Codes are consumed by voytty-diagnostics' closed TransportFailure enum.
     // Do not format a source: it may contain an address or server-supplied text.
     fn diagnostic(&self) -> (u64, u64) {
         match self {
@@ -1806,7 +1806,7 @@ mod tests {
     use crate::{dns::DnsResolver, metrics::SocketMetrics, test_utils};
 
     #[test]
-    fn zterm_relay_failure_codes_distinguish_dial_and_confirmed_liveness() {
+    fn voytty_relay_failure_codes_distinguish_dial_and_confirmed_liveness() {
         use super::{DialError, RelayConnectionError, RunError};
         use n0_error::e;
         for (error, code) in [

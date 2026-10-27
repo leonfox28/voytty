@@ -19,17 +19,17 @@ use tokio::{
     sync::{Semaphore, mpsc},
     task::{AbortHandle, JoinSet},
 };
-use zterm_core::DomainErrorKind;
+use voytty_core::DomainErrorKind;
 #[cfg(unix)]
-use zterm_core::{AttachmentId, DeviceId, ResourceLimits};
+use voytty_core::{AttachmentId, DeviceId, ResourceLimits};
 #[cfg(unix)]
-use zterm_proto::{DecodedFrame, WireKind, v2};
+use voytty_proto::{DecodedFrame, WireKind, v2};
 #[cfg(unix)]
 const DEFAULT_DEADLINE: Duration = Duration::from_secs(5);
 /// After a stop, how long local terminal attachments may take to write their
 /// Session's end. Their Sessions have already ended, so this covers only the
 /// final update and one small write; a client that stops reading waits it out.
-/// It is short because `zterm daemon stop` allows five seconds for the whole
+/// It is short because `voytty daemon stop` allows five seconds for the whole
 /// remaining shutdown.
 #[cfg(unix)]
 const ATTACHMENT_END_DELIVERY: Duration = Duration::from_secs(1);
@@ -244,7 +244,7 @@ async fn serve_local_inner(
                         if recoverable_accept_error(&error) {
                             // Per-connection accept failures do not transfer or
                             // invalidate daemon/session ownership.
-                            zterm_diagnostics::record(zterm_diagnostics::Event::new(zterm_diagnostics::Kind::ListenerFailed).level(zterm_diagnostics::Level::Warn).error(DomainErrorKind::TransportUnavailable));
+                            voytty_diagnostics::record(voytty_diagnostics::Event::new(voytty_diagnostics::Kind::ListenerFailed).level(voytty_diagnostics::Level::Warn).error(DomainErrorKind::TransportUnavailable));
                             tracing::warn!(
                                 error_kind = ?error.kind(),
                                 "local listener accept failed; retrying"
@@ -257,7 +257,7 @@ async fn serve_local_inner(
                     }
                 };
                 let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
-                    zterm_diagnostics::record(zterm_diagnostics::Event::new(zterm_diagnostics::Kind::AdmissionRejected).level(zterm_diagnostics::Level::Warn).error(DomainErrorKind::ResourceExhausted));
+                    voytty_diagnostics::record(voytty_diagnostics::Event::new(voytty_diagnostics::Kind::AdmissionRejected).level(voytty_diagnostics::Level::Warn).error(DomainErrorKind::ResourceExhausted));
                     drop(stream);
                     continue;
                 };
@@ -371,7 +371,7 @@ async fn handle_connection(
     limits: LocalIpcLimits,
     local_attachment: Arc<AtomicBool>,
 ) {
-    if zterm_platform::local_unix::authorize_stream_peer(&stream, expected_uid).is_err() {
+    if voytty_platform::local_unix::authorize_stream_peer(&stream, expected_uid).is_err() {
         return;
     }
 
@@ -416,12 +416,12 @@ async fn handle_connection(
             }
         };
         if let Err(error) = result {
-            zterm_diagnostics::record(
-                zterm_diagnostics::Event::new(zterm_diagnostics::Kind::RequestFailed)
+            voytty_diagnostics::record(
+                voytty_diagnostics::Event::new(voytty_diagnostics::Kind::RequestFailed)
                     .level(if error.kind() == DomainErrorKind::Cancelled {
-                        zterm_diagnostics::Level::Info
+                        voytty_diagnostics::Level::Info
                     } else {
-                        zterm_diagnostics::Level::Warn
+                        voytty_diagnostics::Level::Warn
                     })
                     .error(error.kind()),
             );
@@ -461,12 +461,12 @@ async fn handle_connection(
             )
             .await;
         if let Err(error) = result {
-            zterm_diagnostics::record(
-                zterm_diagnostics::Event::new(zterm_diagnostics::Kind::RequestFailed)
+            voytty_diagnostics::record(
+                voytty_diagnostics::Event::new(voytty_diagnostics::Kind::RequestFailed)
                     .level(if error.kind() == DomainErrorKind::Cancelled {
-                        zterm_diagnostics::Level::Info
+                        voytty_diagnostics::Level::Info
                     } else {
-                        zterm_diagnostics::Level::Warn
+                        voytty_diagnostics::Level::Warn
                     })
                     .error(error.kind()),
             );
@@ -595,8 +595,8 @@ fn malformed(detail: impl Into<String>) -> DaemonError {
 mod tests {
     use super::*;
     use crate::device_directory::ResolvedSessionTarget;
-    use zterm_client::protocol::resolved_target_wire;
-    use zterm_proto::{FrameDecoder, encode_message};
+    use voytty_client::protocol::resolved_target_wire;
+    use voytty_proto::{FrameDecoder, encode_message};
 
     #[tokio::test]
     async fn accepted_stop_does_not_wait_for_an_idle_ingress_handler() {
@@ -749,7 +749,7 @@ mod tests {
             &v2::TerminalAttachRequest {
                 accept_zlib_frames: false,
                 acknowledge_surface_frames: false,
-                base_colors: Some(zterm_core::terminal::TerminalColorProfile::default().into()),
+                base_colors: Some(voytty_core::terminal::TerminalColorProfile::default().into()),
 
                 target: Some(target),
                 session_id: None,

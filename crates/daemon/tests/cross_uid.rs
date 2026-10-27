@@ -12,17 +12,17 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 #[cfg(unix)]
-use zterm_daemon::bootstrap::bootstrap;
+use voytty_daemon::bootstrap::bootstrap;
 #[cfg(unix)]
-use zterm_daemon::config::{ValidatedInfrastructure, validate_setup_input};
+use voytty_daemon::config::{ValidatedInfrastructure, validate_setup_input};
 #[cfg(unix)]
-use zterm_daemon::local_ipc::{LocalClient, serve_local};
+use voytty_daemon::local_ipc::{LocalClient, serve_local};
 #[cfg(unix)]
-use zterm_daemon::service::DaemonService;
+use voytty_daemon::service::DaemonService;
 #[cfg(unix)]
-use zterm_platform::local_unix::{DaemonLock, bind_daemon_socket, remove_own_socket};
+use voytty_platform::local_unix::{DaemonLock, bind_daemon_socket, remove_own_socket};
 #[cfg(unix)]
-use zterm_proto::{WireKind, encode_message, v2};
+use voytty_proto::{WireKind, encode_message, v2};
 
 #[cfg(unix)]
 use state_fixture::TestState;

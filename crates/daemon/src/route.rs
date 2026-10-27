@@ -4,16 +4,16 @@ use std::fmt;
 use std::time::Instant;
 
 use iroh::Endpoint;
-use zterm_core::{DeviceId, DomainErrorKind, RelayHint, TransportLimits};
+use voytty_core::{DeviceId, DomainErrorKind, RelayHint, TransportLimits};
 
 use crate::error::DaemonError;
 use crate::store::{KnownDevice, RouteCacheDiagnostic, StoreHandle};
 
 #[cfg(test)]
-use zterm_client::route::merge_relay_sources;
-pub use zterm_client::route::{RouteCandidate, RouteSource};
-use zterm_client::route::{build_relay_candidates, resolve_relay_candidates};
-pub(crate) use zterm_client::route::{device_from_endpoint_id, endpoint_id_from_device};
+use voytty_client::route::merge_relay_sources;
+pub use voytty_client::route::{RouteCandidate, RouteSource};
+use voytty_client::route::{build_relay_candidates, resolve_relay_candidates};
+pub(crate) use voytty_client::route::{device_from_endpoint_id, endpoint_id_from_device};
 
 /// Resolves ordered fresh/cache/ticket relay candidates for the broker.
 #[derive(Clone)]
@@ -130,7 +130,7 @@ mod tests {
     use super::*;
     use crate::store::RelayRouteCache;
     use crate::transport::InfrastructureProfile;
-    use zterm_core::{DeviceAlias, DeviceDisplayName};
+    use voytty_core::{DeviceAlias, DeviceDisplayName};
 
     fn relay(url: &str) -> RelayHint {
         RelayHint::new(url).expect("test relay is valid")

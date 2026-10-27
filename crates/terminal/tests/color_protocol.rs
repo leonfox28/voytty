@@ -1,6 +1,6 @@
 //! Application-neutral color conformance at the authoritative model boundary.
-use zterm_core::terminal::*;
-use zterm_terminal::TerminalModel;
+use voytty_core::terminal::*;
+use voytty_terminal::TerminalModel;
 
 fn model() -> TerminalModel {
     TerminalModel::new(TerminalSize::new(3, 32), 4).expect("color fixture operation succeeds")

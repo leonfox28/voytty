@@ -7,15 +7,15 @@ use crate::connection_broker::{
     RemoteServiceHandlerFuture,
 };
 use crate::store::{StateStore, StoreActor};
-use crate::transport::ZTERM_ALPN;
+use crate::transport::VOYTTY_ALPN;
 use iroh::endpoint::{Connection, RecvStream, SendStream, presets};
 use iroh::{Endpoint, RelayMode, tls::CaTlsConfig};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use zterm_client::handshake::{read_one_frame, write_handshake_message};
-use zterm_core::{AuthGeneration, Capabilities, ConnectionWelcome, DeviceAlias, TransportLimits};
-use zterm_platform::user_state::UserPaths;
-use zterm_proto::{WireKind, encode_message, v2};
+use voytty_client::handshake::{read_one_frame, write_handshake_message};
+use voytty_core::{AuthGeneration, Capabilities, ConnectionWelcome, DeviceAlias, TransportLimits};
+use voytty_platform::user_state::UserPaths;
+use voytty_proto::{WireKind, encode_message, v2};
 
 const ECHO_REQUEST: u64 = 10_000;
 const ERROR_REQUEST: u64 = 20_000;
@@ -102,7 +102,7 @@ impl Fixture {
                 .clear_ip_transports()
         };
         let host = builder()
-            .alpns(vec![ZTERM_ALPN.to_vec()])
+            .alpns(vec![VOYTTY_ALPN.to_vec()])
             .bind()
             .await
             .expect("host");
@@ -118,7 +118,7 @@ impl Fixture {
         let paths = UserPaths::for_test(
             nix::unistd::Uid::effective().as_raw(),
             home.clone(),
-            home.join(".zterm"),
+            home.join(".voytty"),
             state.path().join("run"),
         );
         paths
@@ -184,7 +184,7 @@ impl Fixture {
                         .expect("Hello");
                     assert_eq!(hello.kind, WireKind::ConnectionHello);
                     let welcome = ConnectionWelcome::new(
-                        zterm_proto::WIRE_MAJOR,
+                        voytty_proto::WIRE_MAJOR,
                         Capabilities::from_bits_retain(
                             Capabilities::SESSION_SERVICE | Capabilities::TERMINAL_SERVICE,
                         ),
@@ -573,13 +573,13 @@ async fn silent_failed_candidate_is_retired_beside_a_live_stream() {
 
 #[tokio::test]
 async fn expired_half_close_releases_tunnel_and_retires_unanswered_idle_candidate() {
-    use zterm_client::transport::AttachmentConnector;
+    use voytty_client::transport::AttachmentConnector;
     let fixture = Fixture::new().await;
     fixture.query(1).await.expect("warm connection");
     let (socket, mut server) = fixture.listen_for_tunnel();
     let connector = crate::client::UnixAttachmentConnector::new(&socket);
     let mut transport = connector
-        .open(zterm_client::model::ResolvedSessionTarget::device(
+        .open(voytty_client::model::ResolvedSessionTarget::device(
             fixture.remote,
         ))
         .await
@@ -660,13 +660,13 @@ async fn tunnel_service_error_preserves_idle_connection() {
 
 #[tokio::test]
 async fn tunnel_cancelled_before_sending_preserves_idle_connection() {
-    use zterm_client::transport::AttachmentConnector;
+    use voytty_client::transport::AttachmentConnector;
     let fixture = Fixture::new().await;
     fixture.query(1).await.expect("warm connection");
     let (socket, server) = fixture.listen_for_tunnel();
     let connector = crate::client::UnixAttachmentConnector::new(&socket);
     let transport = connector
-        .open(zterm_client::model::ResolvedSessionTarget::device(
+        .open(voytty_client::model::ResolvedSessionTarget::device(
             fixture.remote,
         ))
         .await

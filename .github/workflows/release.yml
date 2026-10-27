@@ -49,7 +49,7 @@ jobs:
           test "$GITHUB_REF_TYPE" = tag
           test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
           version=$(cargo +1.98.0 metadata --locked --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "zterm-cli") | .version')
+            | jq -r '.packages[] | select(.name == "voytty-cli") | .version')
           case "$version" in
             *+*) echo "formal release versions must not contain SemVer build metadata" >&2; exit 1 ;;
           esac
@@ -120,15 +120,15 @@ jobs:
 
       - name: Build the reviewed signing tool without the signing secret
         run: >-
-          cargo +1.98.0 build --locked --release --package zterm-release-tool
+          cargo +1.98.0 build --locked --release --package voytty-release-tool
 
       - name: Verify the exact main candidate before secret exposure
         env:
           SOURCE_COMMIT: ${{ needs.validate.outputs.commit }}
         run: |
-          target/release/zterm-release-tool verify-unsigned release-output
+          target/release/voytty-release-tool verify-unsigned release-output
           jq -e --arg commit "$SOURCE_COMMIT" '.source_commit == $commit' \
-            release-output/zterm-release.json >/dev/null
+            release-output/voytty-release.json >/dev/null
 
       - name: Prepare APK signing tools before secret exposure
         run: |
@@ -137,20 +137,21 @@ jobs:
 
       - name: Sign and verify the retained APK payload
         env:
-          ZTERM_ANDROID_KEYSTORE_BASE64: ${{ secrets.ZTERM_ANDROID_KEYSTORE_BASE64 }}
-          ZTERM_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ZTERM_ANDROID_KEYSTORE_PASSWORD }}
+          # Stored credentials survive the repository/product rename.
+          VOYTTY_ANDROID_KEYSTORE_BASE64: ${{ secrets.ZTERM_ANDROID_KEYSTORE_BASE64 }}
+          VOYTTY_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ZTERM_ANDROID_KEYSTORE_PASSWORD }}
         run: python3 tools/android/release.py sign release-output --sdk "$ANDROID_HOME"
 
       - name: Sign and self-verify with the protected release key
         env:
-          ZTERM_RELEASE_SIGNING_KEY: ${{ secrets.ZTERM_RELEASE_SIGNING_KEY }}
-        run: target/release/zterm-release-tool sign release-output
+          VOYTTY_RELEASE_SIGNING_KEY: ${{ secrets.ZTERM_RELEASE_SIGNING_KEY }}
+        run: target/release/voytty-release-tool sign release-output
 
       - name: Render the authenticated fixture-only installer
         run: |
           mkdir fixture
-          target/release/zterm-release-tool \
-            render-test-installer release-output fixture/zterm-install-test.sh
+          target/release/voytty-release-tool \
+            render-test-installer release-output fixture/voytty-install-test.sh
 
       - name: Upload the signed exact inventory
         id: signed
@@ -167,7 +168,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: installer-fixture-${{ github.ref_name }}-${{ github.run_attempt }}
-          path: fixture/zterm-install-test.sh
+          path: fixture/voytty-install-test.sh
           if-no-files-found: error
           retention-days: 7
 
@@ -210,12 +211,12 @@ jobs:
       - name: Check installer POSIX syntax
         run: |
           sh -n install/install.sh tests/release/installer-fixture.sh \
-            fixture/zterm-install-test.sh
+            fixture/voytty-install-test.sh
 
       - name: Exercise authenticated install and smallest preflight negatives
         run: >-
           sh tests/release/installer-fixture.sh
-          "$PWD/release-output" "$PWD/fixture/zterm-install-test.sh"
+          "$PWD/release-output" "$PWD/fixture/voytty-install-test.sh"
 
   publish:
     name: Create, verify, attest, and publish the immutable Release
@@ -259,7 +260,7 @@ jobs:
 
       - name: Re-verify before creating external state
         run: >-
-          cargo +1.98.0 run --locked --release --package zterm-release-tool --
+          cargo +1.98.0 run --locked --release --package voytty-release-tool --
           verify release-output
 
       - name: Create one draft from the frozen tag
@@ -291,7 +292,7 @@ jobs:
               ;;
           esac
           flags=(--draft --verify-tag --target "$SOURCE_COMMIT" \
-            --title "zterm $RELEASE_TAG" --generate-notes)
+            --title "voytty $RELEASE_TAG" --generate-notes)
           if [ "$PRERELEASE" = true ]; then
             flags+=(--prerelease)
           fi
@@ -299,15 +300,15 @@ jobs:
           gh release upload "$RELEASE_TAG" \
             release-output/SHA256SUMS \
             release-output/SHA256SUMS.sig \
-            release-output/zterm-android-arm64.apk \
-            release-output/zterm-android.json \
-            release-output/zterm-release.json \
-            release-output/zterm-release.json.sig \
-            release-output/zterm-install.sh \
-            release-output/zterm-sbom.spdx.json \
-            release-output/zterm-aarch64-apple-darwin.tar.gz \
-            release-output/zterm-aarch64-unknown-linux-gnu.tar.gz \
-            release-output/zterm-x86_64-unknown-linux-gnu.tar.gz
+            release-output/voytty-android-arm64.apk \
+            release-output/voytty-android.json \
+            release-output/voytty-release.json \
+            release-output/voytty-release.json.sig \
+            release-output/voytty-install.sh \
+            release-output/voytty-sbom.spdx.json \
+            release-output/voytty-aarch64-apple-darwin.tar.gz \
+            release-output/voytty-aarch64-unknown-linux-gnu.tar.gz \
+            release-output/voytty-x86_64-unknown-linux-gnu.tar.gz
 
       - name: Download and verify the draft asset round-trip
         env:
@@ -315,7 +316,7 @@ jobs:
         run: |
           mkdir roundtrip
           gh release download "$RELEASE_TAG" --dir roundtrip --pattern '*'
-          cargo +1.98.0 run --locked --release --package zterm-release-tool -- \
+          cargo +1.98.0 run --locked --release --package voytty-release-tool -- \
             verify roundtrip
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
 

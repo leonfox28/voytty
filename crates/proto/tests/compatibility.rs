@@ -1,27 +1,27 @@
 //! Wire compatibility, ticket text, and kind-registry regression tests.
 
 use prost::Message;
-use zterm_core::{
+use voytty_core::{
     AuthGeneration, Capabilities, ConnectionAttemptId, ConnectionHello, ConnectionWelcome,
     DeviceAlias, DeviceId, DeviceSummary, EphemeralOperationId, PAIR_FINGERPRINT_BYTES,
     PAIR_PROTOCOL_VERSION, PAIR_TICKET_FORMAT_VERSION, PairAccepted, PairBegin, PairChallenge,
     PairFingerprint, PairFingerprintError, PairHandshakeBudget, PairNonce, PairOfferId, PairProof,
     PairSecret, PairTicketFields, RelayHint,
 };
-use zterm_proto::{
+use voytty_proto::{
     DecodedFrame, MAX_PAIR_HELLO_FRAME_BYTES, PAIR_TICKET_PREFIX, RELAY_ROUTE_CACHE_VERSION,
     WIRE_MAJOR, WireFieldError, WireKind, decode_pair_ticket, decode_relay_route_cache,
     encode_pair_ticket, encode_payload, encode_relay_route_cache, v2, validate_pair_operation,
 };
 
-// Cross-language golden vector from `zterm-core/tests/pairing_vectors.rs`, fixed
+// Cross-language golden vector from `voytty-core/tests/pairing_vectors.rs`, fixed
 // non-production credentials.
 const HOST_DEVICE: [u8; 32] = [0x11; 32];
 const OFFER_ID: [u8; 16] = [0xaa; 16];
 const SECRET: [u8; 32] = [0x42; 32];
 const EXPIRES_AT_UNIX: u64 = 1_700_000_000;
-const TICKET_CANONICAL_HEX: &str = "7a7465726d2d706169722d7469636b65742d7631000000000111111111111111111111111111111111111111111111111111111111111111110009746573742d686f737401001968747470733a2f2f72656c61792e6578616d706c652e636f6daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000000006553f100";
-const TICKET_DIGEST_HEX: &str = "3c624fb8cadeba27c9512fa4bcf99e0563f75609a3d0b7d0c013867eefe447fd";
+const TICKET_CANONICAL_HEX: &str = "766f797474792d706169722d7469636b65742d7631000000000111111111111111111111111111111111111111111111111111111111111111110009746573742d686f737401001968747470733a2f2f72656c61792e6578616d706c652e636f6daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000000006553f100";
+const TICKET_DIGEST_HEX: &str = "4fb270059c50cb6321afa637daebc230bde0db1a8b41d4ee06997b44314dc2c3";
 
 fn hex(input: &str) -> Vec<u8> {
     input
@@ -61,7 +61,7 @@ fn ticket_text_round_trips_and_matches_the_canonical_golden_vector() {
     let secret = PairSecret::from_bytes(SECRET);
     let text = encode_pair_ticket(&fields, &secret);
     assert!(text.starts_with(PAIR_TICKET_PREFIX));
-    assert!(text.len() <= zterm_core::MAX_TICKET_TEXT_BYTES);
+    assert!(text.len() <= voytty_core::MAX_TICKET_TEXT_BYTES);
     // base64url-no-pad never contains padding or base64 non-alphabet.
     assert!(!text[PAIR_TICKET_PREFIX.len()..].contains('='));
     assert!(!text[PAIR_TICKET_PREFIX.len()..].contains('/'));
@@ -90,13 +90,19 @@ fn ticket_text_rejects_prefix_padding_alphabet_truncation_and_oversize() {
     // Missing prefix.
     assert!(matches!(
         decode_pair_ticket(encoded),
-        Err(zterm_proto::TicketTextError::MissingPrefix)
+        Err(voytty_proto::TicketTextError::MissingPrefix)
+    ));
+
+    // The renamed product requires fresh pairing; old tickets are not accepted.
+    assert!(matches!(
+        decode_pair_ticket(&format!("zterm-pair-v1:{encoded}")),
+        Err(voytty_proto::TicketTextError::MissingPrefix)
     ));
 
     // Padding is not accepted by the no-pad alphabet.
     assert!(matches!(
         decode_pair_ticket(&format!("{PAIR_TICKET_PREFIX}{encoded}=")),
-        Err(zterm_proto::TicketTextError::InvalidBase64(_))
+        Err(voytty_proto::TicketTextError::InvalidBase64(_))
     ));
 
     // Truncated payload fails to decode.
@@ -106,11 +112,11 @@ fn ticket_text_rejects_prefix_padding_alphabet_truncation_and_oversize() {
     // Oversize text is rejected before base64 decoding.
     let oversized = format!(
         "{PAIR_TICKET_PREFIX}{}",
-        "A".repeat(zterm_core::MAX_TICKET_TEXT_BYTES)
+        "A".repeat(voytty_core::MAX_TICKET_TEXT_BYTES)
     );
     assert!(matches!(
         decode_pair_ticket(&oversized),
-        Err(zterm_proto::TicketTextError::TooLong { .. })
+        Err(voytty_proto::TicketTextError::TooLong { .. })
     ));
 }
 
@@ -150,7 +156,7 @@ fn ticket_proto_validates_id_secret_url_count_and_version() {
             vec!["https://relay.example.com".to_owned()],
             PAIR_TICKET_FORMAT_VERSION,
         )),
-        Err(zterm_proto::TicketTextError::InvalidIdentifier(_))
+        Err(voytty_proto::TicketTextError::InvalidIdentifier(_))
     ));
 
     // Wrong secret length.
@@ -161,7 +167,7 @@ fn ticket_proto_validates_id_secret_url_count_and_version() {
             vec!["https://relay.example.com".to_owned()],
             PAIR_TICKET_FORMAT_VERSION,
         )),
-        Err(zterm_proto::TicketTextError::InvalidSecret(_))
+        Err(voytty_proto::TicketTextError::InvalidSecret(_))
     ));
 
     // Non-HTTPS relay URL.
@@ -172,7 +178,7 @@ fn ticket_proto_validates_id_secret_url_count_and_version() {
             vec!["http://relay.example.com".to_owned()],
             PAIR_TICKET_FORMAT_VERSION,
         )),
-        Err(zterm_proto::TicketTextError::InvalidRelayHint(_))
+        Err(voytty_proto::TicketTextError::InvalidRelayHint(_))
     ));
 
     // Too many relay hints.
@@ -186,7 +192,7 @@ fn ticket_proto_validates_id_secret_url_count_and_version() {
             many,
             PAIR_TICKET_FORMAT_VERSION,
         )),
-        Err(zterm_proto::TicketTextError::InvalidTicket(_))
+        Err(voytty_proto::TicketTextError::InvalidTicket(_))
     ));
 
     // Unsupported format version.
@@ -197,7 +203,7 @@ fn ticket_proto_validates_id_secret_url_count_and_version() {
             vec!["https://relay.example.com".to_owned()],
             2,
         )),
-        Err(zterm_proto::TicketTextError::InvalidTicket(_))
+        Err(voytty_proto::TicketTextError::InvalidTicket(_))
     ));
 }
 
@@ -352,7 +358,7 @@ fn connection_incarnation_is_optional_but_fixed_width_when_present() {
             .incarnation()
             .is_none()
     );
-    let incarnation = zterm_core::ConnectionIncarnation::from_array([2; 16]);
+    let incarnation = voytty_core::ConnectionIncarnation::from_array([2; 16]);
     let modern = hello.with_incarnation(Some(incarnation));
     assert_eq!(
         ConnectionHello::try_from(v2::ConnectionHello::from(&modern)).expect("modern"),
@@ -408,7 +414,7 @@ fn relay_route_cache_round_trips_and_rejects_unknown_versions() {
     };
     assert!(matches!(
         decode_relay_route_cache(&unknown.encode_to_vec()),
-        Err(zterm_proto::RouteCacheError::UnsupportedVersion { actual: 2 })
+        Err(voytty_proto::RouteCacheError::UnsupportedVersion { actual: 2 })
     ));
     assert_eq!(RELAY_ROUTE_CACHE_VERSION, 1);
 }
@@ -417,7 +423,7 @@ fn relay_route_cache_round_trips_and_rejects_unknown_versions() {
 fn relay_route_cache_enforces_count_and_byte_ceiling() {
     assert!(matches!(
         encode_relay_route_cache(&[]),
-        Err(zterm_proto::RouteCacheError::MissingUrl)
+        Err(voytty_proto::RouteCacheError::MissingUrl)
     ));
     let empty = v2::RelayRouteCacheV1 {
         format_version: RELAY_ROUTE_CACHE_VERSION,
@@ -425,7 +431,7 @@ fn relay_route_cache_enforces_count_and_byte_ceiling() {
     };
     assert!(matches!(
         decode_relay_route_cache(&empty.encode_to_vec()),
-        Err(zterm_proto::RouteCacheError::MissingUrl)
+        Err(voytty_proto::RouteCacheError::MissingUrl)
     ));
 
     // Encoding an oversized slice is rejected outright.
@@ -436,7 +442,7 @@ fn relay_route_cache_enforces_count_and_byte_ceiling() {
         .collect();
     assert!(matches!(
         encode_relay_route_cache(&too_many),
-        Err(zterm_proto::RouteCacheError::TooManyUrls { actual: 5 })
+        Err(voytty_proto::RouteCacheError::TooManyUrls { actual: 5 })
     ));
 
     // A decoded cache advertising more than the bound is rejected.
@@ -448,14 +454,14 @@ fn relay_route_cache_enforces_count_and_byte_ceiling() {
     };
     assert!(matches!(
         decode_relay_route_cache(&oversized.encode_to_vec()),
-        Err(zterm_proto::RouteCacheError::TooManyUrls { actual: 5 })
+        Err(voytty_proto::RouteCacheError::TooManyUrls { actual: 5 })
     ));
 
     // A pre-decode blob over the byte ceiling is rejected before allocation.
-    let huge = vec![0_u8; zterm_proto::MAX_RELAY_ROUTE_CACHE_BYTES + 1];
+    let huge = vec![0_u8; voytty_proto::MAX_RELAY_ROUTE_CACHE_BYTES + 1];
     assert!(matches!(
         decode_relay_route_cache(&huge),
-        Err(zterm_proto::RouteCacheError::TooLarge { .. })
+        Err(voytty_proto::RouteCacheError::TooLarge { .. })
     ));
 }
 
@@ -640,7 +646,7 @@ fn generated_pair_messages_and_decoded_frames_redact_sensitive_payloads() {
     const NONCE_SENTINEL: &[u8; 32] = b"PAIR_NONCE_SENTINEL_0123456789AB";
     const PROOF_SENTINEL: &[u8; 32] = b"PAIR_PROOF_SENTINEL_0123456789AB";
     const KEY_SENTINEL: &[u8; 32] = b"PAIR_KEY_SENTINEL_0123456789ABCD";
-    const TICKET_SENTINEL: &str = "zterm-pair-v1:PAIR_TICKET_SENTINEL_470b";
+    const TICKET_SENTINEL: &str = "voytty-pair-v1:PAIR_TICKET_SENTINEL_470b";
 
     let wire = v2::WireFrame {
         payload_encoding: 0,
@@ -746,7 +752,7 @@ fn generated_session_terminal_and_route_debug_is_redacted_without_wire_changes()
         }),
     };
     let create = v2::SessionCreateRequest {
-        base_colors: Some(zterm_core::terminal::TerminalColorProfile::default().into()),
+        base_colors: Some(voytty_core::terminal::TerminalColorProfile::default().into()),
 
         operation_id: None,
         target: None,
@@ -770,7 +776,7 @@ fn generated_session_terminal_and_route_debug_is_redacted_without_wire_changes()
         surface: Some(v2::TerminalSurface {
             application_title: String::new(),
             hyperlinks: Vec::new(),
-            colors: Some(zterm_core::terminal::TerminalColorSnapshot::default().into()),
+            colors: Some(voytty_core::terminal::TerminalColorSnapshot::default().into()),
 
             row_count: 43,
             column_count: 151,
@@ -788,7 +794,7 @@ fn generated_session_terminal_and_route_debug_is_redacted_without_wire_changes()
     let delta = v2::TerminalSemanticDelta {
         application_title: String::new(),
         hyperlinks: Vec::new(),
-        colors: Some(zterm_core::terminal::TerminalColorSnapshot::default().into()),
+        colors: Some(voytty_core::terminal::TerminalColorSnapshot::default().into()),
 
         attachment_id: snapshot.attachment_id.clone(),
         from_revision: 41,
@@ -813,7 +819,7 @@ fn generated_session_terminal_and_route_debug_is_redacted_without_wire_changes()
     };
     let history = v2::TerminalSemanticHistoryWindowFrame {
         hyperlinks: Vec::new(),
-        colors: Some(zterm_core::terminal::TerminalColorSnapshot::default().into()),
+        colors: Some(voytty_core::terminal::TerminalColorSnapshot::default().into()),
 
         attachment_id: snapshot.attachment_id.clone(),
         outcome: v2::TerminalHistoryWindowOutcome::Frame as i32,
@@ -852,7 +858,7 @@ fn generated_session_terminal_and_route_debug_is_redacted_without_wire_changes()
     let attach = v2::TerminalAttachRequest {
         accept_zlib_frames: false,
         acknowledge_surface_frames: false,
-        base_colors: Some(zterm_core::terminal::TerminalColorProfile::default().into()),
+        base_colors: Some(voytty_core::terminal::TerminalColorProfile::default().into()),
 
         target: None,
         session_id: summary.session_id.clone(),
@@ -950,13 +956,13 @@ fn pair_operation_identity_is_exact_and_bounded_before_allocation() {
     // Wrong ephemeral operation ID length is rejected before allocation.
     assert!(matches!(
         validate_pair_operation(&[0; 15], &fingerprint),
-        Err(zterm_proto::PairOperationError::InvalidOperationId(_))
+        Err(voytty_proto::PairOperationError::InvalidOperationId(_))
     ));
 
     // An under-width fingerprint is rejected.
     assert!(matches!(
         validate_pair_operation(&operation_id, &[]),
-        Err(zterm_proto::PairOperationError::InvalidFingerprint(
+        Err(voytty_proto::PairOperationError::InvalidFingerprint(
             PairFingerprintError::InvalidLength { actual: 0 }
         ))
     ));
@@ -964,7 +970,7 @@ fn pair_operation_identity_is_exact_and_bounded_before_allocation() {
     // An over-width fingerprint is rejected before allocation.
     assert!(matches!(
         validate_pair_operation(&operation_id, &[0; PAIR_FINGERPRINT_BYTES + 1]),
-        Err(zterm_proto::PairOperationError::InvalidFingerprint(
+        Err(voytty_proto::PairOperationError::InvalidFingerprint(
             PairFingerprintError::InvalidLength { .. }
         ))
     ));
@@ -1034,7 +1040,7 @@ fn pair_hello_kinds_use_the_16_kib_codec_limit() {
             0,
             vec![0; MAX_PAIR_HELLO_FRAME_BYTES + 1]
         ),
-        Err(zterm_proto::ProtocolError::ControlPayloadTooLarge(_))
+        Err(voytty_proto::ProtocolError::ControlPayloadTooLarge(_))
     ));
     assert!(matches!(
         encode_payload(
@@ -1043,9 +1049,9 @@ fn pair_hello_kinds_use_the_16_kib_codec_limit() {
             0,
             vec![0; MAX_PAIR_HELLO_FRAME_BYTES + 1]
         ),
-        Err(zterm_proto::ProtocolError::ControlPayloadTooLarge(_))
+        Err(voytty_proto::ProtocolError::ControlPayloadTooLarge(_))
     ));
 
     // The 64 KiB handshake budget is exposed for the daemon consumer.
-    assert_eq!(zterm_proto::MAX_PAIR_HANDSHAKE_BYTES, 64 * 1024);
+    assert_eq!(voytty_proto::MAX_PAIR_HANDSHAKE_BYTES, 64 * 1024);
 }

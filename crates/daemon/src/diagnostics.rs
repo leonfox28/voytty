@@ -4,9 +4,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::{Layer, layer::Context, prelude::*};
-use zterm_core::{DomainErrorKind, SessionId};
-use zterm_diagnostics::{Event, Kind, Level, Recorder, Stage};
-use zterm_platform::{diagnostics::Store, user_state::UserPaths};
+use voytty_core::{DomainErrorKind, SessionId};
+use voytty_diagnostics::{Event, Kind, Level, Recorder, Stage};
+use voytty_platform::{diagnostics::Store, user_state::UserPaths};
 
 // The lifecycle registration and recorder must share the same storage adapter
 // so a transient marker-write failure can be repaired by subsequent appends.
@@ -15,7 +15,7 @@ static STORE: OnceLock<(UserPaths, Store)> = OnceLock::new();
 /// Creates an injected recorder only when committed setup exists.
 /// The worker alone performs append/rotation; this does not initialize identity.
 pub(crate) fn recorder(paths: &UserPaths) -> Recorder {
-    if let Some(recorder) = zterm_diagnostics::global_recorder() {
+    if let Some(recorder) = voytty_diagnostics::global_recorder() {
         return recorder;
     }
     if !configured(paths) {
@@ -27,7 +27,7 @@ pub(crate) fn recorder(paths: &UserPaths) -> Recorder {
 /// Installs one process recorder and the safe application tracing adapter.
 /// Returns an explicit bounded-flush guard; callers retain it until exit.
 pub fn install(paths: &UserPaths) -> Guard {
-    let recorder = zterm_diagnostics::global_recorder().unwrap_or_else(|| {
+    let recorder = voytty_diagnostics::global_recorder().unwrap_or_else(|| {
         if !configured(paths) {
             return Recorder::default();
         }
@@ -36,14 +36,14 @@ pub fn install(paths: &UserPaths) -> Guard {
         let _ = STORE.set((paths.clone(), store));
         recorder
     });
-    if zterm_diagnostics::install(recorder.clone()) {
+    if voytty_diagnostics::install(recorder.clone()) {
         let _ = tracing_subscriber::registry()
             .with(ApplicationEvents(recorder.clone()).with_filter(
                 tracing_subscriber::filter::filter_fn(|metadata| {
-                    metadata.target().starts_with("zterm_daemon::")
+                    metadata.target().starts_with("voytty_daemon::")
                 }),
             ))
-            .with(zterm_diagnostics::transport_trace_layer(recorder.clone()))
+            .with(voytty_diagnostics::transport_trace_layer(recorder.clone()))
             .try_init();
     }
     Guard(recorder)
@@ -51,7 +51,7 @@ pub fn install(paths: &UserPaths) -> Guard {
 
 pub(crate) fn register_daemon(
     paths: &UserPaths,
-    lock: &zterm_platform::local_unix::DaemonLock,
+    lock: &voytty_platform::local_unix::DaemonLock,
 ) -> std::io::Result<()> {
     if let Some((installed, store)) = STORE.get()
         && installed.state_root() == paths.state_root()
@@ -73,7 +73,7 @@ impl Drop for Guard {
 pub(crate) struct ApplicationEvents(pub(crate) Recorder);
 impl<S: tracing::Subscriber> Layer<S> for ApplicationEvents {
     fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
-        if !event.metadata().target().starts_with("zterm_daemon::") {
+        if !event.metadata().target().starts_with("voytty_daemon::") {
             return;
         }
         let mut fields = OwnerFields::default();
@@ -161,10 +161,10 @@ struct OwnerFields {
     operation: String,
     reason: String,
     state: String,
-    publish: Option<zterm_diagnostics::AddressService>,
-    lookup: Option<zterm_diagnostics::AddressService>,
+    publish: Option<voytty_diagnostics::AddressService>,
+    lookup: Option<voytty_diagnostics::AddressService>,
     session: Option<SessionId>,
-    attachment: Option<zterm_core::AttachmentId>,
+    attachment: Option<voytty_core::AttachmentId>,
     exit_code: Option<i32>,
     signal: Option<i32>,
     connection: Option<u64>,
@@ -179,9 +179,9 @@ impl Visit for OwnerFields {
             "state" if value.len() < 32 => self.state = value.into(),
             "publish" | "lookup" => {
                 let state = match value {
-                    "disabled" => Some(zterm_diagnostics::AddressService::Disabled),
-                    "configured" => Some(zterm_diagnostics::AddressService::Configured),
-                    "degraded" => Some(zterm_diagnostics::AddressService::Degraded),
+                    "disabled" => Some(voytty_diagnostics::AddressService::Disabled),
+                    "configured" => Some(voytty_diagnostics::AddressService::Configured),
+                    "degraded" => Some(voytty_diagnostics::AddressService::Degraded),
                     _ => None,
                 };
                 if field.name() == "publish" {
@@ -195,7 +195,7 @@ impl Visit for OwnerFields {
                 self.attachment = value
                     .parse::<SessionId>()
                     .ok()
-                    .map(|id| zterm_core::AttachmentId::from_array(id.to_bytes()))
+                    .map(|id| voytty_core::AttachmentId::from_array(id.to_bytes()))
             }
             _ => {} // In particular: message, name, targets, addresses and errors.
         }
@@ -226,8 +226,8 @@ impl Visit for OwnerFields {
 /// The final owned config pathname is setup's commit marker. Logging must still
 /// work when identity/database contents are the reason startup is failing.
 pub(crate) fn configured(paths: &UserPaths) -> bool {
-    zterm_platform::user_state::validate_directory(paths.state_root(), paths.uid()).is_ok()
-        && zterm_platform::user_state::validate_regular_file(paths.config(), paths.uid()).is_ok()
+    voytty_platform::user_state::validate_directory(paths.state_root(), paths.uid()).is_ok()
+        && voytty_platform::user_state::validate_regular_file(paths.config(), paths.uid()).is_ok()
 }
 
 #[cfg(test)]
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn installed_worker_repairs_its_daemon_registration() {
-        const CHILD: &str = "ZTERM_DIAGNOSTICS_COMPOSITION_FIXTURE";
+        const CHILD: &str = "VOYTTY_DIAGNOSTICS_COMPOSITION_FIXTURE";
         if std::env::var_os(CHILD).is_none() {
             let output =
                 std::process::Command::new(std::env::current_exe().expect("test executable"))
@@ -262,18 +262,18 @@ mod tests {
             temp.path().join("run"),
         );
         paths.prepare_state_directories().expect("paths");
-        zterm_platform::user_state::atomic_write(paths.config(), paths.uid(), |_| Ok(()))
+        voytty_platform::user_state::atomic_write(paths.config(), paths.uid(), |_| Ok(()))
             .expect("owned configuration commit marker");
         let _guard = install(&paths);
-        let lock = zterm_platform::local_unix::DaemonLock::try_acquire(&paths)
+        let lock = voytty_platform::local_unix::DaemonLock::try_acquire(&paths)
             .expect("daemon lock")
             .expect("exclusive");
         let (_listener, _ownership) =
-            zterm_platform::local_unix::bind_owned_daemon_socket(&paths, &lock).expect("socket");
+            voytty_platform::local_unix::bind_owned_daemon_socket(&paths, &lock).expect("socket");
         register_daemon(&paths, &lock).expect("registration");
         std::fs::remove_file(paths.logs().join("diagnostics.json")).expect("lost control");
-        zterm_diagnostics::record(Event::new(Kind::DaemonReady));
-        assert!(zterm_diagnostics::flush(Duration::from_secs(2)));
+        voytty_diagnostics::record(Event::new(Kind::DaemonReady));
+        assert!(voytty_diagnostics::flush(Duration::from_secs(2)));
         assert!(
             !Store::new(paths)
                 .retention_pending()

@@ -3,7 +3,7 @@ import CoreImage
 import CoreText
 import ImageIO
 import UniformTypeIdentifiers
-@testable import Zterm
+@testable import Voytty
 
 @MainActor
 final class PairingPreferencesTests: XCTestCase {
@@ -176,9 +176,9 @@ final class PairingPreferencesTests: XCTestCase {
 
     func testProjectLicenseTextsAreBundled() throws {
         for (name, heading) in [
-            ("Zterm-NOTICE", "Required Notice: Copyright 2026 Leon"),
-            ("Zterm-PolyForm-Noncommercial-1.0.0", "# PolyForm Noncommercial License 1.0.0"),
-            ("Zterm-Commercial-License", "# zterm Commercial Use License")
+            ("Voytty-NOTICE", "Required Notice: Copyright 2026 Leon"),
+            ("Voytty-PolyForm-Noncommercial-1.0.0", "# PolyForm Noncommercial License 1.0.0"),
+            ("Voytty-Commercial-License", "# voytty Commercial Use License")
         ] {
             let url = try XCTUnwrap(Bundle.main.url(forResource: name, withExtension: "txt", subdirectory: "licenses"))
             let text = try String(contentsOf: url, encoding: .utf8)

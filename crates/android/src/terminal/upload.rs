@@ -4,8 +4,8 @@ use super::{NativeError, failure};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
-use zterm_client::upload::{UploadConnector, UploadOrigin};
-use zterm_core::upload::{MAX_UPLOAD_BYTES, UploadMetadata, UploadPhase, UploadedFile};
+use voytty_client::upload::{UploadConnector, UploadOrigin};
+use voytty_core::upload::{MAX_UPLOAD_BYTES, UploadMetadata, UploadPhase, UploadedFile};
 
 /// Inclusive source byte limit consumed by Android's ContentResolver staging.
 #[uniffi::export]
@@ -211,8 +211,8 @@ async fn transfer(
         return Err(failure("upload_source_invalid"));
     }
     operation.update("uploading", 0, Some(metadata.size()));
-    let (progress, mut observed) = watch::channel(zterm_client::upload::preparing());
-    let upload = zterm_client::upload::upload(
+    let (progress, mut observed) = watch::channel(voytty_client::upload::preparing());
+    let upload = voytty_client::upload::upload(
         &*connector,
         origin.target,
         origin.binding,
@@ -222,7 +222,7 @@ async fn transfer(
         &operation.cancel,
     );
     tokio::pin!(upload);
-    let mut tick = tokio::time::interval(zterm_core::upload::UPLOAD_PROGRESS_INTERVAL);
+    let mut tick = tokio::time::interval(voytty_core::upload::UPLOAD_PROGRESS_INTERVAL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
@@ -244,11 +244,11 @@ async fn transfer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zterm_client::{
+    use voytty_client::{
         error::ClientError, model::ResolvedSessionTarget, transport::TransportFuture,
         upload::UploadConnection,
     };
-    use zterm_core::{AttachmentId, SessionId, upload::UploadBinding};
+    use voytty_core::{AttachmentId, SessionId, upload::UploadBinding};
 
     struct NoNetwork;
     impl UploadConnector for NoNetwork {

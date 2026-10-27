@@ -21,11 +21,11 @@ the UI: for example, the current toolbar has a Session chip, image/file uploads,
 Esc, Ctrl, four arrows and the keyboard toggle; Tab/Alt are no longer standalone
 buttons in that row.
 
-- [Screens, home and settings](../apps/android/app/src/main/java/io/github/leonfox28/zterm/AppUi.kt)
-- [Theme, colors and typography](../apps/android/app/src/main/java/io/github/leonfox28/zterm/Theme.kt)
-- [Terminal layout and Session panel](../apps/android/app/src/main/java/io/github/leonfox28/zterm/TerminalScreen.kt)
-- [Navigation and connection behavior](../apps/android/app/src/main/java/io/github/leonfox28/zterm/AppRepository.kt)
-- [Persisted state](../apps/android/app/src/main/java/io/github/leonfox28/zterm/AppStore.kt)
+- [Screens, home and settings](../apps/android/app/src/main/java/io/github/leonfox28/voytty/AppUi.kt)
+- [Theme, colors and typography](../apps/android/app/src/main/java/io/github/leonfox28/voytty/Theme.kt)
+- [Terminal layout and Session panel](../apps/android/app/src/main/java/io/github/leonfox28/voytty/TerminalScreen.kt)
+- [Navigation and connection behavior](../apps/android/app/src/main/java/io/github/leonfox28/voytty/AppRepository.kt)
+- [Persisted state](../apps/android/app/src/main/java/io/github/leonfox28/voytty/AppStore.kt)
 - [Android behavior and acceptance boundaries](android.md)
 
 ## Gap inventory
@@ -299,7 +299,7 @@ reconnect test locates the observed native ActivityIndicator by its identifier.
 No automatic retries or weaker content assertions were added.
 
 The final UI result bundle is
-`target/ios/Logs/Test/Test-ZtermUI-2026.10.23_01-39-12-+0800.xcresult`.
+`target/ios/Logs/Test/Test-VoyttyUI-2026.10.23_01-39-12-+0800.xcresult`.
 Screenshots include the native pickers/confirmations, ended-session card and both
 sides of the real reconnect. The helper cleans only randomly named test Sessions;
 the two pre-existing fixture Sessions remain available. Photos access is granted
@@ -318,7 +318,7 @@ side-by-side Android/phone comparison.
 Final local gates: all **71 XCTest tests pass with zero skips**, including a fresh
 disposable ticket and actual OSC 8 link selection, native copy, upload, lease
 handover and lifecycle behavior. The result is
-`target/ios/Logs/Test/Test-Zterm-2026.10.23_01-46-43-+0800.xcresult`.
+`target/ios/Logs/Test/Test-Voytty-2026.10.23_01-46-43-+0800.xcresult`.
 The added picker-dismissal test uses an independent upload object per reservation,
 as production does, and retains its original 3-second deadline and assertions.
 The unsigned arm64 device build, `just check`, `just android-check` and
@@ -357,7 +357,7 @@ alert, interrupted the active gesture and failed its bounded edge-scroll wait;
 that intermediate cleanup was removed without weakening the assertions.
 
 The final result is
-`target/ios/Logs/Test/Test-Zterm-2026.10.23_09-51-34-+0800.xcresult`:
+`target/ios/Logs/Test/Test-Voytty-2026.10.23_09-51-34-+0800.xcresult`:
 72 tests pass, with zero failures, skips or recorded runtime warnings, including
 real-host acceptance. The unsigned arm64 device build and `just ci-policy` pass.
 Earlier full UI, Rust and Android gate results above remain separate; this
@@ -378,7 +378,7 @@ Transient inactive states do not start an assertion. Background input remains
 blocked and queued input/modifiers are discarded as before.
 
 All 77 XCTest tests pass with zero failures, skips or recorded runtime warnings:
-`target/ios/Logs/Test/Test-Zterm-2026.10.23_10-09-54-+0800.xcresult`.
+`target/ios/Logs/Test/Test-Voytty-2026.10.23_10-09-54-+0800.xcresult`.
 Five added regressions cover lifecycle admission/release, expiration, denial,
 stale callbacks, loss of ownership and independence from uploads. The real-host
 workflow also checks output arriving during the background phase, unchanged
@@ -386,8 +386,8 @@ terminal object and input epoch after return/network refresh, release on actual
 lease loss, and recovery after a deterministically injected expiration.
 
 Both targeted native UI checks pass: recovery/app switching
-(`Test-ZtermUI-2026.10.23_10-10-59-+0800.xcresult`) and actual transport interruption
-(`Test-ZtermUI-2026.10.23_10-11-54-+0800.xcresult`). The recovery check leaves the
+(`Test-VoyttyUI-2026.10.23_10-10-59-+0800.xcresult`) and actual transport interruption
+(`Test-VoyttyUI-2026.10.23_10-11-54-+0800.xcresult`). The recovery check leaves the
 app in the background while its remote shell produces output, returns, reads
 that output and continues input. UIKit's simulator log independently records
 creation of `Terminal connection` task 8 at 10:11:34 and explicit release on
@@ -421,9 +421,9 @@ The file UI acceptance now asserts an actual system Alert, retries the rejected
 oversized file, closes the second alert, uploads a valid file and verifies its
 SHA-256 on the disposable host. It also checks that upload does not send Enter
 and that picker cancellation restores input. This passes in
-`Test-ZtermUI-2026.10.23_10-27-51-+0800.xcresult`. The photo picker, exact uploaded
+`Test-VoyttyUI-2026.10.23_10-27-51-+0800.xcresult`. The photo picker, exact uploaded
 image digest and input restoration pass in
-`Test-ZtermUI-2026.10.23_10-29-27-+0800.xcresult`.
+`Test-VoyttyUI-2026.10.23_10-29-27-+0800.xcresult`.
 
 The initial file check exposed the dismissal transition; a subsequent check
 confirmed the native alert but required firstMatch for iOS's duplicated button
@@ -432,7 +432,7 @@ No test assertion was removed, deadline extended or retry wrapper added.
 
 All 77 XCTest tests, including real-host acceptance, pass with zero failures,
 skips or recorded runtime warnings in
-`Test-Zterm-2026.10.23_10-30-34-+0800.xcresult`. The unsigned arm64 device build
+`Test-Voytty-2026.10.23_10-30-34-+0800.xcresult`. The unsigned arm64 device build
 and `just ci-policy` pass. These changes affect Swift UI, its UI test and docs;
 earlier Rust/Android gate results remain separate. Signed-phone acceptance is
 still outstanding.
@@ -455,7 +455,7 @@ the other device. Ended Sessions offer the list instead of Retry creating a
 replacement. Chinese and English use the same native presentation.
 
 All 79 XCTest tests pass with zero failures, skips or recorded runtime warnings:
-`Test-Zterm-2026.10.23_10-41-42-+0800.xcresult`. Two new regressions cover notice
+`Test-Voytty-2026.10.23_10-41-42-+0800.xcresult`. Two new regressions cover notice
 dismissal, stale callbacks, explicit retry, route changes and suppression during
 live/reconnecting states. Existing workflow error cases now assert the correct
 notice kind and exact Session; real-host acceptance checks lease loss, occupied
@@ -464,17 +464,17 @@ retry and clearing after confirmed takeover.
 Native UI acceptance passes for actual control loss, cancellation without
 control acquisition, nonrepeating refresh, an occupied connection attempt,
 confirmed takeover, short app switching and shell exit
-(`Test-ZtermUI-2026.10.23_10-45-36-+0800.xcresult`). A new shared
+(`Test-VoyttyUI-2026.10.23_10-45-36-+0800.xcresult`). A new shared
 `just ios-ui-connection-check` recipe pauses only the marked disposable daemon,
 observes the real failed connection's system alert, resumes the daemon and uses
 the alert's Retry action to recover the exact Session and its output
-(`Test-ZtermUI-2026.10.23_10-43-41-+0800.xcresult`). Automatic transport reconnect
+(`Test-VoyttyUI-2026.10.23_10-43-41-+0800.xcresult`). Automatic transport reconnect
 also passes and asserts that no modal alert interrupts recovery
-(`Test-ZtermUI-2026.10.23_10-46-41-+0800.xcresult`). Screenshots of the native
+(`Test-VoyttyUI-2026.10.23_10-46-41-+0800.xcresult`). Screenshots of the native
 failure, occupancy, control-loss and ended alerts were visually inspected.
 
 The existing native file picker/oversize-alert/retry/upload flow also passes
-(`Test-ZtermUI-2026.10.23_10-47-58-+0800.xcresult`), verifying coexistence with
+(`Test-VoyttyUI-2026.10.23_10-47-58-+0800.xcresult`), verifying coexistence with
 the new connection alerts. The unsigned arm64 device build and `just ci-policy`
 pass. No Rust/shared Android source changed in this stage. Simulator evidence
 and unsigned compilation remain separate from signed-phone acceptance.
@@ -499,20 +499,20 @@ the same remote shell after returning, and staying Home after relaunch.
 
 All 79 XCTest tests pass, including real-host acceptance, with no failures,
 skips or recorded runtime warnings
-(`Test-Zterm-2026.10.23_11-33-45-+0800.xcresult`). The unsigned device build and
+(`Test-Voytty-2026.10.23_11-33-45-+0800.xcresult`). The unsigned device build and
 `just ci-policy` pass. Screenshots of the terminal with and without its keyboard,
 settings and pairing were visually reviewed.
 
 The eight-scenario UI run
-(`Test-ZtermUI-2026.10.23_11-19-40-+0800.xcresult`) passed navigation, hardware
+(`Test-VoyttyUI-2026.10.23_11-19-40-+0800.xcresult`) passed navigation, hardware
 keys, photos, connection failure/retry, takeover/end recovery and transport
 reconnect. It exposed two old picker-test selectors matching the app's newly
 native Back button behind the modal. The tests now wait for a remembered folder's
 file and scope picker Back to `Browse View (Picker)`, retaining the upload
 SHA-256, explicit Enter, cancellation and notification assertions. Both affected
 recipes pass after the correction: file upload
-(`Test-ZtermUI-2026.10.23_11-32-37-+0800.xcresult`) and diagnostic export/notification
-(`Test-ZtermUI-2026.10.23_11-31-25-+0800.xcresult`). Together these cover all eight
+(`Test-VoyttyUI-2026.10.23_11-32-37-+0800.xcresult`) and diagnostic export/notification
+(`Test-VoyttyUI-2026.10.23_11-31-25-+0800.xcresult`). Together these cover all eight
 UI scenarios; no automatic retry or assertion relaxation was added.
 
 ## System deletion confirmation — 2026-10-23
@@ -523,14 +523,14 @@ explanation, and explicit Cancel and destructive Delete actions. Presentation
 is keyed by Session ID and deletion uses the captured Session.
 
 `just ios-ui-deletion-check` passes on iPhone 18 Pro / iOS 27.0
-(`Test-ZtermUI-2026.10.23_11-52-42-+0800.xcresult`). It checks the native Alert,
+(`Test-VoyttyUI-2026.10.23_11-52-42-+0800.xcresult`). It checks the native Alert,
 centered geometry, title, explanation and two distinct actions for both active
 and inactive Sessions, verifies continued input after cancellation, and confirms
 deletion of only its disposable Session. It identifies actions by their stable
 IDs because UIKit exposes duplicated accessibility nodes for these buttons.
 Both screenshots were visually reviewed and the original two fixture Sessions
 remain intact. All 79 XCTest checks pass without skips or runtime warnings
-(`Test-Zterm-2026.10.23_11-53-48-+0800.xcresult`), including both title translations
+(`Test-Voytty-2026.10.23_11-53-48-+0800.xcresult`), including both title translations
 and real-host acceptance. The unsigned device build and `just ci-policy` pass.
 
 ## Native settings and Session sheet — 2026-10-23
@@ -557,7 +557,7 @@ and leaves sheet cleanup to its own controls. Subsequent service acceptance
 exposed the export sheet's dependence on lazy Section rows; its presentation
 and countdown now live in a stable background of the settings Form. Export is
 also a full-width button row. The notification/detail/export flow passes after
-these changes (`Test-ZtermUI-2026.10.23_13-36-51-+0800.xcresult`), including save,
+these changes (`Test-VoyttyUI-2026.10.23_13-36-51-+0800.xcresult`), including save,
 immediate second export, cancellation and restoration of detailed logging to Off.
 Assertions and bounded waits are retained; no automatic retries were added.
 The takeover test also waits for input readiness after the confirmation
@@ -565,9 +565,9 @@ disappears, before sending its remote-shell assertion; dismissal alone does not
 mean attachment has finished.
 
 Recovery and deletion pass their targeted recipes after those fixes
-(`Test-ZtermUI-2026.10.23_13-40-54-+0800.xcresult` and
-`Test-ZtermUI-2026.10.23_13-42-21-+0800.xcresult`). Together with the eight passing
-scenarios in `Test-ZtermUI-2026.10.23_13-19-02-+0800.xcresult`, this covers all
+(`Test-VoyttyUI-2026.10.23_13-40-54-+0800.xcresult` and
+`Test-VoyttyUI-2026.10.23_13-42-21-+0800.xcresult`). Together with the eight passing
+scenarios in `Test-VoyttyUI-2026.10.23_13-19-02-+0800.xcresult`, this covers all
 11 UI scenarios. The medium/large sheet, grouped settings, host removal and
 named takeover screenshots were visually reviewed. The Mac was locked during
 final verification, so this is screenshot/XCUITest evidence, not a new manual
@@ -575,6 +575,6 @@ foreground gesture pass. Both original fixture Sessions remain intact.
 
 All 79 XCTest checks, including fresh-ticket real-host acceptance, pass with no
 failures, skips or recorded runtime warnings
-(`Test-Zterm-2026.10.23_13-43-45-+0800.xcresult`). The unsigned device build and
+(`Test-Voytty-2026.10.23_13-43-45-+0800.xcresult`). The unsigned device build and
 `just ci-policy` pass. These changes affect Swift UI, UI acceptance and its
 runner/docs; no shared Rust or Android product code was changed in this pass.

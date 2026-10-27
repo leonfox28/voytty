@@ -13,15 +13,15 @@ use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 
 use tracing_subscriber::fmt::MakeWriter;
-use zeroize::{Zeroize, Zeroizing};
-use zterm_core::{
+use voytty_core::{
     AuthGeneration, DeviceAlias, DeviceId, EphemeralOperationId, MAX_TICKET_TEXT_BYTES,
     PAIR_TICKET_FORMAT_VERSION, PairAccepted, PairFingerprint, PairOfferId, PairProof, PairSecret,
     PairTicketFields, RelayHint,
 };
-use zterm_daemon::pairing::PairTicketText;
-use zterm_daemon::pairing_service::LocalPairAcceptInput;
-use zterm_daemon::store::{StateStore, database_bytes};
+use voytty_daemon::pairing::PairTicketText;
+use voytty_daemon::pairing_service::LocalPairAcceptInput;
+use voytty_daemon::store::{StateStore, database_bytes};
+use zeroize::{Zeroize, Zeroizing};
 
 use state_fixture::TestState;
 
@@ -66,7 +66,7 @@ fn ticket() -> (PairTicketFields, PairSecret, Zeroizing<String>) {
     )
     .expect("ticket fields");
     let secret = PairSecret::from_bytes(SECRET_SENTINEL);
-    let text = Zeroizing::new(zterm_proto::encode_pair_ticket(&fields, &secret));
+    let text = Zeroizing::new(voytty_proto::encode_pair_ticket(&fields, &secret));
     (fields, secret, text)
 }
 
@@ -108,7 +108,7 @@ fn debug_display_error_status_and_tracing_are_redacted() {
     assert!(!rendered.contains(&raw_proof));
     assert!(!rendered.contains(ticket_text.as_str()));
 
-    let invalid = Zeroizing::new("zterm-pair-v1:not-valid-base64".to_owned());
+    let invalid = Zeroizing::new("voytty-pair-v1:not-valid-base64".to_owned());
     let invalid_error = PairTicketText::from_local_response(invalid.as_str().to_owned())
         .expect_err("invalid local response");
     let oversized = Zeroizing::new("x".repeat(MAX_TICKET_TEXT_BYTES + 1));

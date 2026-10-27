@@ -20,7 +20,7 @@ P46（关闭连接的迟到 Initial），另补测试目录权限及审计时长
 历史 main 的 `extended-main-01` 88/88、`core-main-01` 145/146 及 P41 接管定向 32/32
 保留原义，不混入本轮最终制品统计。P35 的 R03 有限定向验收仍有效。
 
-2026-10-11 后三端证据根目录为 `${XDG_STATE_HOME:-~/.local/state}/zterm-verification/multi-device/`。
+2026-10-11 后三端证据根目录为 `${XDG_STATE_HOME:-~/.local/state}/voytty-verification/multi-device/`。
 本轮审查与本机修复检查分别在同级 `reviews/2026-10-13-ed5df8d/` 和
 `checks/sequential-fixes-20261013/`。更早位于 `target/` 的记录保留原文；已丢失的原始文件
 不能视为仍可复查，详见问题清单的证据说明。
@@ -526,9 +526,9 @@ Relay、RTT 9459 毫秒。Direct 是该行要求的最终路径，失败时尚�
 
 | 设备 | 配置 |
 | --- | --- |
-| A | `zterm-md-20261003t024103z-a`；Ubuntu 24.04 ARM64；VZ；4 vCPU、6 GiB、60 GiB 稀疏磁盘；`zterm-a` / UID 2001 |
-| B | `zterm-md-20261003t024103z-b`；同配置；`zterm-b` / UID 2002 |
-| C | `zterm-md-20261003t024103z-c`；API 36 Google APIs ARM64；2 vCPU、3 GiB；独立数据目录；adb serial `emulator-5586` |
+| A | `voytty-md-20261003t024103z-a`；Ubuntu 24.04 ARM64；VZ；4 vCPU、6 GiB、60 GiB 稀疏磁盘；`voytty-a` / UID 2001 |
+| B | `voytty-md-20261003t024103z-b`；同配置；`voytty-b` / UID 2002 |
+| C | `voytty-md-20261003t024103z-c`；API 36 Google APIs ARM64；2 vCPU、3 GiB；独立数据目录；adb serial `emulator-5586` |
 
 Linux 在 A 构建一次后复制到 B，并核对相同 SHA-256；Android 两个 APK 来自同一源码。
 只操作独立测试账户和 AVD，默认 `official-n0`。`adb root`、故障注入、制品摘要和六个
@@ -875,7 +875,7 @@ v18 结束预检另有 **B→A UDP 超时**，其他五个方向通过，单列�
 | 路由与大快照 | 首个有效的目标路由立即可用；有界、可协商的 zlib 快照编码减少传输量 |
 | QUIC 空闲检测 | 整连接限制发送侧空闲续期；已放弃路径不继续拉长存活连接的空闲检测 |
 
-NOQ 补丁固定在 [vendor/noq-proto](../../vendor/noq-proto/ZTERM.md)，保留上游来源和许可证。
+NOQ 补丁固定在 [vendor/noq-proto](../../vendor/noq-proto/VOYTTY.md)，保留上游来源和许可证。
 连接关闭、密钥丢弃和路径清理规则未因空闲修正一并缩短；完整 NOQ 回归为 **429 通过**。
 GSO 关闭是兼容性取舍，本轮没有最大吞吐结论。
 
@@ -900,7 +900,7 @@ Android 基础 instrumentation 为 **41 通过、4 条件跳过**，前台服务
 ## 运行器、判据与隔离
 
 [运行器](../../tests/e2e/multi-device.py) 使用真实 Linux PTY 和
-[Android instrumentation](../../apps/android/app/src/androidTest/java/io/github/leonfox28/zterm/MultiDeviceTest.kt)
+[Android instrumentation](../../apps/android/app/src/androidTest/java/io/github/leonfox28/voytty/MultiDeviceTest.kt)
 的私有阶段信号，调用真实 Application repository、Activity、输入、resize 和上传控制器。
 它不是 UI 点击覆盖率测试。
 

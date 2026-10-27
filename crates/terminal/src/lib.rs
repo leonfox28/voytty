@@ -1,7 +1,7 @@
-//! Host-only authoritative terminal engine for zterm.
+//! Host-only authoritative terminal engine for voytty.
 //!
-//! This crate is the only zterm-owned dependency boundary around Alacritty's
-//! terminal state engine. PTY ownership remains in `zterm-platform`.
+//! This crate is the only voytty-owned dependency boundary around Alacritty's
+//! terminal state engine. PTY ownership remains in `voytty-platform`.
 
 mod color_names;
 mod colors;
@@ -12,7 +12,7 @@ mod model;
 mod projection;
 
 pub use model::{TerminalCheckpoint, TerminalError, TerminalModel};
-pub use zterm_core::terminal::MAX_CELL_TEXT_BYTES;
+pub use voytty_core::terminal::MAX_CELL_TEXT_BYTES;
 
 /// Maximum retained combining-character bytes across both model screens.
 pub const MAX_COMBINING_BYTES_PER_SESSION: usize = 64 * 1024;
@@ -27,7 +27,7 @@ pub const MAX_CONTROL_SEQUENCE_BYTES: usize = 256;
 pub const MAX_REPEAT_COUNT: u16 = 4_096;
 
 /// Maximum bytes retained for one OSC/DCS/APC/PM/SOS string before containment.
-pub const MAX_CONTROL_STRING_BYTES: usize = zterm_core::terminal::MAX_TERMINAL_NOTIFICATION_BYTES;
+pub const MAX_CONTROL_STRING_BYTES: usize = voytty_core::terminal::MAX_TERMINAL_NOTIFICATION_BYTES;
 
 /// Maximum canonical padded Base64 bytes accepted for one OSC 52 write.
 pub const MAX_OSC52_BASE64_BYTES: usize = 699_052;

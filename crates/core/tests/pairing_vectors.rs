@@ -5,7 +5,7 @@
 //! big-endian length prefixes and SHA-256/HMAC-SHA256), so the expected hex
 //! values are independent of Rust layout and protobuf serialization order.
 
-use zterm_core::{
+use voytty_core::{
     AuthGeneration, DeviceAlias, DeviceId, MAX_TICKET_TEXT_BYTES, PAIR_PROTOCOL_VERSION,
     PAIR_TICKET_FORMAT_VERSION, PairAccepted, PairFingerprint, PairHandshakeBudget,
     PairHandshakeBudgetError, PairNonce, PairOfferId, PairProof, PairSecret, PairTicketFields,
@@ -22,20 +22,20 @@ const SECRET: [u8; 32] = [0x42; 32];
 const EXPIRES_AT_UNIX: u64 = 1_700_000_000;
 const GENERATION: u64 = 1;
 
-const TICKET_CANONICAL_HEX: &str = "7a7465726d2d706169722d7469636b65742d7631000000000111111111111111111111111111111111111111111111111111111111111111110009746573742d686f737401001968747470733a2f2f72656c61792e6578616d706c652e636f6daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000000006553f100";
-const TICKET_DIGEST_HEX: &str = "3c624fb8cadeba27c9512fa4bcf99e0563f75609a3d0b7d0c013867eefe447fd";
-const OFFER_KEY_HEX: &str = "84f3757668041277c1dda27e1d0fa412bfc2eeb0d0ec96c762dbfb21a53ec05f";
-const TRANSCRIPT_CANONICAL_HEX: &str = "7a7465726d2d706169722d7472616e7363726970742d7631003c624fb8cadeba27c9512fa4bcf99e0563f75609a3d0b7d0c013867eefe447fd11111111111111111111111111111111111111111111111111111111111111112222222222222222222222222222222222222222222222222222222222222222aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa33333333333333333333333333333333333333333333333333333333333333334444444444444444444444444444444444444444444444444444444444444444000f746573742d636f6e74726f6c6c65720000000100000001000000006553f100";
+const TICKET_CANONICAL_HEX: &str = "766f797474792d706169722d7469636b65742d7631000000000111111111111111111111111111111111111111111111111111111111111111110009746573742d686f737401001968747470733a2f2f72656c61792e6578616d706c652e636f6daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000000006553f100";
+const TICKET_DIGEST_HEX: &str = "4fb270059c50cb6321afa637daebc230bde0db1a8b41d4ee06997b44314dc2c3";
+const OFFER_KEY_HEX: &str = "99e16fbb57a1729502afa855b13a44becc5719e90ce54217d9ad9267cb93b2a6";
+const TRANSCRIPT_CANONICAL_HEX: &str = "766f797474792d706169722d7472616e7363726970742d7631004fb270059c50cb6321afa637daebc230bde0db1a8b41d4ee06997b44314dc2c311111111111111111111111111111111111111111111111111111111111111112222222222222222222222222222222222222222222222222222222222222222aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa33333333333333333333333333333333333333333333333333333333333333334444444444444444444444444444444444444444444444444444444444444444000f746573742d636f6e74726f6c6c65720000000100000001000000006553f100";
 const CONTROLLER_PROOF_HEX: &str =
-    "95aa29ad0592404bed16990604bde95b93cdb122d012a6ef5972f7f413fb84c3";
+    "1b1c050b572414937cf5bd2affda5b3beec9c7d404e09e1bbd9a236b73c305c4";
 const HOST_CONFIRMATION_HEX: &str =
-    "9f0d537c9affdb33dbeb38084194d9b5baf3d3475f91b1b38d546b98ac9b2610";
+    "08e0d2fda1e2ca40bb99c8889517729ad83f667bf8746e6e8ae2bc6f3aa71aef";
 const CREATE_FINGERPRINT_HEX: &str =
-    "889bd062fe46c9dce285753e8490b355d1d66a81afff9d5bbb50a5a625b769c5";
+    "68052f77c86733b7c297748c76b1ceeb65a2b0774e286fee2f49bcbf41c53afe";
 const ACCEPT_WITHOUT_ALIAS_FINGERPRINT_HEX: &str =
-    "f9173ebde3f33ee354492121398a34f23fe6bf19fe74ba6b574f22c5a1330441";
+    "7941e616f1c4b243cd75005940097492f635e5d4befe167757de1ba360fdb312";
 const ACCEPT_WITH_ALIAS_FINGERPRINT_HEX: &str =
-    "8395cb85294099a2cab35a5e03267fa87d9292c749f14a19aa54bb47c3bd0fe2";
+    "f872cfa9947c626645b267aed462b7c331be44cc0a9524aa14241a88618059a2";
 
 fn hex(input: &str) -> Vec<u8> {
     assert_eq!(input.len() % 2, 0, "hex string must have even length");
@@ -138,8 +138,8 @@ fn canonical_bytes_are_prefix_independent_and_change_with_every_bound_field() {
     assert!(
         !ticket
             .canonical_bytes()
-            .windows(13)
-            .any(|w| w == b"zterm-pair-v1:")
+            .windows(b"voytty-pair-v1:".len())
+            .any(|w| w == b"voytty-pair-v1:")
     );
 
     // Wrong secret changes only the offer key, not the ticket digest.
@@ -198,7 +198,7 @@ fn expiry_and_version_are_validated() {
             PairOfferId::from_array(OFFER_ID),
             EXPIRES_AT_UNIX,
         ),
-        Err(zterm_core::PairTicketError::UnsupportedFormatVersion { actual: 2 })
+        Err(voytty_core::PairTicketError::UnsupportedFormatVersion { actual: 2 })
     ));
 }
 
@@ -229,7 +229,7 @@ fn local_operation_fingerprints_match_domain_separated_golden_vectors() {
         hex(CREATE_FINGERPRINT_HEX)
     );
 
-    let ticket = b"zterm-pair-v1:EXAMPLE";
+    let ticket = b"voytty-pair-v1:EXAMPLE";
     let alias = DeviceAlias::new("phone").expect("valid alias");
     assert_eq!(
         PairFingerprint::for_accept(ticket, None)
@@ -247,7 +247,7 @@ fn local_operation_fingerprints_match_domain_separated_golden_vectors() {
 
 #[test]
 fn local_operation_fingerprints_bind_every_semantic_argument() {
-    let ticket = b"zterm-pair-v1:EXAMPLE";
+    let ticket = b"voytty-pair-v1:EXAMPLE";
     let mut changed_ticket = *ticket;
     changed_ticket[changed_ticket.len() - 1] ^= 1;
     let alias = DeviceAlias::new("phone").expect("valid alias");

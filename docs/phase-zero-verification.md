@@ -28,8 +28,8 @@ deployments are not restarted or rolled back again for rehearsal.
 
 The simplified contract was released and deployed on 2026-08-21:
 
-- commit `c2b574d` passed the complete [cross-platform and Relay CI run](https://github.com/leonfox28/zterm/actions/runs/32470094911);
-- [GitHub Release v0.1.1](https://github.com/leonfox28/zterm/releases/tag/v0.1.1) completed the [production image workflow](https://github.com/leonfox28/zterm/actions/runs/32470318480);
+- commit `c2b574d` passed the complete [cross-platform and Relay CI run](https://github.com/leonfox28/voytty/actions/runs/32470094911);
+- [GitHub Release v0.1.1](https://github.com/leonfox28/voytty/releases/tag/v0.1.1) completed the [production image workflow](https://github.com/leonfox28/voytty/actions/runs/32470318480);
 - `ghcr.io/leonfox28/zterm-relay:v0.1.1` and `:latest` resolved to the same
   two-platform `linux/amd64` + `linux/arm64` image, with no extra attestation
   manifests;
@@ -46,7 +46,7 @@ The simplified contract was released and deployed on 2026-08-21:
 Creating the release tag also exposed that the generic CI workflow responded
 to tag pushes after the same commit had already passed on `main`. The duplicate
 run was cancelled, and commit `92dda0e` restricted that workflow to branch
-pushes while preserving pull-request and manual triggers; its [CI run](https://github.com/leonfox28/zterm/actions/runs/32471101894) passed.
+pushes while preserving pull-request and manual triggers; its [CI run](https://github.com/leonfox28/voytty/actions/runs/32471101894) passed.
 
 ## Environment
 
@@ -69,7 +69,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo doc --workspace --no-deps
 cargo deny check
-cargo run --quiet --package zterm-cli
+cargo run --quiet --package voytty-cli
 cargo fmt --manifest-path tests/relay/handshake-probe/Cargo.toml -- --check
 cargo clippy --locked --manifest-path tests/relay/handshake-probe/Cargo.toml -- -D warnings
 cargo deny --manifest-path tests/relay/handshake-probe/Cargo.toml --config tests/relay/handshake-probe/deny.toml check
@@ -144,9 +144,9 @@ the remote `docker load` result matched the exact local image ID:
 
 | Image | Platform | Local content digest |
 | --- | --- | --- |
-| `zterm/iroh-relay:phase-zero-amd64` | linux/amd64 | `sha256:89b756c5e4a29a28cd0cfd1c4f4322106807363d7f9a701545d57a0aa069c7bd` |
-| `zterm/iroh-relay:phase-zero-arm64` | linux/arm64 | `sha256:26a76c210d87462e88026b31f388c92bcce8a586dafbe6824221b32493a352b5` |
-| `zterm/iroh-relay:1.0.3-local` | linux/arm64 | `sha256:26a76c210d87462e88026b31f388c92bcce8a586dafbe6824221b32493a352b5` |
+| `voytty/iroh-relay:phase-zero-amd64` | linux/amd64 | `sha256:89b756c5e4a29a28cd0cfd1c4f4322106807363d7f9a701545d57a0aa069c7bd` |
+| `voytty/iroh-relay:phase-zero-arm64` | linux/arm64 | `sha256:26a76c210d87462e88026b31f388c92bcce8a586dafbe6824221b32493a352b5` |
+| `voytty/iroh-relay:1.0.3-local` | linux/arm64 | `sha256:26a76c210d87462e88026b31f388c92bcce8a586dafbe6824221b32493a352b5` |
 
 These local IDs are not registry digests. During the `v0.1.0` bootstrap, the
 repository required the production image to be published by
@@ -157,9 +157,9 @@ was not inferred from `zterm-relay-dev`.
 
 ## GHCR development publication evidence
 
-The public repository `leonfox28/zterm` was initialized at commit `43b06ff`.
+The public repository `leonfox28/voytty` was initialized at commit `43b06ff`.
 Manual workflow run
-[`32456229109`](https://github.com/leonfox28/zterm/actions/runs/32456229109)
+[`32456229109`](https://github.com/leonfox28/voytty/actions/runs/32456229109)
 published `ghcr.io/leonfox28/zterm-relay-dev:phase-zero` with immutable index
 digest:
 
@@ -179,11 +179,11 @@ preflight.
 
 ## GHCR production publication evidence
 
-[Zterm v0.1.0](https://github.com/leonfox28/zterm/releases/tag/v0.1.0) points
+[Voytty v0.1.0](https://github.com/leonfox28/voytty/releases/tag/v0.1.0) points
 to reviewed commit `b9cac371ad7a91647a7fd1e6690230f4cf1d8c35`. Its complete
-[main CI run](https://github.com/leonfox28/zterm/actions/runs/32461793456)
+[main CI run](https://github.com/leonfox28/voytty/actions/runs/32461793456)
 passed before the Release was created. Release-triggered workflow
-[`32462016566`](https://github.com/leonfox28/zterm/actions/runs/32462016566)
+[`32462016566`](https://github.com/leonfox28/voytty/actions/runs/32462016566)
 published only `ghcr.io/leonfox28/zterm-relay:0.1.0` and `:latest`; both tags
 resolve to immutable OCI index digest:
 
@@ -230,7 +230,7 @@ arm64 image and archive were also retained. No other 1Panel Compose project was
 changed.
 
 The server then anonymously pulled the exact production digest above and a
-one-shot activation replaced only the zterm Relay container. That Compose had
+one-shot activation replaced only the voytty Relay container. That Compose had
 no `build` section, its `.env` pinned the production package by digest, and
 Docker recorded the container's `Config.Image` as that same immutable
 reference. The recreated linux/arm64 container became healthy as UID/GID 65532.

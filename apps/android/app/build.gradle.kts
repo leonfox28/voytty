@@ -10,20 +10,20 @@ val repositoryRoot = rootProject.layout.projectDirectory.dir("../..")
 val workspaceManifest = repositoryRoot.file("Cargo.toml").asFile.readText()
 val workspaceProductVersion = Regex("(?m)^version = \"([^\"]+)\"$")
     .find(workspaceManifest)?.groupValues?.get(1) ?: error("Missing workspace version")
-val androidVersionCode = providers.gradleProperty("ztermVersionCode").orElse(providers.exec {
+val androidVersionCode = providers.gradleProperty("voyttyVersionCode").orElse(providers.exec {
     commandLine("python3", repositoryRoot.file("tools/android/release.py").asFile,
         "version-code", workspaceProductVersion)
 }.standardOutput.asText.map { it.trim() }).get().toInt()
-val releaseSourceCommit = providers.environmentVariable("ZTERM_SOURCE_COMMIT").orElse("development")
-val androidSourceCommit = providers.environmentVariable("ZTERM_ANDROID_SOURCE_COMMIT").orElse(releaseSourceCommit)
+val releaseSourceCommit = providers.environmentVariable("VOYTTY_SOURCE_COMMIT").orElse("development")
+val androidSourceCommit = providers.environmentVariable("VOYTTY_ANDROID_SOURCE_COMMIT").orElse(releaseSourceCommit)
 
 android {
-    namespace = "io.github.leonfox28.zterm"
+    namespace = "io.github.leonfox28.voytty"
     compileSdk = 36
     ndkVersion = "28.2.13676358"
-    testBuildType = providers.gradleProperty("ztermTestBuildType").orElse("debug").get()
+    testBuildType = providers.gradleProperty("voyttyTestBuildType").orElse("debug").get()
     defaultConfig {
-        applicationId = "io.github.leonfox28.zterm"
+        applicationId = "io.github.leonfox28.voytty"
         minSdk = 26
         targetSdk = 36
         versionCode = androidVersionCode
@@ -83,7 +83,7 @@ abstract class BuildIdentity : DefaultTask() {
     @TaskAction fun generate() {
         val directory = output.get().asFile
         directory.mkdirs()
-        directory.resolve("zterm-build.json").writeText(groovy.json.JsonOutput.toJson(mapOf(
+        directory.resolve("voytty-build.json").writeText(groovy.json.JsonOutput.toJson(mapOf(
             "version" to productVersion.get(), "version_code" to versionCode.get(),
             "source_commit" to sourceCommit.get())))
     }

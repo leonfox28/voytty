@@ -1,7 +1,7 @@
-# Contributing to zterm
+# Contributing to voytty
 
 Read [AGENTS.md](AGENTS.md) and [the development guide](docs/development.md)
-before changing code. zterm is source-available under the
+before changing code. voytty is source-available under the
 [PolyForm Noncommercial License 1.0.0](LICENSE), with a separate
 [commercial-use license](COMMERCIAL-LICENSE.md) for entitled users.
 
@@ -10,11 +10,11 @@ before changing code. zterm is source-available under the
 For contributions intentionally submitted for inclusion after these terms
 are introduced, you retain copyright. By submitting such a contribution,
 you agree to license it under PolyForm Noncommercial 1.0.0 and grant the
-zterm maintainer, Leon (GitHub: leonfox28), a perpetual, worldwide,
+voytty maintainer, Leon (GitHub: leonfox28), a perpetual, worldwide,
 nonexclusive, royalty-free copyright license to use, reproduce, modify,
 distribute, and sublicense it, including in paid official releases and under
 commercial terms. You also grant the patent rights you can license that are
-necessarily infringed by your contribution alone or combined with the zterm
+necessarily infringed by your contribution alone or combined with the voytty
 code to which you submitted it, for these purposes.
 
 This permission does not transfer copyright to the maintainer. Confirm in

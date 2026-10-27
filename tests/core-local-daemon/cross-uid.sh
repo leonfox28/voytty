@@ -19,4 +19,4 @@ if ! command -v sudo >/dev/null 2>&1 || ! sudo -n -u nobody true >/dev/null 2>&1
 fi
 
 cd "$repo_root"
-cargo test -p zterm-daemon --test cross_uid
+cargo test -p voytty-daemon --test cross_uid

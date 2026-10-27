@@ -1,7 +1,7 @@
 # End-to-end test boundary
 
 Use explicit disposable hosts and emulator app storage. Never inject test state
-into the user's `~/.zterm`. Relay checks live in `tests/relay/`; runtime evidence
+into the user's `~/.voytty`. Relay checks live in `tests/relay/`; runtime evidence
 and remaining real-device/network gates live in
 [session continuity verification](../../docs/verification/session-continuity.md).
 
@@ -18,14 +18,14 @@ access to build and reach official-n0. Linux uses real per-account daemons and
 CLI PTYs. Android uses `MultiDeviceTest`'s opt-in private mailbox with the real
 Application repository and Activity.
 
-The lab root defaults to `${XDG_STATE_HOME:-~/.local/state}/zterm-verification/multi-device`
-and can be overridden with `ZTERM_MULTI_DEVICE_ROOT`. It holds the environment
+The lab root defaults to `${XDG_STATE_HOME:-~/.local/state}/voytty-verification/multi-device`
+and can be overridden with `VOYTTY_MULTI_DEVICE_ROOT`. It holds the environment
 record, the emulator's disk, the venv and all run evidence, so it is deliberately
 outside `target/` (which `cargo clean` deletes) and outside the source tree that
 `build` archives. The commands below use `$LAB` for that directory.
 
 ```sh
-LAB=${ZTERM_MULTI_DEVICE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/zterm-verification/multi-device}
+LAB=${VOYTTY_MULTI_DEVICE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/voytty-verification/multi-device}
 python3 -m venv "$LAB/venv"
 "$LAB/venv/bin/pip" install -r tests/e2e/requirements-multi-device.txt
 "$LAB/venv/bin/python" tests/e2e/multi-device.py create
@@ -119,9 +119,9 @@ After the three-device runner has paired C with the owned hosts, run them with:
 "$LAB/venv/bin/python" tests/e2e/multi-device-hosts.py \
   --output "$LAB/checks/android-hosts-01.json"
 adb -s emulator-5586 shell am instrument -w -r \
-  -e class io.github.leonfox28.zterm.TerminalUiTest#gesturesCopyOverlayAndActivityRetention,io.github.leonfox28.zterm.TerminalUiTest#childMouseAndAlternateScrollUseTouchWithoutStealingLongPress \
+  -e class io.github.leonfox28.voytty.TerminalUiTest#gesturesCopyOverlayAndActivityRetention,io.github.leonfox28.voytty.TerminalUiTest#childMouseAndAlternateScrollUseTouchWithoutStealingLongPress \
   -e hostName multi-device-A \
-  io.github.leonfox28.zterm.dev.test/androidx.test.runner.AndroidJUnitRunner
+  io.github.leonfox28.voytty.dev.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
 Use the environment's recorded serial and the exact paired test-host name when
@@ -149,8 +149,8 @@ For cold-connection or synchronization diagnosis, explicitly enable a finite
 15-minute detail window on each owned Linux test account before the run:
 
 ```sh
-limactl shell --workdir=/tmp zterm-md-20261003t024103z-a sudo -Hu zterm-a /usr/local/bin/zterm logs debug on
-limactl shell --workdir=/tmp zterm-md-20261003t024103z-b sudo -Hu zterm-b /usr/local/bin/zterm logs debug on
+limactl shell --workdir=/tmp voytty-md-20261003t024103z-a sudo -Hu voytty-a /usr/local/bin/voytty logs debug on
+limactl shell --workdir=/tmp voytty-md-20261003t024103z-b sudo -Hu voytty-b /usr/local/bin/voytty logs debug on
 ```
 
 Substitute the recorded guest and test-account names for another environment.
@@ -188,7 +188,7 @@ datagram fingerprints can correlate both ends despite rebatching. They do not
 identify application frames, prove peer delivery from a flush, synchronize
 device clocks, or establish rate limiting from a slow connection. The adapter
 does not export dependency messages, addresses, identities or payloads. See
-`vendor/iroh/ZTERM.md` for pinned dependency markers and upgrade requirements.
+`vendor/iroh/VOYTTY.md` for pinned dependency markers and upgrade requirements.
 
 `relay_tcp_ready` describes the local socket. A transparent TCP proxy can
 acknowledge it while its own outward connection is still `SYN_SENT`; this was
@@ -317,7 +317,7 @@ cannot become one-hour evidence. Offline audit regressions run in `just ci-polic
 
 The separate privileged `iroh_network_gate` normally runs in its Docker image
 with `eth0` as public egress. When running that test directly inside an owned
-Lima guest, set `ZTERM_GATE_EGRESS_INTERFACE` to the actual default-route device
+Lima guest, set `VOYTTY_GATE_EGRESS_INTERFACE` to the actual default-route device
 (`lima0` in this lab), and retain the existing public Relay IPv4 overrides from
 `tests/foundation/network-gate.sh`. Restore the guest's IPv4 forwarding setting
 afterwards. This namespace-level test remains separate from three-device product
@@ -325,19 +325,19 @@ acceptance.
 
 ## Android background connection and process recovery
 
-Build `zterm-cli` example `presentation_fixture` and run `init <new-root>` then
+Build `voytty-cli` example `presentation_fixture` and run `init <new-root>` then
 `start <root>` in a separate process. All host state and Sessions belong to that
 root. Wait for `cli <root> status` to report network Online before `pair <root>`.
 The pair action writes a private ticket file; don't print or commit its contents.
 
 Use a disposable emulator or a read-only emulator instance, install the debug
 APK and instrumentation APK, and copy that ticket via `adb shell run-as` into
-`files/background-ticket.txt` of `io.github.leonfox28.zterm.dev`. Regenerate a fresh
+`files/background-ticket.txt` of `io.github.leonfox28.voytty.dev`. Regenerate a fresh
 ticket before each test that pairs, removing only the prior fixture ticket file.
 Select an explicit emulator serial for every adb command.
 
 Run the instrumentation class
-`io.github.leonfox28.zterm.BackgroundConnectionTest` with `-e backgroundFixture 1`:
+`io.github.leonfox28.voytty.BackgroundConnectionTest` with `-e backgroundFixture 1`:
 
 - `#connectionSurvivesActivityAndServiceLifecycle` tests a real Session, foreground
   start eligibility, notification grant/denial, lock/unlock, Activity recreation,
@@ -363,7 +363,7 @@ For transport interruption, use an emulator that supports `adb root`, then run:
 
 ```sh
 python3 tests/e2e/android-network-interruption.py \
-  --serial emulator-5580 --output /tmp/zterm-network-interruption.log
+  --serial emulator-5580 --output /tmp/voytty-network-interruption.log
 ```
 
 Choose the actual disposable emulator serial; `--adb` can select the SDK's adb.

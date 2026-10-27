@@ -9,10 +9,10 @@ mod unix {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
-    use zterm_core::{
+    use voytty_core::{
         DomainErrorKind, ResourceLimits, SessionEndReason, SessionName, SessionSelector,
     };
-    use zterm_daemon::session::AttachmentLifecycle;
+    use voytty_daemon::session::AttachmentLifecycle;
 
     use super::support::{self, Fixture};
 

@@ -1,11 +1,11 @@
-//! Fixed ANSI compatibility corpus for the zterm-owned terminal boundary.
+//! Fixed ANSI compatibility corpus for the voytty-owned terminal boundary.
 
-use zterm_core::terminal::{
+use voytty_core::terminal::{
     ActiveScreen, MAX_SIDE_EVENTS_PER_UPDATE, MAX_TITLE_BYTES, RejectedEffect, TerminalColor,
     TerminalHostEffect, TerminalHostEffects, TerminalMouseEncoding, TerminalMouseMode,
     TerminalSideEvent, TerminalSize, TerminalSurface, UnsupportedSequenceKind,
 };
-use zterm_terminal::TerminalModel;
+use voytty_terminal::TerminalModel;
 
 const SIZE: TerminalSize = TerminalSize::new(8, 40);
 
@@ -213,7 +213,7 @@ fn fixed_ansi_corpus_is_chunk_boundary_invariant() {
 }
 
 #[test]
-fn query_replies_match_the_documented_zterm_capability() {
+fn query_replies_match_the_documented_voytty_capability() {
     let run = assert_chunk_invariant(b"\x1b[3;4H\x1b[c\x1b[5n\x1b[6n\x1b[?6n");
     assert_eq!(run.replies, b"\x1b[?1;2c\x1b[0n\x1b[3;4R\x1b[?3;4R");
     assert!(run.events.is_empty());

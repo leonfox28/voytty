@@ -18,7 +18,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 #[cfg(unix)]
-use zterm_platform::pty::{
+use voytty_platform::pty::{
     ExplicitPtyCommand, PtyChildState, PtyError, PtyHost, PtyReader, PtySession, PtySize,
 };
 
@@ -178,7 +178,7 @@ fn hosted_profile_is_independent_of_parent_terminal() -> Result<(), String> {
 #[cfg(unix)]
 fn hosted_profile_line(tmpdir: &str) -> String {
     format!(
-        "HOSTED_PROFILE:xterm-256color:truecolor:zterm:{}:[]:{tmpdir}",
+        "HOSTED_PROFILE:xterm-256color:truecolor:voytty:{}:[]:{tmpdir}",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -493,7 +493,7 @@ fn find_stty() -> Result<PathBuf, String> {
 fn wait_for_exit(
     session: &mut PtySession,
     timeout: Duration,
-) -> Result<zterm_platform::pty::PtyExitStatus, String> {
+) -> Result<voytty_platform::pty::PtyExitStatus, String> {
     let deadline = Instant::now() + timeout;
     loop {
         match session.try_wait().map_err(display_error)? {
@@ -683,7 +683,7 @@ impl CompletionMarker {
             .map_err(display_error)?
             .as_nanos();
         let path =
-            std::env::temp_dir().join(format!("zterm-pty-marker-{}-{nonce}", std::process::id()));
+            std::env::temp_dir().join(format!("voytty-pty-marker-{}-{nonce}", std::process::id()));
         if path.exists() {
             return Err(format!(
                 "completion marker already exists: {}",

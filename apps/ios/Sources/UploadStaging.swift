@@ -51,7 +51,7 @@ final class StagedUpload: Sendable {
                 let info = try readable.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
                 guard info.isRegularFile == true else { throw NativeError.RequestFailed(code: "upload_source_invalid") }
                 if let size = info.fileSize, size > limit { throw NativeError.RequestFailed(code: "upload_too_large") }
-                let directory = FileManager.default.temporaryDirectory.appendingPathComponent("zterm-upload-" + UUID().uuidString, isDirectory: true)
+                let directory = FileManager.default.temporaryDirectory.appendingPathComponent("voytty-upload-" + UUID().uuidString, isDirectory: true)
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
                                                        attributes: [.posixPermissions: 0o700])
                 var completed = false
@@ -85,6 +85,6 @@ final class StagedUpload: Sendable {
             }
         }
         if let result { return try result.get() }
-        throw coordinationError ?? NSError(domain: "zterm.upload.source", code: 1)
+        throw coordinationError ?? NSError(domain: "voytty.upload.source", code: 1)
     }
 }

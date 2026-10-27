@@ -1,9 +1,9 @@
 # Daemon login autostart
 
 ```sh
-zterm daemon autostart enable
-zterm daemon autostart disable
-zterm daemon autostart status
+voytty daemon autostart enable
+voytty daemon autostart disable
+voytty daemon autostart status
 ```
 
 Autostart is off by default. Installation and `setup` do not enable it. `enable`
@@ -13,12 +13,12 @@ daemon or its Sessions. Both are idempotent. `status` is read-only and reports
 missing, altered, unsafe or stale executable configuration as an error.
 
 On macOS the owned file is
-`~/Library/LaunchAgents/io.github.leonfox28.zterm.daemon.plist`. It has `RunAtLoad`
+`~/Library/LaunchAgents/io.github.leonfox28.voytty.daemon.plist`. It has `RunAtLoad`
 and no `KeepAlive`. It is not bootstrapped during enable, and disable does not
 boot out the loaded job: bootout would kill the running daemon. At logout launchd
 releases its job; the removed file is not loaded on the next login.
 
-On Linux the owned unit is `~/.config/systemd/user/zterm-daemon.service`, with an
+On Linux the owned unit is `~/.config/systemd/user/voytty-daemon.service`, with an
 owned relative link in `default.target.wants`. These are the same persistent
 unit/link registration used by systemd enable, installed for the next user-manager
 startup without activating the current default target. `Restart=no` keeps an
@@ -28,7 +28,7 @@ No linger setting is changed. The user manager normally starts at login and ends
 after the last logout; existing administrator linger policy is not overridden.
 Linux without systemd and a custom `XDG_CONFIG_HOME` are explicitly unsupported.
 
-Both managers execute the absolute zterm path with the hidden foreground entry.
+Both managers execute the absolute voytty path with the hidden foreground entry.
 It never forks or calls `setsid`; it acquires the existing lifetime lock. Racing
 manual startup cannot create a second daemon. Login startup does not create a
 Session, shell or terminal window. Stopping or crashing does not schedule a retry.
@@ -42,7 +42,7 @@ are preserved. The hidden entry accepts no state-path override.
 
 The registration commands don't alter user-supplied launchd overrides or custom
 systemd units. After manually changing service-manager policy, inspect it with
-`launchctl print-disabled gui/$(id -u)` or `systemctl --user is-enabled zterm-daemon.service`
+`launchctl print-disabled gui/$(id -u)` or `systemctl --user is-enabled voytty-daemon.service`
 as appropriate. Actual login/logout behavior still needs an isolated account
 acceptance run; see [verification](verification/session-continuity.md).
 

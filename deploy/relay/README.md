@@ -16,7 +16,7 @@ contains the one supported deployment shape.
   `workflow_dispatch` inputs to the development package.
 
 The default server directory is
-`/opt/1panel/docker/compose/zterm-relay`. Update it manually:
+`/opt/1panel/docker/compose/voytty-relay`. Update it manually:
 
 ```bash
 docker compose pull
@@ -25,13 +25,17 @@ docker compose up -d
 
 Compose uses `ghcr.io/leonfox28/zterm-relay:latest`; ordinary Docker or host
 restarts reuse the already pulled image. The project and its only container are
-both named `zterm-relay`. Docker's `local` log driver supplies bounded,
+both named `voytty-relay`. Docker's `local` log driver supplies bounded,
 compressed rotation without changing daemon-wide settings.
+
+The image keeps its historical name because publication is paused. Existing
+servers retain their old Compose project/container names and deployment paths;
+renaming this source bundle does not migrate a running relay.
 
 Public TLS, WebSocket forwarding, and certificates belong to the host reverse
 proxy. This bundle deliberately exposes no direct TLS/ACME template, metrics
 listener, UDP QAD listener, custom health binary, monitor, database, or volume.
-The Relay forwards end-to-end encrypted traffic and stores no zterm terminal
+The Relay forwards end-to-end encrypted traffic and stores no voytty terminal
 state.
 
 See `docs/relay.md` for publication, deployment, and one-time acceptance

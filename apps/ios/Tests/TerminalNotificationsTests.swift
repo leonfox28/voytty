@@ -1,6 +1,6 @@
 import XCTest
 import UserNotifications
-@testable import Zterm
+@testable import Voytty
 
 @MainActor
 final class NotificationFixture: NotificationPlatform {
@@ -58,7 +58,7 @@ final class TerminalNotificationsTests: XCTestCase {
         XCTAssertEqual(failures, 1)
         XCTAssertEqual(Set(platform.requests.map(\.identifier)).count, 3)
         XCTAssertTrue(platform.requests.allSatisfy { $0.trigger == nil })
-        XCTAssertEqual(platform.requests[0].content.title, "zterm")
+        XCTAssertEqual(platform.requests[0].content.title, "voytty")
         XCTAssertEqual(platform.requests[0].content.body, "结果: done")
         XCTAssertEqual(platform.requests[2].content.title, "标题")
         XCTAssertEqual(platform.requests[2].content.body, "body;结果")

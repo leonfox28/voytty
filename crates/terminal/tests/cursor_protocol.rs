@@ -1,6 +1,6 @@
 //! Declared caret presentation is revisioned state, not a transient callback.
-use zterm_core::terminal::{TerminalCursorShape, TerminalSize, TerminalSurfaceDeltaResult};
-use zterm_terminal::TerminalModel;
+use voytty_core::terminal::{TerminalCursorShape, TerminalSize, TerminalSurfaceDeltaResult};
+use voytty_terminal::TerminalModel;
 
 #[test]
 fn cursor_shapes_blinking_and_resets_survive_deltas() {

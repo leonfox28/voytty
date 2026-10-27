@@ -48,28 +48,28 @@ fi
 
 unsafe_code=$(find crates tools -type f -name '*.rs' -exec grep -nHE '(^|[^[:alnum:]_])(unsafe[[:space:]]+((extern[[:space:]]+"[[:alnum:]_-]+"[[:space:]]+)?(fn|impl|trait)|extern)|unsafe[[:space:]]*\{|unsafe[[:space:]]*\()' {} + || true)
 if [ -n "$unsafe_code" ]; then
-    echo "zterm-owned Rust code must not contain unsafe code:" >&2
+    echo "voytty-owned Rust code must not contain unsafe code:" >&2
     printf '%s\n' "$unsafe_code" >&2
     exit 1
 fi
 
 for client_manifest in crates/core/Cargo.toml crates/proto/Cargo.toml; do
-    if grep -E 'alacritty_terminal|zterm-terminal|^[[:space:]]*vte[[:space:]]*=' "$client_manifest" >/dev/null; then
+    if grep -E 'alacritty_terminal|voytty-terminal|^[[:space:]]*vte[[:space:]]*=' "$client_manifest" >/dev/null; then
         echo "$client_manifest must remain host-engine-free" >&2
         exit 1
     fi
 done
-if grep -E 'alacritty_terminal|zterm-terminal|^[[:space:]]*vte[[:space:]]*=' crates/cli/Cargo.toml >/dev/null; then
-    echo "zterm-cli must not directly depend on the terminal engine" >&2
+if grep -E 'alacritty_terminal|voytty-terminal|^[[:space:]]*vte[[:space:]]*=' crates/cli/Cargo.toml >/dev/null; then
+    echo "voytty-cli must not directly depend on the terminal engine" >&2
     exit 1
 fi
-legacy_v1_proto=$(find proto/zterm/v1 -type f -print 2>/dev/null || true)
-if [ -n "$legacy_v1_proto" ] || [ ! -f proto/zterm/v2/wire.proto ]; then
-    echo "terminal transport must compile only the zterm.v2 protobuf source tree" >&2
+legacy_v1_proto=$(find proto/voytty/v1 -type f -print 2>/dev/null || true)
+if [ -n "$legacy_v1_proto" ] || [ ! -f proto/voytty/v2/wire.proto ]; then
+    echo "terminal transport must compile only the voytty.v2 protobuf source tree" >&2
     exit 1
 fi
-if ! grep -Fqx 'package zterm.v2;' proto/zterm/v2/wire.proto; then
-    echo "wire protobuf package must be exactly zterm.v2" >&2
+if ! grep -Fqx 'package voytty.v2;' proto/voytty/v2/wire.proto; then
+    echo "wire protobuf package must be exactly voytty.v2" >&2
     exit 1
 fi
 legacy_terminal_presentation=$(find crates proto -type f \( -name '*.rs' -o -name '*.proto' \) -exec grep -nHE 'LegacyAnsi|SemanticCellsV1|TerminalState|TerminalPresentationEncoding|presentation_(encoding|family|preference|capability)|recent_history_ansi|screen_ansi|ansi_rows|TerminalHistory(Cursor|Direction|Page|Result|WindowResult|WindowFrame)|TerminalViewport(Result|Frame)|TerminalScrollAction' {} + || true)
@@ -78,7 +78,7 @@ if [ -n "$legacy_terminal_presentation" ]; then
     printf '%s\n' "$legacy_terminal_presentation" >&2
     exit 1
 fi
-legacy_terminal_kinds=$(grep -nE '= (202|300|312|313|315|316|319|320|321);' proto/zterm/v2/wire.proto || true)
+legacy_terminal_kinds=$(grep -nE '= (202|300|312|313|315|316|319|320|321);' proto/voytty/v2/wire.proto || true)
 if [ -n "$legacy_terminal_kinds" ]; then
     echo "retired terminal wire kinds must stay absent from wire major 2:" >&2
     printf '%s\n' "$legacy_terminal_kinds" >&2
@@ -86,7 +86,7 @@ if [ -n "$legacy_terminal_kinds" ]; then
 fi
 client_terminal_engine=$(find crates/cli/src -type f -name '*.rs' -exec grep -nHE 'alacritty_terminal|(^|[^[:alnum:]_])vte::|vt100' {} + || true)
 if [ -n "$client_terminal_engine" ]; then
-    echo "zterm-cli must consume semantic surfaces without a second terminal parser:" >&2
+    echo "voytty-cli must consume semantic surfaces without a second terminal parser:" >&2
     printf '%s\n' "$client_terminal_engine" >&2
     exit 1
 fi
@@ -98,7 +98,7 @@ if [ -n "$application_detection" ]; then
 fi
 forbidden_alacritty_api=$(find crates -type f -name '*.rs' -exec grep -nHE 'alacritty_terminal::(tty|event_loop)' {} + || true)
 if [ -n "$forbidden_alacritty_api" ]; then
-    echo "zterm must keep PTY/process ownership out of the Alacritty boundary" >&2
+    echo "voytty must keep PTY/process ownership out of the Alacritty boundary" >&2
     printf '%s\n' "$forbidden_alacritty_api" >&2
     exit 1
 fi

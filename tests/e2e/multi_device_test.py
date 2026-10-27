@@ -238,7 +238,7 @@ class CoordinatorTests(unittest.TestCase):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
                 lab = md.Lab(SimpleNamespace(environment=Path(directory)))
                 secret = "PRIVATE_TICKET_MUST_NOT_APPEAR"
-                completed = subprocess.CompletedProcess(["zterm", "pair", "create"], 1,
+                completed = subprocess.CompletedProcess(["voytty", "pair", "create"], 1,
                     stdout=secret.encode(), stderr=f"Error: {kind}: {secret}\n".encode())
                 with patch.object(md.subprocess, "run", return_value=completed):
                     with self.assertRaises(RuntimeError) as raised:

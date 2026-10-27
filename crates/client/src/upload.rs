@@ -20,8 +20,8 @@ use tokio::{
     time::{Instant, timeout, timeout_at},
 };
 use tokio_util::sync::CancellationToken;
-use zterm_core::{Capabilities, DomainErrorKind, upload::*};
-use zterm_proto::{DecodedFrame, WireKind, upload::UploadMessage};
+use voytty_core::{Capabilities, DomainErrorKind, upload::*};
+use voytty_proto::{DecodedFrame, WireKind, upload::UploadMessage};
 
 /// Independently readable half; permits progress reads while a write is blocked.
 pub trait UploadReader: Send {
@@ -109,7 +109,7 @@ pub const fn preparing() -> UploadProgress {
 
 /// Encodes one validated upload path as a plain paste, with no modifiers or Enter.
 #[must_use]
-pub fn paste_bytes(file: &UploadedFile, modes: &zterm_core::terminal::TerminalModes) -> Vec<u8> {
+pub fn paste_bytes(file: &UploadedFile, modes: &voytty_core::terminal::TerminalModes) -> Vec<u8> {
     if modes.bracketed_paste {
         [
             b"\x1b[200~".as_slice(),
@@ -132,7 +132,7 @@ pub async fn upload<R: AsyncRead + Unpin + Send>(
     progress: &watch::Sender<UploadProgress>,
     cancel: &CancellationToken,
 ) -> Result<UploadedFile, ClientError> {
-    use zterm_diagnostics::{Event, Kind, Level, Operation, Outcome};
+    use voytty_diagnostics::{Event, Kind, Level, Operation, Outcome};
     let operation = Operation::default();
     let size = metadata.size();
     let context = |event: Event| {
@@ -142,7 +142,7 @@ pub async fn upload<R: AsyncRead + Unpin + Send>(
             .attachment(binding.attachment_id)
             .bytes(size)
     };
-    zterm_diagnostics::record(context(Event::new(Kind::UploadStarted)));
+    voytty_diagnostics::record(context(Event::new(Kind::UploadStarted)));
     let result = upload_inner(
         connector, target, binding, metadata, source, progress, cancel,
     )
@@ -161,7 +161,7 @@ pub async fn upload<R: AsyncRead + Unpin + Send>(
                 Outcome::Failed
             }),
     };
-    zterm_diagnostics::record(context(event));
+    voytty_diagnostics::record(context(event));
     result
 }
 
@@ -443,7 +443,7 @@ fn source_invalid() -> ClientError {
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    use zterm_core::{AttachmentId, SessionId};
+    use voytty_core::{AttachmentId, SessionId};
 
     struct Connector(Mutex<Option<UploadConnection>>);
     impl UploadConnector for Connector {
@@ -577,11 +577,11 @@ mod tests {
                 .encode(1)
                 .expect("upload fixture");
                 response.extend(
-                    zterm_proto::encode_message(
+                    voytty_proto::encode_message(
                         WireKind::ServiceErrorResponse,
                         1,
                         0,
-                        &zterm_proto::v2::ServiceError {
+                        &voytty_proto::v2::ServiceError {
                             code: kind.code().to_owned(),
                             message: "host rejected the upload".to_owned(),
                         },

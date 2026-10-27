@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 use tokio_util::task::AbortOnDropHandle;
-use zterm_core::ConnectionWelcome;
+use voytty_core::ConnectionWelcome;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Return {
@@ -157,7 +157,7 @@ async fn serve(host: Endpoint, served: Served, reply_delay: Duration) {
             }
             served.greeted.fetch_add(1, Ordering::SeqCst);
             let welcome = ConnectionWelcome::new(
-                zterm_proto::WIRE_MAJOR,
+                voytty_proto::WIRE_MAJOR,
                 Capabilities::from_bits_retain(
                     Capabilities::SESSION_SERVICE | Capabilities::TERMINAL_SERVICE,
                 ),
@@ -188,7 +188,7 @@ async fn serve(host: Endpoint, served: Served, reply_delay: Duration) {
                 served.queries.fetch_add(1, Ordering::SeqCst);
                 // The service is slow; QUIC still acknowledges the request.
                 tokio::time::sleep(reply_delay).await;
-                let bytes = zterm_proto::encode_message(
+                let bytes = voytty_proto::encode_message(
                     WireKind::SessionListResponse,
                     frame.request_id,
                     0,
@@ -238,7 +238,7 @@ impl KillableHost {
                         iroh::RelayConfig::new(relay, None).into(),
                     ))
                     .clear_ip_transports()
-                    .alpns(vec![ZTERM_ALPN.to_vec()]);
+                    .alpns(vec![VOYTTY_ALPN.to_vec()]);
                 if direct {
                     builder = builder
                         .bind_addr((Ipv4Addr::LOCALHOST, 0))

@@ -5,7 +5,7 @@ use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Hyperlink};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use zterm_core::terminal::{
+use voytty_core::terminal::{
     MAX_TERMINAL_HYPERLINK_BYTES, MAX_TERMINAL_HYPERLINKS, TerminalHyperlink,
 };
 
@@ -42,7 +42,7 @@ impl AlacrittyEngine {
                 return false;
             };
             self.hyperlinks.next_id = next;
-            generated = format!("zterm-auto-{next}");
+            generated = format!("voytty-auto-{next}");
             &generated
         };
         let Ok(value) = TerminalHyperlink::new(id, uri) else {
@@ -85,7 +85,7 @@ impl AlacrittyEngine {
 
     pub(crate) fn reconcile_hyperlinks(&mut self) {
         let index =
-            usize::from(self.active_screen() == zterm_core::terminal::ActiveScreen::Alternate);
+            usize::from(self.active_screen() == voytty_core::terminal::ActiveScreen::Alternate);
         let grid = self.term.grid();
         let current = &mut self.hyperlinks.screens[index];
         current.clear();

@@ -14,25 +14,25 @@ use prost::Message;
 #[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(unix)]
-use zterm_core::terminal::TerminalSize;
+use voytty_core::terminal::TerminalSize;
 #[cfg(unix)]
-use zterm_core::{DeviceAlias, DeviceId, DomainErrorKind, SessionName};
+use voytty_core::{DeviceAlias, DeviceId, DomainErrorKind, SessionName};
 #[cfg(unix)]
-use zterm_daemon::bootstrap::bootstrap;
+use voytty_daemon::bootstrap::bootstrap;
 #[cfg(unix)]
-use zterm_daemon::config::{ValidatedInfrastructure, validate_setup_input};
+use voytty_daemon::config::{ValidatedInfrastructure, validate_setup_input};
 #[cfg(unix)]
-use zterm_daemon::lifecycle::run_local_only_daemon_for_test;
+use voytty_daemon::lifecycle::run_local_only_daemon_for_test;
 #[cfg(unix)]
-use zterm_daemon::local_ipc::{LocalClient, LocalIpcLimits, serve_local_with_limits};
+use voytty_daemon::local_ipc::{LocalClient, LocalIpcLimits, serve_local_with_limits};
 #[cfg(unix)]
-use zterm_daemon::service::DaemonService;
+use voytty_daemon::service::DaemonService;
 #[cfg(unix)]
-use zterm_daemon::store::StateStore;
+use voytty_daemon::store::StateStore;
 #[cfg(unix)]
-use zterm_platform::local_unix::{DaemonLock, bind_daemon_socket, remove_own_socket};
+use voytty_platform::local_unix::{DaemonLock, bind_daemon_socket, remove_own_socket};
 #[cfg(unix)]
-use zterm_proto::{FrameDecoder, WIRE_MAJOR, WireKind, encode_message, v2};
+use voytty_proto::{FrameDecoder, WIRE_MAJOR, WireKind, encode_message, v2};
 
 #[cfg(unix)]
 use state_fixture::TestState;
@@ -598,7 +598,7 @@ async fn assert_error_code(state: &TestState, request: Vec<u8>, expected: &str) 
 }
 
 #[cfg(unix)]
-async fn read_response(stream: &mut tokio::net::UnixStream) -> zterm_proto::DecodedFrame {
+async fn read_response(stream: &mut tokio::net::UnixStream) -> voytty_proto::DecodedFrame {
     let mut bytes = Vec::new();
     stream
         .read_to_end(&mut bytes)
@@ -622,7 +622,7 @@ async fn read_raw_request(stream: &mut tokio::net::UnixStream) -> Vec<u8> {
 }
 
 #[cfg(unix)]
-fn decode_raw_request(bytes: &[u8]) -> zterm_proto::DecodedFrame {
+fn decode_raw_request(bytes: &[u8]) -> voytty_proto::DecodedFrame {
     let mut decoder = FrameDecoder::new();
     let mut frames = decoder.feed(bytes).expect("raw request frame");
     decoder.finish().expect("complete raw request");
@@ -631,7 +631,7 @@ fn decode_raw_request(bytes: &[u8]) -> zterm_proto::DecodedFrame {
 }
 
 #[cfg(unix)]
-fn assert_service_error(frame: &zterm_proto::DecodedFrame, expected: &str) {
+fn assert_service_error(frame: &voytty_proto::DecodedFrame, expected: &str) {
     let error: v2::ServiceError = frame
         .decode_message(WireKind::ServiceErrorResponse)
         .expect("service error response");

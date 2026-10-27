@@ -6,17 +6,17 @@ use std::{
     path::Path,
     sync::Arc,
 };
-pub use zterm_client::session::{LocalAttachmentEvent, LocalTakeoverRetryToken};
-use zterm_core::{DeviceId, SessionSelector, terminal::TerminalColorProfile};
+pub use voytty_client::session::{LocalAttachmentEvent, LocalTakeoverRetryToken};
+use voytty_core::{DeviceId, SessionSelector, terminal::TerminalColorProfile};
 
 /// Desktop Session constructors retaining the existing local API.
 #[derive(Debug)]
-pub struct SessionClient(zterm_client::session::SessionClient);
+pub struct SessionClient(voytty_client::session::SessionClient);
 impl SessionClient {
     /// Attaches to the daemon-lifetime default `main` session, creating it if absent.
     pub async fn connect_main(
         socket: impl AsRef<Path>,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
     ) -> Result<Self, DaemonError> {
         Self::connect_inner(
             UnixAttachmentConnector::new(socket.as_ref()),
@@ -35,7 +35,7 @@ impl SessionClient {
         socket: impl AsRef<Path>,
         selector: SessionSelector,
         takeover: bool,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
     ) -> Result<Self, DaemonError> {
         Self::connect_inner(
             UnixAttachmentConnector::new(socket.as_ref()),
@@ -54,7 +54,7 @@ impl SessionClient {
     pub async fn connect_remote_main(
         socket: impl AsRef<Path>,
         target: DeviceId,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
     ) -> Result<Self, DaemonError> {
         Self::connect_inner(
             UnixAttachmentConnector::new(socket.as_ref()),
@@ -75,7 +75,7 @@ impl SessionClient {
         target: DeviceId,
         selector: SessionSelector,
         takeover: bool,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
     ) -> Result<Self, DaemonError> {
         Self::connect_inner(
             UnixAttachmentConnector::new(socket.as_ref()),
@@ -95,7 +95,7 @@ impl SessionClient {
         selector: Option<SessionSelector>,
         create_main: bool,
         takeover: bool,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
         base_colors: TerminalColorProfile,
     ) -> Result<Self, DaemonError> {
         Self::connect_inner(
@@ -116,11 +116,11 @@ impl SessionClient {
         selector: Option<SessionSelector>,
         create_main: bool,
         takeover: bool,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
         base_colors: TerminalColorProfile,
     ) -> Result<Self, DaemonError> {
         let progress = connector.progress();
-        zterm_client::session::SessionClient::connect_with_progress(
+        voytty_client::session::SessionClient::connect_with_progress(
             Arc::new(connector),
             target,
             selector,
@@ -134,12 +134,12 @@ impl SessionClient {
         .map(Self)
     }
     /// Transfers the single protocol owner into the prepared view.
-    pub fn into_inner(self) -> zterm_client::session::SessionClient {
+    pub fn into_inner(self) -> voytty_client::session::SessionClient {
         self.0
     }
 }
 impl Deref for SessionClient {
-    type Target = zterm_client::session::SessionClient;
+    type Target = voytty_client::session::SessionClient;
     fn deref(&self) -> &Self::Target {
         &self.0
     }

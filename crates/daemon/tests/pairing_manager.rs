@@ -8,17 +8,17 @@ use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use zterm_core::{
+use voytty_core::{
     AuthGeneration, DeviceDisplayName, DeviceId, DomainErrorKind, EphemeralOperationId,
     PAIR_PROTOCOL_VERSION, PairBegin, PairFingerprint, PairNonce, PairProof, RelayHint,
     TransportLimits,
 };
-use zterm_daemon::pairing::{
+use voytty_daemon::pairing::{
     PairOfferCreated, PairOfferRequest, PairOfferState, PairingClock, PairingClockError,
     PairingEntropy, PairingEntropyError, PairingError, PairingManager, PairingNow,
     PreparedPairChallenge, controller_transcript,
 };
-use zterm_proto::decode_pair_ticket;
+use voytty_proto::decode_pair_ticket;
 
 const HOST: DeviceId = DeviceId::from_array([0x11; 32]);
 const CONTROLLER_A: DeviceId = DeviceId::from_array([0x22; 32]);

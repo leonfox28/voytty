@@ -22,7 +22,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("version_code", type=int)
     parser.add_argument("--sdk", type=Path, default=os.environ.get("ANDROID_HOME", Path.home() / "Library/Android/sdk"))
-    parser.add_argument("--signing-dir", type=Path, default=Path.home() / ".local/share/zterm/android-signing")
+    parser.add_argument("--signing-dir", type=Path, default=Path.home() / ".local/share/voytty/android-signing")
     args = parser.parse_args()
     if not 1 <= args.version_code <= 2_100_000_000:
         parser.error("version_code must be a positive Android versionCode")
@@ -44,23 +44,23 @@ def main() -> None:
             secret_file.write_text(secrets.token_urlsafe(48) + "\n")
             secret_file.chmod(0o600)
             run(keytool, "-genkeypair", "-noprompt", "-storetype", "PKCS12", "-keystore", str(stage / "key.p12"),
-                "-storepass:file", str(secret_file), "-alias", "zterm", "-keyalg", "RSA", "-keysize", "3072",
-                "-validity", "10000", "-dname", "CN=zterm local acceptance")
+                "-storepass:file", str(secret_file), "-alias", "voytty", "-keyalg", "RSA", "-keysize", "3072",
+                "-validity", "10000", "-dname", "CN=voytty local acceptance")
             (stage / "key.p12").chmod(0o600)
             os.link(stage / "key.p12", keystore)
             os.link(secret_file, password_file)
     previous = signing / "last-version-code"
     if previous.exists() and args.version_code <= int(previous.read_text()):
         raise SystemExit("Use a versionCode greater than the last signed build")
-    run("sh", "tools/android/build.sh", ":app:assembleRelease", f"-PztermVersionCode={args.version_code}")
+    run("sh", "tools/android/build.sh", ":app:assembleRelease", f"-PvoyttyVersionCode={args.version_code}")
     output = ROOT / "target/android-apk" / str(args.version_code)
     output.mkdir(parents=True, exist_ok=False)
-    apk = output / f"zterm-android-arm64-{args.version_code}.apk"
+    apk = output / f"voytty-android-arm64-{args.version_code}.apk"
     tools = args.sdk / "build-tools/36.0.0"
     env_java = os.environ.get("JAVA_HOME")
     if java and not env_java:
         os.environ["JAVA_HOME"] = java
-    run(str(tools / "apksigner"), "sign", "--ks", str(keystore), "--ks-key-alias", "zterm",
+    run(str(tools / "apksigner"), "sign", "--ks", str(keystore), "--ks-key-alias", "voytty",
         "--ks-pass", f"file:{password_file}", "--out", str(apk),
         str(ROOT / "apps/android/app/build/outputs/apk/release/app-release-unsigned.apk"))
     signature = run(str(tools / "apksigner"), "verify", "--verbose", "--print-certs", str(apk), capture=True)

@@ -2,7 +2,7 @@ import XCTest
 import UIKit
 import Security
 import CryptoKit
-@testable import Zterm
+@testable import Voytty
 
 final class RemoteAcceptanceTests: XCTestCase {
     /// This opt-in test uses an explicitly provisioned disposable host, never the user's daemon.
@@ -94,7 +94,7 @@ final class RemoteAcceptanceTests: XCTestCase {
         let clock = ContinuousClock()
         let cancellationDeadline = clock.now.advanced(by: .seconds(3))
         while cancelled.currentState().phase != "cancelled" {
-            guard clock.now < cancellationDeadline else { throw NSError(domain: "zterm.upload.cancel.timeout", code: 1) }
+            guard clock.now < cancellationDeadline else { throw NSError(domain: "voytty.upload.cancel.timeout", code: 1) }
             try await Task.sleep(for: .milliseconds(10))
         }
         let uploads = TerminalUploads()
@@ -107,7 +107,7 @@ final class RemoteAcceptanceTests: XCTestCase {
         var selected = false
         while let state = uploads.state {
             if state.phase == "failed" { throw NativeError.RequestFailed(code: state.error ?? "upload_source_invalid") }
-            guard clock.now < deadline else { throw NSError(domain: "zterm.upload.acceptance.timeout", code: 1) }
+            guard clock.now < deadline else { throw NSError(domain: "voytty.upload.acceptance.timeout", code: 1) }
             if state.phase == "picking" && !selected {
                 selected = true
                 XCTAssertTrue(uploads.paused)
@@ -137,7 +137,7 @@ final class RemoteAcceptanceTests: XCTestCase {
 
     @MainActor
     private static func checkSessionWorkflow(host: NativeHost, seed: Data) async throws {
-        let store = HostStore(service: "zterm.remote-workflow.\(UUID().uuidString)")
+        let store = HostStore(service: "voytty.remote-workflow.\(UUID().uuidString)")
         _ = try store.load()
         defer {
             SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: store.service] as CFDictionary)
@@ -299,7 +299,7 @@ final class RemoteAcceptanceTests: XCTestCase {
         func waitForCount(_ count: Int) async throws {
             let deadline = ContinuousClock.now.advanced(by: .seconds(15))
             while platform.requests.count < count {
-                guard ContinuousClock.now < deadline else { throw NSError(domain: "zterm.notification.timeout", code: count) }
+                guard ContinuousClock.now < deadline else { throw NSError(domain: "voytty.notification.timeout", code: count) }
                 try await Task.sleep(for: .milliseconds(20))
             }
             XCTAssertEqual(platform.requests.count, count)
@@ -308,7 +308,7 @@ final class RemoteAcceptanceTests: XCTestCase {
         _ = try await wait(terminal) { shellReady($0) }
         model.text("printf '\\033]9;结果: done\\a\\033]777;notify;标题;body;结果\\033\\\\'\r")
         try await waitForCount(2)
-        XCTAssertEqual(platform.requests.map { $0.content.title }, ["zterm", "标题"])
+        XCTAssertEqual(platform.requests.map { $0.content.title }, ["voytty", "标题"])
         XCTAssertEqual(platform.requests.map { $0.content.body }, ["结果: done", "body;结果"])
         let host = try XCTUnwrap(model.recentHost), id = model.sessionID
         model.goHome()
@@ -355,7 +355,7 @@ finally:
                 if let frame = model.frame, frame.inputReady, text(frame).contains(marker) { return frame }
                 try await Task.sleep(for: .milliseconds(10))
             }
-            throw NSError(domain: "zterm.ios.keyboard.timeout", code: 1,
+            throw NSError(domain: "voytty.ios.keyboard.timeout", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "waiting for \(marker): \(model.error ?? "")"])
         }
         let ready = try await sync("KEYS_READY")
@@ -449,7 +449,7 @@ finally:
                     return frame
                 }
                 guard clock.now < deadline else {
-                    throw NSError(domain: "zterm.gesture.acceptance", code: Int(line), userInfo: [NSLocalizedDescriptionKey: "Gesture wait at line \(line): \(model.frame.map(Self.text) ?? "no frame")"])
+                    throw NSError(domain: "voytty.gesture.acceptance", code: Int(line), userInfo: [NSLocalizedDescriptionKey: "Gesture wait at line \(line): \(model.frame.map(Self.text) ?? "no frame")"])
                 }
                 try await Task.sleep(for: .milliseconds(25))
             }
@@ -524,7 +524,7 @@ finally:
             view.update(next, terminal: terminal)
             if view.canvas.visibleFirstRow <= target { break }
             let remaining = clock.now.duration(to: deadline)
-            guard remaining > .zero else { throw NSError(domain: "zterm.ios.edge-scroll.timeout", code: 1) }
+            guard remaining > .zero else { throw NSError(domain: "voytty.ios.edge-scroll.timeout", code: 1) }
             let generation = next.generation
             do {
                 next = try await Self.wait(terminal, timeout: remaining) { $0.generation > generation }
@@ -625,7 +625,7 @@ finally:
             if predicate(frame) { return frame }
             let remaining = clock.now.duration(to: deadline)
             guard remaining > .zero else {
-                throw NSError(domain: "zterm.ios.acceptance.timeout", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                throw NSError(domain: "voytty.ios.acceptance.timeout", code: 1, userInfo: [NSLocalizedDescriptionKey:
                     "Wait at line \(line): state=\(frame.state), path=\(frame.connectionPath), history=\(frame.historyOffset), generation=\(frame.generation)"])
             }
             try await Task.sleep(for: min(.milliseconds(25), remaining))

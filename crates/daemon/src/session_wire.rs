@@ -26,19 +26,19 @@ use tokio::task::{JoinHandle, JoinSet};
 #[cfg(unix)]
 use tokio_util::task::AbortOnDropHandle;
 #[cfg(unix)]
-use zeroize::Zeroizing;
-#[cfg(unix)]
-use zterm_core::terminal::{
+use voytty_core::terminal::{
     TerminalHistoryWindowAnchor, TerminalHistoryWindowQuery, TerminalSize, TerminalSurfaceDelta,
     TerminalSurfaceSnapshot,
 };
 #[cfg(unix)]
-use zterm_core::{
+use voytty_core::{
     AttachmentId, AttachmentPrincipal, AuthGeneration, DeviceId, DomainErrorKind, OperationId,
     ResourceLimits, ResumeViewId, Revision, SessionId, SessionName, SessionSelector,
 };
 #[cfg(unix)]
-use zterm_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
+use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
+#[cfg(unix)]
+use zeroize::Zeroizing;
 
 #[cfg(unix)]
 use crate::authorization::AuthorizationRegistry;
@@ -63,7 +63,7 @@ const ATTACHMENT_OUTBOUND_CAPACITY: usize = 8;
 const DEFAULT_SESSION_WIRE_DEADLINE: Duration = Duration::from_secs(5);
 
 #[cfg(unix)]
-pub(crate) use zterm_client::framing::{FirstFrame, read_first};
+pub(crate) use voytty_client::framing::{FirstFrame, read_first};
 
 /// Deadlines consumed by the shared Session stream owner.
 #[cfg(unix)]
@@ -909,12 +909,12 @@ impl SessionWireServer {
         match result {
             Ok(reply) => reply,
             Err(error) => {
-                zterm_diagnostics::record(
-                    zterm_diagnostics::Event::new(zterm_diagnostics::Kind::RequestFailed)
+                voytty_diagnostics::record(
+                    voytty_diagnostics::Event::new(voytty_diagnostics::Kind::RequestFailed)
                         .level(if error.kind() == DomainErrorKind::Cancelled {
-                            zterm_diagnostics::Level::Info
+                            voytty_diagnostics::Level::Info
                         } else {
-                            zterm_diagnostics::Level::Warn
+                            voytty_diagnostics::Level::Warn
                         })
                         .error(error.kind()),
                 );
@@ -1067,7 +1067,7 @@ struct SurfaceOutput {
 impl AttachmentEncoding {
     fn encode(self, bytes: Vec<u8>) -> Result<Vec<u8>, DaemonError> {
         if self.0 {
-            zterm_proto::compress_terminal_frames(bytes).map_err(protocol_error)
+            voytty_proto::compress_terminal_frames(bytes).map_err(protocol_error)
         } else {
             Ok(bytes)
         }
@@ -1475,7 +1475,7 @@ async fn process_attachment_frame(
                             worker.validate_history_controller_until(deadline)
                         })
                         .await?;
-                    let message = zterm_proto::terminal_surface_history_window_frame_message(
+                    let message = voytty_proto::terminal_surface_history_window_frame_message(
                         attachment.attachment_id(),
                         result,
                     );
@@ -1796,7 +1796,7 @@ where
 async fn next_host_effect(
     attachment: &SessionAttachment,
     wake: &mut tokio::sync::watch::Receiver<()>,
-) -> Result<zterm_core::terminal::TerminalHostEffect, DaemonError> {
+) -> Result<voytty_core::terminal::TerminalHostEffect, DaemonError> {
     loop {
         // Observe before take: a coalesced wake never strands pending FIFO entries.
         wake.borrow_and_update();
@@ -1811,25 +1811,25 @@ async fn next_host_effect(
 async fn write_host_effect<Writer>(
     writer: &mut Writer,
     attachment_id: AttachmentId,
-    effect: zterm_core::terminal::TerminalHostEffect,
+    effect: voytty_core::terminal::TerminalHostEffect,
     deadline: Instant,
 ) -> Result<(), DaemonError>
 where
     Writer: AsyncWrite + Unpin,
 {
-    use zterm_core::terminal::TerminalHostEffect;
+    use voytty_core::terminal::TerminalHostEffect;
     let bytes = match effect {
         TerminalHostEffect::ClipboardWrite(write) => encode_message(
             WireKind::TerminalClipboardWrite,
             0,
             0,
-            &zterm_proto::terminal_clipboard_write_message(attachment_id, write),
+            &voytty_proto::terminal_clipboard_write_message(attachment_id, write),
         ),
         TerminalHostEffect::Notification(notification) => encode_message(
             WireKind::TerminalNotification,
             0,
             0,
-            &zterm_proto::terminal_notification_message(attachment_id, notification),
+            &voytty_proto::terminal_notification_message(attachment_id, notification),
         ),
     }
     .map_err(protocol_error)?;
@@ -1948,12 +1948,12 @@ where
         AttachmentUpdate::Delta(_) => None,
     };
     let record_snapshot = |stage| {
-        if zterm_diagnostics::detail_enabled()
+        if voytty_diagnostics::detail_enabled()
             && let Some((revision, size)) = synchronization
         {
-            zterm_diagnostics::record(
-                zterm_diagnostics::Event::new(zterm_diagnostics::Kind::SyncChanged)
-                    .level(zterm_diagnostics::Level::Debug)
+            voytty_diagnostics::record(
+                voytty_diagnostics::Event::new(voytty_diagnostics::Kind::SyncChanged)
+                    .level(voytty_diagnostics::Level::Debug)
                     .session(attachment.session_id())
                     .attachment(attachment.attachment_id())
                     .stage(stage)
@@ -1962,7 +1962,7 @@ where
             );
         }
     };
-    record_snapshot(zterm_diagnostics::Stage::Snapshot);
+    record_snapshot(voytty_diagnostics::Stage::Snapshot);
     let frame_sequence = output.frames.next_sequence();
     let (bytes, operation) = match update {
         AttachmentUpdate::Delta(delta) => {
@@ -1998,7 +1998,7 @@ where
     )
     .await?;
     // This observes stream flushing, not remote snapshot application.
-    record_snapshot(zterm_diagnostics::Stage::SnapshotSent);
+    record_snapshot(voytty_diagnostics::Stage::SnapshotSent);
     Ok(())
 }
 
@@ -2042,7 +2042,7 @@ fn encode_snapshot(
     frame_sequence: u64,
 ) -> Result<Vec<u8>, DaemonError> {
     let mut message =
-        zterm_proto::terminal_surface_snapshot_message(session_id, attachment_id, snapshot);
+        voytty_proto::terminal_surface_snapshot_message(session_id, attachment_id, snapshot);
     message.frame_sequence = frame_sequence;
     encode_message(WireKind::TerminalSemanticSnapshot, request_id, 0, &message)
         .map_err(protocol_error)
@@ -2055,7 +2055,7 @@ fn encode_delta(
     delta: TerminalSurfaceDelta,
     frame_sequence: u64,
 ) -> Result<Vec<u8>, DaemonError> {
-    let mut message = zterm_proto::terminal_surface_delta_message(attachment_id, delta);
+    let mut message = voytty_proto::terminal_surface_delta_message(attachment_id, delta);
     message.frame_sequence = frame_sequence;
     encode_message(WireKind::TerminalSemanticDelta, request_id, 0, &message).map_err(protocol_error)
 }
@@ -2140,23 +2140,23 @@ fn require_attachment_id(
 #[cfg(unix)]
 fn session_ended_message(
     attachment: &SessionAttachment,
-    reason: zterm_core::SessionEndReason,
+    reason: voytty_core::SessionEndReason,
 ) -> v2::TerminalSessionEnded {
     let (reason, exit_code, signal) = match reason {
-        zterm_core::SessionEndReason::NaturalExit { exit_code, signal } => (
+        voytty_core::SessionEndReason::NaturalExit { exit_code, signal } => (
             v2::TerminalSessionEndReason::NaturalExit,
             exit_code,
             signal.unwrap_or_default(),
         ),
-        zterm_core::SessionEndReason::ExplicitClose => (
+        voytty_core::SessionEndReason::ExplicitClose => (
             v2::TerminalSessionEndReason::ExplicitClose,
             0,
             String::new(),
         ),
-        zterm_core::SessionEndReason::DaemonStop => {
+        voytty_core::SessionEndReason::DaemonStop => {
             (v2::TerminalSessionEndReason::DaemonStop, 0, String::new())
         }
-        zterm_core::SessionEndReason::DriverFailure => (
+        voytty_core::SessionEndReason::DriverFailure => (
             v2::TerminalSessionEndReason::DriverFailure,
             0,
             String::new(),
@@ -2314,13 +2314,13 @@ mod tests {
 
     use tokio::io::DuplexStream;
     use tokio::sync::{Notify, mpsc as tokio_mpsc};
-    use zterm_core::terminal::TerminalSize;
-    use zterm_core::{
+    use voytty_core::terminal::TerminalSize;
+    use voytty_core::{
         AuthorizationSnapshot, AuthorizationStatus, DeviceDisplayName, DeviceSummary,
         OperationLease,
     };
-    use zterm_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
-    use zterm_platform::user_state::UserPaths;
+    use voytty_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
+    use voytty_platform::user_state::UserPaths;
 
     use super::*;
     use crate::bootstrap::bootstrap;
@@ -2574,7 +2574,7 @@ mod tests {
             let paths = UserPaths::for_test(
                 nix::unistd::Uid::effective().as_raw(),
                 home.clone(),
-                home.join(".zterm"),
+                home.join(".voytty"),
                 temporary.path().join("run"),
             );
             let requested =
@@ -2894,7 +2894,7 @@ mod tests {
         v2::TerminalAttachRequest {
             accept_zlib_frames: false,
             acknowledge_surface_frames: false,
-            base_colors: Some(zterm_core::terminal::TerminalColorProfile::default().into()),
+            base_colors: Some(voytty_core::terminal::TerminalColorProfile::default().into()),
 
             target: Some(remote_target(own)),
             session_id: Some(session_id.into()),
@@ -2947,7 +2947,7 @@ mod tests {
                         .decode_message(WireKind::TerminalSemanticSnapshot)
                         .expect("decode semantic resynchronization snapshot");
                     let (_, snapshot_attachment, snapshot) =
-                        zterm_proto::terminal_surface_snapshot_from_message(snapshot)
+                        voytty_proto::terminal_surface_snapshot_from_message(snapshot)
                             .expect("validate semantic resynchronization snapshot");
                     assert_eq!(snapshot_attachment, attachment_id);
                     assert_eq!(
@@ -3083,7 +3083,7 @@ mod tests {
                         .arg(
                             "while [ ! -f \"$1\" ]; do sleep 0.01; done; printf 'resume-delta\\r\\n'; exec \"$2\"",
                         )
-                        .arg("zterm-checkpoint-fixture")
+                        .arg("voytty-checkpoint-fixture")
                         .arg(&output_marker)
                         .arg(&cat),
                     PtySize::new(size.rows, size.columns),
@@ -3236,9 +3236,9 @@ mod tests {
     #[tokio::test]
     async fn host_clipboard_effect_uses_zero_request_id_and_typed_kind() {
         let attachment_id = AttachmentId::from_array([0x5a; AttachmentId::LENGTH]);
-        let write = zterm_core::terminal::TerminalClipboardWrite::new("wire clipboard".to_owned())
+        let write = voytty_core::terminal::TerminalClipboardWrite::new("wire clipboard".to_owned())
             .expect("valid wire clipboard fixture");
-        let effect = zterm_core::terminal::TerminalHostEffect::ClipboardWrite(write);
+        let effect = voytty_core::terminal::TerminalHostEffect::ClipboardWrite(write);
         let (mut reader, mut writer) = tokio::io::duplex(1024 * 1024);
         write_host_effect(
             &mut writer,
@@ -3261,7 +3261,7 @@ mod tests {
         let message: v2::TerminalClipboardWrite = frame
             .decode_message(WireKind::TerminalClipboardWrite)
             .expect("decode host clipboard effect");
-        let (actual_id, write) = zterm_proto::terminal_clipboard_write_from_message(message)
+        let (actual_id, write) = voytty_proto::terminal_clipboard_write_from_message(message)
             .expect("validate host clipboard effect");
         assert_eq!(actual_id, attachment_id);
         assert_eq!(write.as_str(), "wire clipboard");
@@ -3291,8 +3291,8 @@ mod tests {
         let summary = sessions
             .create(
                 principal,
-                zterm_core::OperationId { lease, sequence: 1 },
-                zterm_core::SessionName::new("marked-history").expect("name"),
+                voytty_core::OperationId { lease, sequence: 1 },
+                voytty_core::SessionName::new("marked-history").expect("name"),
                 None,
                 None,
             )
@@ -3300,7 +3300,7 @@ mod tests {
         let prepared = sessions
             .prepare_attach(
                 principal,
-                Some(zterm_core::SessionSelector::Id(summary.session_id)),
+                Some(voytty_core::SessionSelector::Id(summary.session_id)),
                 false,
                 false,
                 None,
@@ -3403,9 +3403,10 @@ mod tests {
         let message = frame
             .decode_message(WireKind::TerminalSemanticHistoryWindowFrame)
             .expect("history frame");
-        let (_, result) = zterm_proto::terminal_surface_history_window_from_message(message, query)
-            .expect("valid history");
-        let zterm_core::terminal::TerminalSurfaceHistoryWindowResult::Frame(frame) = result else {
+        let (_, result) =
+            voytty_proto::terminal_surface_history_window_from_message(message, query)
+                .expect("valid history");
+        let voytty_core::terminal::TerminalSurfaceHistoryWindowResult::Frame(frame) = result else {
             panic!("unchanged history epoch");
         };
         let text: String = frame
@@ -3474,8 +3475,8 @@ mod tests {
         )));
         let mut peer = TestRemotePeer::new(peer);
         for columns in 90..98 {
-            let first_size = zterm_core::terminal::TerminalSize::new(31, columns);
-            let latest_size = zterm_core::terminal::TerminalSize::new(32, columns + 10);
+            let first_size = voytty_core::terminal::TerminalSize::new(31, columns);
+            let latest_size = voytty_core::terminal::TerminalSize::new(32, columns + 10);
             attachment.resize(first_size).expect("first resize");
             // Any old output delta is allowed before the ordered sync marker.
             while peer.next().await.kind != WireKind::TerminalSyncRequired {}
@@ -3487,8 +3488,9 @@ mod tests {
             let message = frame
                 .decode_message::<v2::TerminalSemanticSnapshot>(WireKind::TerminalSemanticSnapshot)
                 .expect("snapshot after sync marker");
-            let (session, id, first) = zterm_proto::terminal_surface_snapshot_from_message(message)
-                .expect("first valid snapshot");
+            let (session, id, first) =
+                voytty_proto::terminal_surface_snapshot_from_message(message)
+                    .expect("first valid snapshot");
             assert_eq!(session, attachment.session_id());
             assert_eq!(id, attachment.attachment_id());
             assert_eq!(first.surface.size, first_size);
@@ -3500,7 +3502,7 @@ mod tests {
             let message = frame
                 .decode_message::<v2::TerminalSemanticSnapshot>(WireKind::TerminalSemanticSnapshot)
                 .expect("latest viewport snapshot");
-            let (_, _, latest) = zterm_proto::terminal_surface_snapshot_from_message(message)
+            let (_, _, latest) = voytty_proto::terminal_surface_snapshot_from_message(message)
                 .expect("latest valid snapshot");
             assert_eq!(latest.surface.size, latest_size);
             assert!(latest.revision > first.revision);
@@ -3529,7 +3531,7 @@ mod tests {
 
     #[tokio::test]
     async fn takeover_reply_cannot_overtake_its_required_color_snapshot() {
-        use zterm_core::terminal::{COLOR_BACKGROUND, TerminalColorProfile, TerminalColorValue};
+        use voytty_core::terminal::{COLOR_BACKGROUND, TerminalColorProfile, TerminalColorValue};
 
         let temporary = tempfile::tempdir().expect("takeover fixture");
         let sessions = unix_wire_service(device(0xc7), temporary.path().to_path_buf());
@@ -3601,7 +3603,7 @@ mod tests {
         let snapshot = frame
             .decode_message::<v2::TerminalSemanticSnapshot>(WireKind::TerminalSemanticSnapshot)
             .expect("required color snapshot precedes success");
-        let (_, _, snapshot) = zterm_proto::terminal_surface_snapshot_from_message(snapshot)
+        let (_, _, snapshot) = voytty_proto::terminal_surface_snapshot_from_message(snapshot)
             .expect("valid replacement");
         assert_eq!(snapshot.surface.colors.profile, colors);
         let response = peer.next().await;
@@ -3866,7 +3868,7 @@ mod tests {
             &v2::TerminalAttachRequest {
                 accept_zlib_frames: false,
                 acknowledge_surface_frames: false,
-                base_colors: Some(zterm_core::terminal::TerminalColorProfile::default().into()),
+                base_colors: Some(voytty_core::terminal::TerminalColorProfile::default().into()),
 
                 target: Some(remote_target(own)),
                 session_id: None,
@@ -4856,7 +4858,7 @@ mod tests {
 
     #[tokio::test]
     async fn authenticated_remote_color_profile_reaches_initial_snapshot_and_live_delta() {
-        use zterm_core::terminal::{COLOR_BACKGROUND, TerminalColorProfile, TerminalColorValue};
+        use voytty_core::terminal::{COLOR_BACKGROUND, TerminalColorProfile, TerminalColorValue};
         let temporary = tempfile::tempdir().expect("remote color fixture");
         let own = device(0xd1);
         let remote = device(0xd2);
@@ -4894,7 +4896,7 @@ mod tests {
                 .decode_message(WireKind::TerminalSemanticSnapshot)
                 .expect("remote snapshot DTO");
             let (_, attachment, snapshot) =
-                zterm_proto::terminal_surface_snapshot_from_message(message)
+                voytty_proto::terminal_surface_snapshot_from_message(message)
                     .expect("remote snapshot");
             assert_eq!(snapshot.surface.colors.profile, profile);
             break (attachment, snapshot.revision);
@@ -4917,7 +4919,7 @@ mod tests {
             .decode_message(WireKind::TerminalSemanticDelta)
             .expect("remote color delta DTO");
         let (_, delta) =
-            zterm_proto::terminal_surface_delta_from_message(message).expect("remote color delta");
+            voytty_proto::terminal_surface_delta_from_message(message).expect("remote color delta");
         assert!(delta.row_patches.is_empty());
         assert_eq!(delta.colors.profile, profile);
         peer.send(
@@ -5042,7 +5044,7 @@ mod tests {
                 .decode_message(WireKind::TerminalSemanticSnapshot)
                 .expect("snapshot");
             let (session_id, _, snapshot) =
-                zterm_proto::terminal_surface_snapshot_from_message(message)
+                voytty_proto::terminal_surface_snapshot_from_message(message)
                     .expect("validated surface");
             assert_eq!(session_id, summary.session_id);
             assert_eq!(snapshot.surface.size, summary.viewport);
@@ -5149,7 +5151,7 @@ mod tests {
             .await;
         let initial = peer.next().await;
         assert_eq!(initial.kind, WireKind::TerminalSemanticSnapshot);
-        let (_, attachment_id, initial) = zterm_proto::terminal_surface_snapshot_from_message(
+        let (_, attachment_id, initial) = voytty_proto::terminal_surface_snapshot_from_message(
             initial
                 .decode_message(WireKind::TerminalSemanticSnapshot)
                 .expect("initial snapshot"),
@@ -5245,7 +5247,7 @@ mod tests {
                         .expect("surface snapshot");
                     let frame_sequence = message.frame_sequence;
                     let (_, _, snapshot) =
-                        zterm_proto::terminal_surface_snapshot_from_message(message)
+                        voytty_proto::terminal_surface_snapshot_from_message(message)
                             .expect("validated surface snapshot");
                     (frame_sequence, Some(snapshot.surface.size))
                 }

@@ -5,12 +5,12 @@
 mod support;
 
 #[cfg(unix)]
-use zterm_core::{AttachmentPrincipal, DeviceId};
+use voytty_core::{AttachmentPrincipal, DeviceId};
 
 #[cfg(unix)]
 #[test]
 fn remote_detach_releases_only_matching_attachments_across_sessions() -> Result<(), String> {
-    use zterm_core::{DomainErrorKind, ResourceLimits, SessionSelector};
+    use voytty_core::{DomainErrorKind, ResourceLimits, SessionSelector};
 
     let fixture = support::Fixture::new(ResourceLimits::default())?;
     let a = fixture.create(1, "a").map_err(support::display)?;
@@ -95,7 +95,7 @@ fn remote_detach_releases_only_matching_attachments_across_sessions() -> Result<
 #[cfg(unix)]
 #[test]
 fn remote_detach_is_idempotent_and_ignores_gone_sessions() -> Result<(), String> {
-    use zterm_core::{ResourceLimits, SessionSelector};
+    use voytty_core::{ResourceLimits, SessionSelector};
 
     let fixture = support::Fixture::new(ResourceLimits::default())?;
     let a = fixture.create(1, "a").map_err(support::display)?;
@@ -169,7 +169,7 @@ fn remote_detach_is_idempotent_and_ignores_gone_sessions() -> Result<(), String>
 #[test]
 fn takeover_requires_the_preparing_principal_and_stale_effects_are_rejected() -> Result<(), String>
 {
-    use zterm_core::{DomainErrorKind, OperationId, ResourceLimits, SessionSelector};
+    use voytty_core::{DomainErrorKind, OperationId, ResourceLimits, SessionSelector};
 
     let fixture = support::Fixture::new(ResourceLimits::default())?;
     let a = fixture.create(1, "a").map_err(support::display)?;

@@ -143,7 +143,7 @@ ci-noq:
 
 # Endpoint lifecycle and socket-free cold-relay queue expiry regressions.
 ci-iroh:
-    cargo +1.98.0 test --locked --manifest-path vendor/iroh/Cargo.toml --target-dir target/iroh-tests --no-default-features --features tls-ring,unstable-custom-transports --lib zterm_
+    cargo +1.98.0 test --locked --manifest-path vendor/iroh/Cargo.toml --target-dir target/iroh-tests --no-default-features --features tls-ring,unstable-custom-transports --lib voytty_
 
 # Upstream template/config regressions for the UniFFI parser backport.
 ci-askama:

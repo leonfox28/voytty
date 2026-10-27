@@ -6,35 +6,35 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use unicode_width::UnicodeWidthStr;
-use zeroize::Zeroizing;
-use zterm_core::{AuthorizationStatus, MAX_TICKET_TEXT_BYTES, SessionId};
-use zterm_daemon::bootstrap::BootstrapResult;
-use zterm_daemon::config::{TerminalIdentity, validate_setup_profile};
-use zterm_daemon::error::DaemonError;
-use zterm_daemon::operations::{
+use voytty_core::{AuthorizationStatus, MAX_TICKET_TEXT_BYTES, SessionId};
+use voytty_daemon::bootstrap::BootstrapResult;
+use voytty_daemon::config::{TerminalIdentity, validate_setup_profile};
+use voytty_daemon::error::DaemonError;
+use voytty_daemon::operations::{
     CommandDeviceSummary, CommandSessionSummary, LifecycleStage, LocalRuntime, ObservedState,
 };
-use zterm_daemon::pairing::PairTicketText;
-use zterm_daemon::service::{DaemonStatus, SessionImpact};
+use voytty_daemon::pairing::PairTicketText;
+use voytty_daemon::service::{DaemonStatus, SessionImpact};
+use zeroize::Zeroizing;
 
 mod pair_qr;
 mod terminal_ui;
 
 pub use terminal_ui::run_terminal;
 
-const SETUP_GUIDANCE: &str = "zterm is not configured. Run `zterm setup` first.\n";
+const SETUP_GUIDANCE: &str = "voytty is not configured. Run `voytty setup` first.\n";
 
-/// zterm's public command tree plus one hidden daemon entry flag.
+/// voytty's public command tree plus one hidden daemon entry flag.
 #[derive(Parser)]
 #[command(
-    name = "zterm",
+    name = "voytty",
     version,
     about = "Secure persistent terminal sessions across trusted devices",
     disable_help_subcommand = true,
     args_conflicts_with_subcommands = true
 )]
 pub struct Cli {
-    /// Show project licenses and the conditional commercial-use grant without starting zterm.
+    /// Show project licenses and the conditional commercial-use grant without starting voytty.
     #[arg(long, conflicts_with_all = ["internal_daemon", "internal_daemon_foreground", "internal_handoff", "internal_release_self_check", "internal_release_verify", "internal_release_install"])]
     license: bool,
     /// Internal detached daemon entry; never accepted as a state-path override.
@@ -604,10 +604,10 @@ impl fmt::Display for CliError {
                 selector,
                 source,
             } => {
-                if source.kind() == zterm_core::DomainErrorKind::SessionNotFound {
+                if source.kind() == voytty_core::DomainErrorKind::SessionNotFound {
                     write!(
                         formatter,
-                        "Session '{selector}' was not found on {target}.\nRun: zterm session list --target={}",
+                        "Session '{selector}' was not found on {target}.\nRun: voytty session list --target={}",
                         shell_quote(target)
                     )
                 } else {
@@ -806,11 +806,11 @@ async fn pair(
 ) -> Result<CommandOutcome, CliError> {
     match command {
         PairCommand::Create => {
-            let ttl = u32::try_from(zterm_core::DEFAULT_PAIR_TTL_SECONDS)
+            let ttl = u32::try_from(voytty_core::DEFAULT_PAIR_TTL_SECONDS)
                 .expect("default TTL fits wire field");
             let ticket = runtime.pair_create(ttl).await?;
             eprintln!(
-                "Ticket expires in {ttl} seconds. On the connecting device, run zterm pair accept and paste this ticket."
+                "Ticket expires in {ttl} seconds. On the connecting device, run voytty pair accept and paste this ticket."
             );
             let (output, fallback) = pair_qr::present(ticket.expose(), pair_qr::stdout_width());
             if let Some(error) = fallback {
@@ -833,7 +833,7 @@ async fn pair(
                 .clone()
                 .unwrap_or_else(|| device.device_id.to_string());
             Ok(CommandOutcome::Text(format!(
-                "Paired as {alias}. This device can now connect to that host.\nConnect with: zterm connect {}\n",
+                "Paired as {alias}. This device can now connect to that host.\nConnect with: voytty connect {}\n",
                 connect_target(&alias)
             )))
         }
@@ -984,7 +984,7 @@ async fn reset(
     let preflight = runtime.identity_reset_preflight().await?;
     if !preflight.state_present {
         return Ok(CommandOutcome::Text(
-            "Managed identity state is already absent. Run `zterm setup` to configure zterm.\n"
+            "Managed identity state is already absent. Run `voytty setup` to configure voytty.\n"
                 .to_owned(),
         ));
     }
@@ -994,7 +994,7 @@ async fn reset(
         .unwrap_or("incomplete identity state");
     confirm(
         &format!(
-            "Reset this device: local\nDevice ID: {public_identity}\n\n{}Remove local identity, configuration and pairing data. End all running sessions. Keep the zterm executable.",
+            "Reset this device: local\nDevice ID: {public_identity}\n\n{}Remove local identity, configuration and pairing data. End all running sessions. Keep the voytty executable.",
             session_impact_text(&preflight.active_session_names)
         ),
         arguments.yes,
@@ -1002,9 +1002,9 @@ async fn reset(
     )?;
     let result = runtime.reset_identity(preflight.device_id, true).await?;
     Ok(CommandOutcome::Text(if result.removed {
-        "Managed identity state removed. Run `zterm setup` to create a new identity.\n".to_owned()
+        "Managed identity state removed. Run `voytty setup` to create a new identity.\n".to_owned()
     } else {
-        "Managed identity state is already absent. Run `zterm setup` to configure zterm.\n"
+        "Managed identity state is already absent. Run `voytty setup` to configure voytty.\n"
             .to_owned()
     }))
 }
@@ -1021,14 +1021,14 @@ async fn update(
             |impact| {
                 confirm(
                     &format!(
-                        "Updating zterm will end these sessions:\n  {}",
+                        "Updating voytty will end these sessions:\n  {}",
                         impact.active_session_names.join("\n  ")
                     ),
                     false,
                     interaction,
                 )
                 .map_err(|error| {
-                    DaemonError::new(zterm_core::DomainErrorKind::Cancelled, error.to_string())
+                    DaemonError::new(voytty_core::DomainErrorKind::Cancelled, error.to_string())
                 })
             },
             report_lifecycle_stage,
@@ -1037,7 +1037,7 @@ async fn update(
     let startup = if result.daemon_started {
         " Daemon running.\n"
     } else {
-        "\nRun zterm setup to configure and start the daemon.\n"
+        "\nRun voytty setup to configure and start the daemon.\n"
     };
     let ended = if result.ended_session_names.is_empty() {
         String::new()
@@ -1048,7 +1048,7 @@ async fn update(
         )
     };
     Ok(CommandOutcome::Text(format!(
-        "Updated zterm {} -> {}.{startup}{ended}",
+        "Updated voytty {} -> {}.{startup}{ended}",
         result.previous_version, result.installed_version
     )))
 }
@@ -1057,7 +1057,7 @@ async fn update(
 fn report_lifecycle_stage(stage: LifecycleStage) {
     let line = match stage {
         LifecycleStage::Preparing => "Downloading update...".to_owned(),
-        LifecycleStage::Verified { version } => format!("Verified zterm {version}."),
+        LifecycleStage::Verified { version } => format!("Verified voytty {version}."),
         LifecycleStage::Continuing => return,
         LifecycleStage::Stopping => "Stopping daemon...".to_owned(),
         LifecycleStage::Activating => "Installing update...".to_owned(),
@@ -1079,7 +1079,7 @@ async fn uninstall(
         .unwrap_or("no committed identity");
     confirm(
         &format!(
-            "{}Uninstall zterm {}\nDevice ID: {}\n\nRemove local identity, configuration, pairing data and the zterm executable. End all running sessions. Devices must be paired again after reinstall.",
+            "{}Uninstall voytty {}\nDevice ID: {}\n\nRemove local identity, configuration, pairing data and the voytty executable. End all running sessions. Devices must be paired again after reinstall.",
             session_impact_text(&preflight.identity.active_session_names),
             preflight.version,
             identity
@@ -1091,7 +1091,7 @@ async fn uninstall(
         .uninstall(preflight.identity.device_id, true)
         .await?;
     Ok(CommandOutcome::Text(format!(
-        "Uninstalled zterm. Managed state removed: {}. Executable removed: {}.\n",
+        "Uninstalled voytty. Managed state removed: {}. Executable removed: {}.\n",
         result.state_removed, result.executable_removed
     )))
 }
@@ -1279,7 +1279,7 @@ fn confirm_with(
         Ok(())
     } else {
         Err(CliError::Daemon(DaemonError::new(
-            zterm_core::DomainErrorKind::Cancelled,
+            voytty_core::DomainErrorKind::Cancelled,
             "Confirmation cancelled.",
         )))
     }
@@ -1308,7 +1308,7 @@ fn confirm_sessions(
         false,
         interaction,
     )
-    .map_err(|error| DaemonError::new(zterm_core::DomainErrorKind::Cancelled, error.to_string()))
+    .map_err(|error| DaemonError::new(voytty_core::DomainErrorKind::Cancelled, error.to_string()))
 }
 
 fn shell_quote(value: &str) -> String {
@@ -1346,7 +1346,7 @@ fn authorization_status(status: AuthorizationStatus) -> &'static str {
 
 fn render_devices(devices: Vec<CommandDeviceSummary>) -> String {
     if devices.is_empty() {
-        return "No paired devices. Run zterm pair create to allow another device to connect, or zterm pair accept to connect to a host.\n".to_owned();
+        return "No paired devices. Run voytty pair create to allow another device to connect, or voytty pair accept to connect to a host.\n".to_owned();
     }
     fn name(device: &CommandDeviceSummary) -> &str {
         device
@@ -1390,7 +1390,7 @@ fn render_devices(devices: Vec<CommandDeviceSummary>) -> String {
 fn render_sessions(sessions: Vec<CommandSessionSummary>, target: &str) -> String {
     if sessions.is_empty() {
         return format!(
-            "Target: {target}\n\nNo running sessions. Run zterm connect {} to start the main session.\n",
+            "Target: {target}\n\nNo running sessions. Run voytty connect {} to start the main session.\n",
             connect_target(target)
         );
     }
@@ -1610,13 +1610,13 @@ async fn restart(
         )
         .await?;
     Ok(format!(
-        "Daemon ready (zterm {}, wire {}).\n",
+        "Daemon ready (voytty {}, wire {}).\n",
         readiness.version, readiness.protocol.wire_major
     ))
 }
 
 fn logs(runtime: &LocalRuntime, arguments: LogsArgs) -> Result<String, CliError> {
-    use zterm_diagnostics::{Filter, Level};
+    use voytty_diagnostics::{Filter, Level};
     match arguments.command {
         Some(LogsCommand::Debug { action }) => {
             let enabled = match action.as_str() {
@@ -1626,7 +1626,7 @@ fn logs(runtime: &LocalRuntime, arguments: LogsArgs) -> Result<String, CliError>
             };
             let (control, pending) = runtime.log_control(enabled)?;
             let remaining = control
-                .remaining_ms(zterm_diagnostics::now_ms())
+                .remaining_ms(voytty_diagnostics::now_ms())
                 .div_ceil(1000);
             let mut output = if remaining > 0 {
                 format!("Detailed diagnostics: ON ({remaining}s remaining).\n")
@@ -1656,7 +1656,7 @@ fn logs(runtime: &LocalRuntime, arguments: LogsArgs) -> Result<String, CliError>
         .since
         .as_deref()
         .map(|value| {
-            zterm_diagnostics::since(value).ok_or_else(|| {
+            voytty_diagnostics::since(value).ok_or_else(|| {
                 CliError::Usage("--since requires a positive duration with s, m, h or d.".into())
             })
         })
@@ -1767,7 +1767,7 @@ impl StatusView {
             ObservedState::ConfiguredStopped(setup) => Self {
                 state: "configured_stopped",
                 version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-                phase: Some(zterm_core::PHASE_NAME.to_owned()),
+                phase: Some(voytty_core::PHASE_NAME.to_owned()),
                 endpoint_id: Some(setup.endpoint_id),
                 device_name: Some(setup.config.device_name),
                 infrastructure_profile: Some(setup.config.infrastructure.profile_name().to_owned()),
@@ -1789,7 +1789,7 @@ impl StatusView {
             ObservedState::NotConfigured => Self {
                 state: "not_configured",
                 version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-                phase: Some(zterm_core::PHASE_NAME.to_owned()),
+                phase: Some(voytty_core::PHASE_NAME.to_owned()),
                 endpoint_id: None,
                 device_name: None,
                 infrastructure_profile: None,
@@ -1903,13 +1903,13 @@ impl StatusView {
 
 #[cfg(test)]
 mod tests {
-    use zterm_core::terminal::TerminalSize;
-    use zterm_core::{AuthGeneration, DeviceId, Revision, SessionName};
-    use zterm_daemon::network::{
+    use voytty_core::terminal::TerminalSize;
+    use voytty_core::{AuthGeneration, DeviceId, Revision, SessionName};
+    use voytty_daemon::network::{
         AddressServiceState, NetworkDiagnostic, NetworkObservation, NetworkState,
     };
-    use zterm_daemon::service::ProtocolStatus;
-    use zterm_daemon::session::SessionSummary as DaemonSessionSummary;
+    use voytty_daemon::service::ProtocolStatus;
+    use voytty_daemon::session::SessionSummary as DaemonSessionSummary;
 
     use super::*;
 
@@ -1928,9 +1928,9 @@ mod tests {
         let device_id = DeviceId::from_array([0x63; 32]);
         let view = StatusView::from_observed(ObservedState::Running(DaemonStatus {
             protocol: ProtocolStatus {
-                wire_major: zterm_core::WIRE_MAJOR,
+                wire_major: voytty_core::WIRE_MAJOR,
                 state_schema: 1,
-                capabilities: zterm_core::Capabilities::LOCAL_LIFECYCLE,
+                capabilities: voytty_core::Capabilities::LOCAL_LIFECYCLE,
             },
             version: "test".to_owned(),
             phase: "test".to_owned(),
@@ -2020,8 +2020,8 @@ mod tests {
         assert_eq!(shell_quote("team's host"), "'team'\"'\"'s host'");
         assert_eq!(connect_target("-host"), "-- -host");
         assert_eq!(padded("开发", 6), "开发  ");
-        assert!(render_sessions(Vec::new(), "local").contains("zterm connect local"));
-        assert!(render_devices(Vec::new()).contains("zterm pair"));
+        assert!(render_sessions(Vec::new(), "local").contains("voytty connect local"));
+        assert!(render_devices(Vec::new()).contains("voytty pair"));
     }
 
     #[test]
@@ -2076,14 +2076,14 @@ mod tests {
     #[test]
     fn independent_lifecycle_owner_is_hidden_and_exclusive() {
         use clap::CommandFactory;
-        let parsed =
-            Cli::try_parse_from(["zterm", "--internal-handoff"]).expect("internal lifecycle owner");
+        let parsed = Cli::try_parse_from(["voytty", "--internal-handoff"])
+            .expect("internal lifecycle owner");
         assert!(parsed.internal_handoff() && parsed.has_internal_entry());
         for args in [
-            vec!["zterm", "--internal-handoff", "status"],
-            vec!["zterm", "--internal-handoff", "--internal-daemon"],
+            vec!["voytty", "--internal-handoff", "status"],
+            vec!["voytty", "--internal-handoff", "--internal-daemon"],
             vec![
-                "zterm",
+                "voytty",
                 "--internal-handoff",
                 "--internal-release-self-check",
             ],
@@ -2100,19 +2100,19 @@ mod tests {
 
     #[test]
     fn license_display_cannot_be_combined_with_runtime_operations() {
-        let parsed = Cli::try_parse_from(["zterm", "--license"]).expect("license display");
+        let parsed = Cli::try_parse_from(["voytty", "--license"]).expect("license display");
         let text = parsed.license_text().expect("license text");
         assert!(text.contains("Required Notice: Copyright 2026 Leon"));
         assert!(text.contains("# PolyForm Noncommercial License 1.0.0"));
-        assert!(text.contains("# zterm Commercial Use License"));
-        assert!(Cli::try_parse_from(["zterm", "--license", "setup"]).is_err());
+        assert!(text.contains("# voytty Commercial Use License"));
+        assert!(Cli::try_parse_from(["voytty", "--license", "setup"]).is_err());
         for entry in [
             "--internal-daemon",
             "--internal-daemon-foreground",
             "--internal-handoff",
             "--internal-release-self-check",
         ] {
-            assert!(Cli::try_parse_from(["zterm", "--license", entry]).is_err());
+            assert!(Cli::try_parse_from(["voytty", "--license", entry]).is_err());
         }
     }
 
@@ -2132,7 +2132,7 @@ mod tests {
             vec!["pair", "accept", "--name", "host"],
             vec!["logs", "-f"],
         ] {
-            assert!(Cli::try_parse_from(std::iter::once("zterm").chain(args)).is_err());
+            assert!(Cli::try_parse_from(std::iter::once("voytty").chain(args)).is_err());
         }
         for args in [
             vec!["daemon", "stop", "-y"],
@@ -2146,7 +2146,7 @@ mod tests {
             vec!["logs", "-n", "20"],
             vec!["session", "list"],
         ] {
-            assert!(Cli::try_parse_from(std::iter::once("zterm").chain(args)).is_ok());
+            assert!(Cli::try_parse_from(std::iter::once("voytty").chain(args)).is_ok());
         }
     }
 
@@ -2165,10 +2165,10 @@ mod tests {
             vec!["pair", "create", "--qr"],
             vec!["pair", "create", "--qr-image", "new.png"],
         ] {
-            assert!(Cli::try_parse_from(std::iter::once("zterm").chain(args)).is_err());
+            assert!(Cli::try_parse_from(std::iter::once("voytty").chain(args)).is_err());
         }
-        assert!(Cli::try_parse_from(["zterm", "pair", "create"]).is_ok());
-        let help = Cli::try_parse_from(["zterm", "pair", "create", "--help"]).expect_err("help");
+        assert!(Cli::try_parse_from(["voytty", "pair", "create"]).is_ok());
+        let help = Cli::try_parse_from(["voytty", "pair", "create", "--help"]).expect_err("help");
         assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
     }
 
@@ -2181,7 +2181,7 @@ mod tests {
                 vec!["rename", "work", "new-name"],
                 vec!["close", "work"],
             ] {
-                let mut argv = vec!["zterm", "session"];
+                let mut argv = vec!["voytty", "session"];
                 argv.extend(tail);
                 if let Some(target) = target {
                     argv.extend(["--target", target]);
@@ -2223,7 +2223,7 @@ mod tests {
                 Some("work"),
                 Some("7474747474747474747474747474747474"),
             ] {
-                let mut argv = vec!["zterm", "connect", target];
+                let mut argv = vec!["voytty", "connect", target];
                 if let Some(selector) = selector {
                     argv.extend(["--session", selector]);
                 }
@@ -2252,7 +2252,7 @@ mod tests {
                 assert!(!takeover);
             }
         }
-        let cli = Cli::try_parse_from(["zterm", "connect"]).expect("default connect");
+        let cli = Cli::try_parse_from(["voytty", "connect"]).expect("default connect");
         let Some(Command::Connect(args)) = cli.command else {
             panic!("connect")
         };
@@ -2262,7 +2262,7 @@ mod tests {
 
     #[test]
     fn session_error_context_keeps_typed_failures_and_quotes_hints() {
-        use zterm_core::DomainErrorKind;
+        use voytty_core::DomainErrorKind;
         let missing = CliError::Daemon(DaemonError::new(
             DomainErrorKind::SessionNotFound,
             "missing",
@@ -2270,7 +2270,7 @@ mod tests {
         .with_session("team's host".into(), "work".into());
         assert_eq!(
             missing.to_string(),
-            "Session 'work' was not found on team's host.\nRun: zterm session list --target='team'\"'\"'s host'"
+            "Session 'work' was not found on team's host.\nRun: voytty session list --target='team'\"'\"'s host'"
         );
         assert!(!format!("{missing:?}").contains("team"));
         let unknown = CliError::Daemon(DaemonError::new(
@@ -2285,9 +2285,9 @@ mod tests {
     #[test]
     fn removed_escape_option_is_rejected_on_all_terminal_entry_points() {
         for command in [
-            vec!["zterm", "connect", "local"],
-            vec!["zterm", "session", "create", "test"],
-            vec!["zterm", "connect", "--session", "main"],
+            vec!["voytty", "connect", "local"],
+            vec!["voytty", "session", "create", "test"],
+            vec!["voytty", "connect", "--session", "main"],
         ] {
             assert!(Cli::try_parse_from(command.clone()).is_ok());
             for value in ["none", "ctrl-]", "ctrl-a"] {
@@ -2394,7 +2394,7 @@ mod tests {
         let relay_sentinel = "https://CLI_DEBUG_ROUTE_SENTINEL_5f7a.example.test/private";
         let cwd_sentinel = "/private/tmp/CLI_DEBUG_CWD_SENTINEL_b145/project";
         let setup = Cli::try_parse_from([
-            "zterm",
+            "voytty",
             "setup",
             "--name",
             "setup-debug-host",
@@ -2405,7 +2405,7 @@ mod tests {
         ])
         .expect("setup command parses");
         let session = Cli::try_parse_from([
-            "zterm",
+            "voytty",
             "session",
             "create",
             "cli-debug-session",
@@ -2430,7 +2430,7 @@ mod tests {
             .expect_err("implicit piped input is rejected without reading");
         assert!(no_tty.to_string().contains("--stdin"));
 
-        let secret = b"private-invalid-zterm-ticket";
+        let secret = b"private-invalid-voytty-ticket";
         let error = pair_ticket_from_bytes(secret).expect_err("invalid ticket rejected");
         assert!(!error.to_string().contains("private-invalid"));
         assert!(!format!("{error:?}").contains("private-invalid"));
@@ -2453,14 +2453,14 @@ mod tests {
 
         const ERROR_SENTINEL: &str = "/private/tmp/CLI_ERROR_SENTINEL_f247";
         let daemon = CliError::Daemon(DaemonError::new(
-            zterm_core::DomainErrorKind::PathUnsafe,
+            voytty_core::DomainErrorKind::PathUnsafe,
             ERROR_SENTINEL,
         ));
         let usage = CliError::Usage(ERROR_SENTINEL.to_owned());
         let io = CliError::Io(ERROR_SENTINEL.to_owned());
         let created = CliError::CreatedSessionAttach {
             session_id: SessionId::from_array([0x91; SessionId::LENGTH]),
-            source: DaemonError::new(zterm_core::DomainErrorKind::PathUnsafe, ERROR_SENTINEL),
+            source: DaemonError::new(voytty_core::DomainErrorKind::PathUnsafe, ERROR_SENTINEL),
         };
         let rendered = format!("{daemon:?} {usage:?} {io:?} {created:?}");
         assert!(!rendered.contains(ERROR_SENTINEL));
@@ -2608,10 +2608,10 @@ mod tests {
 
     #[cfg(unix)]
     fn valid_pair_ticket() -> PairTicketText {
-        use zterm_core::{
+        use voytty_core::{
             DeviceDisplayName, EphemeralOperationId, PairFingerprint, RelayHint, TransportLimits,
         };
-        use zterm_daemon::pairing::{PairOfferRequest, PairingManager};
+        use voytty_daemon::pairing::{PairOfferRequest, PairingManager};
 
         let ttl_seconds = 60;
         let manager = PairingManager::new(

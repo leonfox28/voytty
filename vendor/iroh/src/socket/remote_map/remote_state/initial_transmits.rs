@@ -87,7 +87,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn zterm_initial_fanout_expiry_keeps_original_packet_age() {
+    async fn voytty_initial_fanout_expiry_keeps_original_packet_age() {
         let (sender, _receiver) = TransportsSender::with_bounded_relay(1, std::iter::empty());
         let mut cache = InitialTransmits::default();
         cache.remember(&sender, &packet(1200));
@@ -110,7 +110,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zterm_initial_fanout_bounds_count_and_bytes() {
+    async fn voytty_initial_fanout_bounds_count_and_bytes() {
         let (sender, _receiver) = TransportsSender::with_bounded_relay(1, std::iter::empty());
         let mut cache = InitialTransmits::default();
         for _ in 0..100 {
@@ -129,7 +129,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zterm_initial_fanout_rejects_other_packets_and_checks_each_segment() {
+    async fn voytty_initial_fanout_rejects_other_packets_and_checks_each_segment() {
         let (sender, _receiver) = TransportsSender::with_bounded_relay(1, std::iter::empty());
         let mut cache = InitialTransmits::default();
         for header in [0x40, 0xd0, 0xe0, 0xf0] {

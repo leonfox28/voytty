@@ -7,7 +7,7 @@ use iroh_relay::tls::{CaTlsConfig, default_provider};
 use super::*;
 
 #[tokio::test(start_paused = true)]
-async fn zterm_cold_relay_keeps_recent_datagram_across_cleanup_tick() {
+async fn voytty_cold_relay_keeps_recent_datagram_across_cleanup_tick() {
     let url: RelayUrl = "https://relay.invalid".parse().unwrap();
     let (_prio_tx, prio_rx) = mpsc::channel(8);
     let (_inbox_tx, inbox_rx) = mpsc::channel(8);
@@ -77,7 +77,7 @@ fn packet(data: &'static [u8]) -> RelaySendItem {
 }
 
 #[tokio::test(start_paused = true)]
-async fn zterm_cold_relay_expires_only_old_packets_and_preserves_order() {
+async fn voytty_cold_relay_expires_only_old_packets_and_preserves_order() {
     let (sender, receiver) = mpsc::channel(4);
     let mut queue = PendingDatagrams::from(receiver);
     sender.send(packet(b"expired")).await.unwrap();
@@ -95,7 +95,7 @@ async fn zterm_cold_relay_expires_only_old_packets_and_preserves_order() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn zterm_cold_relay_rechecks_packet_age_after_backoff() {
+async fn voytty_cold_relay_rechecks_packet_age_after_backoff() {
     let (sender, receiver) = mpsc::channel(4);
     let mut queue = PendingDatagrams::from(receiver);
     sender.send(packet(b"formerly recent")).await.unwrap();
@@ -110,7 +110,7 @@ async fn zterm_cold_relay_rechecks_packet_age_after_backoff() {
     assert_eq!(queue.recv_many(&mut retained, 4).await, 0);
 }
 
-// Socket-based integration gate; run on the isolated Linux test VM. The zterm_
+// Socket-based integration gate; run on the isolated Linux test VM. The voytty_
 // filter above remains usable on a Mac that refuses incoming test connections.
 #[tokio::test]
 async fn cold_relay_tls_first_request_survives_slow_relay_connect() {

@@ -1,21 +1,21 @@
 //! Direct and opaque-tunnel byte transport for one attachment epoch.
 use std::{collections::VecDeque, path::Path, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use zeroize::Zeroizing;
-use zterm_client::progress::{LocalProgressDecoder, ProgressObserver};
-use zterm_client::transport::{
+use voytty_client::progress::{LocalProgressDecoder, ProgressObserver};
+use voytty_client::transport::{
     AttachmentConnector, AttachmentIo, AttachmentTransport, AttachmentTransportItem,
     TransportFuture,
 };
-use zterm_client::{
+use voytty_client::{
     error::ClientError as DaemonError,
     framing::FirstFrame,
     model::ResolvedSessionTarget,
     protocol::{attachment_cancelled, malformed, protocol_error, service_error, startup_budget},
 };
-use zterm_core::DomainErrorKind;
-use zterm_core::connection_progress::ConnectionStage;
-use zterm_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
+use voytty_core::DomainErrorKind;
+use voytty_core::connection_progress::ConnectionStage;
+use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
+use zeroize::Zeroizing;
 
 /// Concrete same-UID Session adapter, including opaque remote envelopes.
 #[allow(missing_docs)]
@@ -27,7 +27,7 @@ pub(super) enum UnixAttachmentTransport {
     },
     Tunnel {
         stream: tokio::net::UnixStream,
-        remote_capabilities: zterm_core::Capabilities,
+        remote_capabilities: voytty_core::Capabilities,
         decoder: TunnelDecoder,
     },
 }
@@ -39,11 +39,11 @@ impl UnixAttachmentTransport {
         progress: &ProgressObserver,
     ) -> Result<Self, DaemonError> {
         tokio::time::timeout_at(
-            zterm_client::protocol::startup_deadline(target),
+            voytty_client::protocol::startup_deadline(target),
             Self::open_inner(socket, target, progress),
         )
         .await
-        .map_err(|_| zterm_client::protocol::control_timeout())?
+        .map_err(|_| voytty_client::protocol::control_timeout())?
     }
 
     async fn open_inner(
@@ -72,7 +72,7 @@ impl UnixAttachmentTransport {
             u32::try_from(startup_budget(target).as_millis()).unwrap_or(u32::MAX),
             &v2::LocalSessionTunnelOpenRequest {
                 report_progress: progress.is_active(),
-                protocol_version: zterm_proto::LOCAL_SESSION_TUNNEL_VERSION,
+                protocol_version: voytty_proto::LOCAL_SESSION_TUNNEL_VERSION,
                 target_device_id: Some(target_device_id.into()),
             },
         )
@@ -112,7 +112,7 @@ impl UnixAttachmentTransport {
             .frame
             .decode_message(WireKind::LocalSessionTunnelOpened)
             .map_err(protocol_error)?;
-        if opened.protocol_version != zterm_proto::LOCAL_SESSION_TUNNEL_VERSION {
+        if opened.protocol_version != voytty_proto::LOCAL_SESSION_TUNNEL_VERSION {
             return Err(DaemonError::new(
                 DomainErrorKind::WireMajorMismatch,
                 "remote Session tunnel returned an unsupported protocol version",
@@ -120,7 +120,7 @@ impl UnixAttachmentTransport {
         }
         Ok(Self::Tunnel {
             stream,
-            remote_capabilities: zterm_core::Capabilities::from_bits_retain(
+            remote_capabilities: voytty_core::Capabilities::from_bits_retain(
                 opened.remote_capabilities.unwrap_or_default(),
             ),
             decoder: TunnelDecoder {
@@ -163,7 +163,7 @@ impl UnixAttachmentTransport {
         });
         Self::Tunnel {
             stream,
-            remote_capabilities: zterm_core::Capabilities::default(),
+            remote_capabilities: voytty_core::Capabilities::default(),
             decoder,
         }
     }
@@ -213,7 +213,7 @@ async fn write_tunnel_bytes<W: tokio::io::AsyncWrite + Unpin>(
     stream: &mut W,
     bytes: &[u8],
 ) -> Result<(), DaemonError> {
-    for chunk in bytes.chunks(zterm_proto::MAX_LOCAL_SESSION_TUNNEL_DATA_BYTES) {
+    for chunk in bytes.chunks(voytty_proto::MAX_LOCAL_SESSION_TUNNEL_DATA_BYTES) {
         let envelope = encode_message(
             WireKind::LocalSessionTunnelData,
             0,
@@ -332,7 +332,7 @@ fn validate_tunnel_data(bytes: &[u8]) -> Result<(), DaemonError> {
     if bytes.is_empty() {
         return Err(malformed("remote Session tunnel returned empty Data"));
     }
-    if bytes.len() > zterm_proto::MAX_LOCAL_SESSION_TUNNEL_DATA_BYTES {
+    if bytes.len() > voytty_proto::MAX_LOCAL_SESSION_TUNNEL_DATA_BYTES {
         return Err(DaemonError::new(
             DomainErrorKind::ControlPayloadTooLarge,
             "remote Session tunnel Data exceeds the chunk limit",
@@ -536,11 +536,11 @@ impl AttachmentIo for UnixAttachmentTransport {
     }
 }
 
-impl zterm_client::upload::UploadConnector for UnixAttachmentConnector {
+impl voytty_client::upload::UploadConnector for UnixAttachmentConnector {
     fn open_upload(
         &self,
         target: ResolvedSessionTarget,
-    ) -> TransportFuture<'_, Result<zterm_client::upload::UploadConnection, DaemonError>> {
+    ) -> TransportFuture<'_, Result<voytty_client::upload::UploadConnection, DaemonError>> {
         Box::pin(async move {
             let transport =
                 UnixAttachmentTransport::open(&self.socket, target, &ProgressObserver::default())
@@ -557,7 +557,7 @@ impl zterm_client::upload::UploadConnector for UnixAttachmentConnector {
                 ));
             };
             let (reader, writer) = stream.into_split();
-            Ok(zterm_client::upload::UploadConnection {
+            Ok(voytty_client::upload::UploadConnection {
                 capabilities: remote_capabilities,
                 reader: Box::new(TunnelUploadReader { reader, decoder }),
                 writer: Box::new(TunnelUploadWriter(writer)),
@@ -570,7 +570,7 @@ struct TunnelUploadReader {
     reader: tokio::net::unix::OwnedReadHalf,
     decoder: TunnelDecoder,
 }
-impl zterm_client::upload::UploadReader for TunnelUploadReader {
+impl voytty_client::upload::UploadReader for TunnelUploadReader {
     fn read(&mut self) -> TransportFuture<'_, Result<DecodedFrame, DaemonError>> {
         Box::pin(async move {
             loop {
@@ -584,7 +584,7 @@ impl zterm_client::upload::UploadReader for TunnelUploadReader {
     }
 }
 struct TunnelUploadWriter(tokio::net::unix::OwnedWriteHalf);
-impl zterm_client::upload::UploadWriter for TunnelUploadWriter {
+impl voytty_client::upload::UploadWriter for TunnelUploadWriter {
     fn write<'a>(&'a mut self, bytes: &'a [u8]) -> TransportFuture<'a, Result<(), DaemonError>> {
         Box::pin(write_tunnel_bytes(&mut self.0, bytes))
     }
@@ -607,7 +607,7 @@ pub(super) fn daemon_io(operation: &str, error: std::io::Error) -> DaemonError {
 
 pub(super) fn local_attachment_command_error(error: std::io::Error) -> DaemonError {
     if is_attachment_closure_error(error.kind()) {
-        zterm_client::protocol::attachment_command_stream_closed()
+        voytty_client::protocol::attachment_command_stream_closed()
     } else {
         daemon_io("write local terminal message", error)
     }

@@ -15,9 +15,9 @@ import tomllib
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
-APK_NAME = "zterm-android-arm64.apk"
-METADATA_NAME = "zterm-android.json"
-PACKAGE = "io.github.leonfox28.zterm"
+APK_NAME = "voytty-android-arm64.apk"
+METADATA_NAME = "voytty-android.json"
+PACKAGE = "io.github.leonfox28.voytty"
 
 
 def version_code(version: str) -> int:
@@ -58,7 +58,7 @@ def inspect(apk: Path, sdk: Path, commit: str, signed: bool) -> dict:
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("A full source commit is required")
     with zipfile.ZipFile(apk) as archive:
-        if json.loads(archive.read("assets/zterm-build.json")) != expected:
+        if json.loads(archive.read("assets/voytty-build.json")) != expected:
             raise ValueError("Packaged build identity differs from the release source")
     build_tools = sdk / "build-tools/36.0.0"
     badging = run(str(build_tools / "aapt2"), "dump", "badging", str(apk))
@@ -75,7 +75,7 @@ def inspect(apk: Path, sdk: Path, commit: str, signed: bool) -> dict:
         certs = re.findall(r"Signer #[0-9]+ certificate SHA-256 digest: ([0-9a-f]+)", signature)
         if certs != [certificate]:
             raise ValueError("APK signer differs from the retained release certificate")
-    return {"schema": 1, "product": "zterm", **expected, "package": PACKAGE,
+    return {"schema": 1, "product": "voytty", **expected, "package": PACKAGE,
             "abi": "arm64-v8a", "min_sdk": 26, "target_sdk": 36,
             "certificate_sha256": certificate, "signed": signed,
             "length": apk.stat().st_size, "sha256": digest(apk)}
@@ -95,15 +95,16 @@ def sign(directory: Path, sdk: Path) -> None:
     if metadata["signed"] or metadata != inspect(apk, sdk, metadata["source_commit"], False):
         raise ValueError("Unsigned APK candidate identity is invalid")
     # Secrets arrive only in the protected job; neither argv nor logs contain them.
-    with tempfile.TemporaryDirectory(prefix="zterm-apk-sign-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="voytty-apk-sign-") as temporary:
         stage = Path(temporary)
         key, credential_file = stage / "key.p12", stage / "password"
-        key.write_bytes(base64.b64decode(os.environ.pop("ZTERM_ANDROID_KEYSTORE_BASE64"), validate=True))
-        credential_file.write_text(os.environ.pop("ZTERM_ANDROID_KEYSTORE_PASSWORD") + "\n")
+        key.write_bytes(base64.b64decode(os.environ.pop("VOYTTY_ANDROID_KEYSTORE_BASE64"), validate=True))
+        credential_file.write_text(os.environ.pop("VOYTTY_ANDROID_KEYSTORE_PASSWORD") + "\n")
         key.chmod(0o600)
         credential_file.chmod(0o600)
         signed_apk = stage / APK_NAME
         run(str(sdk / "build-tools/36.0.0/apksigner"), "sign", "--ks", str(key),
+            # The protected keystore retains its original alias and certificate.
             "--ks-key-alias", "zterm", "--ks-pass", f"file:{credential_file}",
             "--v1-signing-enabled", "false", "--v2-signing-enabled", "true",
             "--v3-signing-enabled", "true", "--v4-signing-enabled", "false",

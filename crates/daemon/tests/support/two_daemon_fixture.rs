@@ -14,18 +14,18 @@ use iroh::endpoint::{Incoming, VarInt, presets};
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
 use tokio::sync::Notify;
 use tokio::task::{JoinHandle, JoinSet};
-use zeroize::Zeroizing;
-use zterm_core::{Capabilities, DeviceAlias, DeviceId, TransportLimits};
-use zterm_daemon::authorization::AuthorizationRegistry;
-use zterm_daemon::config::{
+use voytty_core::{Capabilities, DeviceAlias, DeviceId, TransportLimits};
+use voytty_daemon::authorization::AuthorizationRegistry;
+use voytty_daemon::config::{
     ValidatedInfrastructure, load_config, validate_setup_input, write_config,
 };
-use zterm_daemon::connection_broker::{ConnectionBroker, ConnectionIdentity};
-use zterm_daemon::identity::DeviceIdentity;
-use zterm_daemon::store::{DeviceMetadata, KnownDevice, StateStore, StoreActor, StoreHandle};
-use zterm_daemon::transport::{
-    InfrastructureProfile, InfrastructureProfileSummary, ZTERM_ALPN, ZTERM_PAIR_ALPN,
+use voytty_daemon::connection_broker::{ConnectionBroker, ConnectionIdentity};
+use voytty_daemon::identity::DeviceIdentity;
+use voytty_daemon::store::{DeviceMetadata, KnownDevice, StateStore, StoreActor, StoreHandle};
+use voytty_daemon::transport::{
+    InfrastructureProfile, InfrastructureProfileSummary, VOYTTY_ALPN, VOYTTY_PAIR_ALPN,
 };
+use zeroize::Zeroizing;
 
 #[path = "state_fixture.rs"]
 mod state_fixture;
@@ -129,7 +129,7 @@ impl PreparedDaemonOwner {
         let bind = Endpoint::builder(presets::Minimal)
             .secret_key(secret)
             .relay_mode(RelayMode::Disabled)
-            .alpns(vec![ZTERM_ALPN.to_vec(), ZTERM_PAIR_ALPN.to_vec()])
+            .alpns(vec![VOYTTY_ALPN.to_vec(), VOYTTY_PAIR_ALPN.to_vec()])
             .clear_ip_transports()
             .bind_addr((Ipv4Addr::LOCALHOST, 0))
             .unwrap_or_else(|_| panic!("task-private loopback bind configuration failed"))
@@ -241,14 +241,14 @@ impl DaemonNetworkOwner {
         &self,
         remote: &Self,
         identity: &ConnectionIdentity,
-        attempt: zterm_core::ConnectionAttemptId,
-    ) -> Result<iroh::endpoint::Connection, zterm_client::error::ClientError> {
+        attempt: voytty_core::ConnectionAttemptId,
+    ) -> Result<iroh::endpoint::Connection, voytty_client::error::ClientError> {
         let connection = self
             .endpoint
-            .connect(remote.direct_address(), ZTERM_ALPN)
+            .connect(remote.direct_address(), VOYTTY_ALPN)
             .await
             .expect("fixture TLS");
-        zterm_client::handshake::controller_handshake(
+        voytty_client::handshake::controller_handshake(
             &connection,
             identity,
             attempt,
@@ -281,7 +281,7 @@ impl DaemonNetworkOwner {
         )
     }
 
-    pub fn authorization_snapshot(&self, remote: DeviceId) -> zterm_core::AuthorizationSnapshot {
+    pub fn authorization_snapshot(&self, remote: DeviceId) -> voytty_core::AuthorizationSnapshot {
         self.authorization
             .snapshot(remote)
             .expect("fixture authorization snapshot")
@@ -318,7 +318,7 @@ impl DaemonNetworkOwner {
         let address = remote.direct_address();
         let connection = tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline),
-            self.endpoint.connect(address, ZTERM_PAIR_ALPN),
+            self.endpoint.connect(address, VOYTTY_PAIR_ALPN),
         )
         .await
         .map_err(|_| "pair TLS deadline elapsed".to_owned())?
@@ -326,7 +326,7 @@ impl DaemonNetworkOwner {
         if connection.remote_id().as_bytes() != remote.device_id.as_bytes() {
             return Err("pair TLS authenticated an unexpected remote ID".to_owned());
         }
-        if connection.alpn() != ZTERM_PAIR_ALPN {
+        if connection.alpn() != VOYTTY_PAIR_ALPN {
             return Err("pair TLS negotiated an unexpected ALPN".to_owned());
         }
         remote.wait_for_pair_accept(1, deadline).await?;
@@ -450,12 +450,12 @@ async fn route_incoming(
     let Ok(Ok(alpn)) = tokio::time::timeout(Duration::from_secs(10), accepting.alpn()).await else {
         return;
     };
-    if alpn == ZTERM_ALPN {
+    if alpn == VOYTTY_ALPN {
         if let Ok(Ok(connection)) = tokio::time::timeout(Duration::from_secs(10), accepting).await {
             tokio::time::sleep(setup_delays.1).await;
             let _ = broker.accept_normal(connection).await;
         }
-    } else if alpn == ZTERM_PAIR_ALPN
+    } else if alpn == VOYTTY_PAIR_ALPN
         && let Ok(Ok(connection)) = tokio::time::timeout(Duration::from_secs(10), accepting).await
     {
         pair_accepts.fetch_add(1, std::sync::atomic::Ordering::AcqRel);

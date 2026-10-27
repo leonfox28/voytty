@@ -9,7 +9,7 @@ use crate::{
 };
 
 #[tokio::test]
-async fn zterm_restart_reset_recovers_after_path_zero_is_retired() {
+async fn voytty_restart_reset_recovers_after_path_zero_is_retired() {
     let network = TestNetwork::new();
     let host_key = SecretKey::generate();
     let client_key = SecretKey::generate();

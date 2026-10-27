@@ -2,7 +2,7 @@
 <resources>
     <string name="open_terminal_link">打开链接</string>
     <string name="open_terminal_link_failed">无法打开浏览器。</string>
-    <string name="app_name">zterm</string>
+    <string name="app_name">voytty</string>
     <string name="settings">设置</string>
     <string name="saved_hosts">已保存的主机</string>
     <string name="recent_connection">最近连接</string>
@@ -22,7 +22,7 @@
     <string name="dark">深色</string>
     <string name="light">浅色</string>
     <string name="font_size">字号</string>
-    <string name="font_preview">终端 · Terminal\n\uF115 zterm  \uE0A0 main \uE0B0</string>
+    <string name="font_preview">终端 · Terminal\n\uF115 voytty  \uE0A0 main \uE0B0</string>
     <string name="version">版本</string>
     <string name="remove_host">移除主机</string>
     <string name="remove_host_message">从此设备移除该主机？</string>
@@ -97,7 +97,7 @@
     <string name="upload_source_invalid">无法读取文件，请重新选择。</string>
     <string name="upload_storage_failed">远程服务器无法保存文件。</string>
     <string name="upload_outcome_unknown">文件可能已上传，但结果丢失。重试会创建一个新文件。</string>
-    <string name="upload_upgrade">请升级远程服务器上的 zterm 以使用文件上传。</string>
+    <string name="upload_upgrade">请升级远程服务器上的 voytty 以使用文件上传。</string>
     <string name="terminal_notifications">终端通知</string>
     <string name="terminal_notifications_description">已连接终端中的程序通知</string>
     <string name="terminal_notifications_enabled">连接有效时接收通知，包括应用在后台时。错过的通知不会补发。</string>
@@ -126,7 +126,7 @@
     <string name="update_cancel_download">取消下载</string>
     <string name="update_percent">%1$d%%</string>
     <string name="update_install_permission">允许安装更新</string>
-    <string name="update_install_permission_body">请在 Android 设置中允许 zterm 安装应用，然后返回继续。安装仍需你确认。</string>
+    <string name="update_install_permission_body">请在 Android 设置中允许 voytty 安装应用，然后返回继续。安装仍需你确认。</string>
     <string name="update_invalid">更新校验失败，请稍后重试。</string>
     <string name="update_unsupported">此安装版本不支持应用内更新。</string>
     <string name="update_rate_limit">更新检查过于频繁，请稍后再试。</string>
@@ -159,7 +159,7 @@
     <string name="resume_session">继续上次的会话</string>
     <string name="home_empty_title">还没有主机</string>
     <string name="home_empty_body">在电脑上运行下面的命令，然后扫描二维码即可添加。</string>
-    <string name="scan_hint">扫描 zterm pair create 显示的二维码</string>
+    <string name="scan_hint">扫描 voytty pair create 显示的二维码</string>
     <string name="back_to_hosts">返回主机列表</string>
     <string name="licenses">许可与声明</string>
     <string name="license_unavailable">无法读取许可文件。</string>

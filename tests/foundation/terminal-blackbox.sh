@@ -66,12 +66,12 @@ write_interaction() {
     completion_marker=$3
     latest_marker=$4
     cat >"$interaction_file" <<EOF
-stty size > '$resize_marker'; i=0; while [ "\$i" -lt 400 ]; do printf '\033[3%dmzterm-blackbox-%04d\033[0m\n' "\$((i % 8))" "\$i"; i=\$((i + 1)); done; printf '$latest_marker\n'; printf complete > '$completion_marker'
+stty size > '$resize_marker'; i=0; while [ "\$i" -lt 400 ]; do printf '\033[3%dmvoytty-blackbox-%04d\033[0m\n' "\$((i % 8))" "\$i"; i=\$((i + 1)); done; printf '$latest_marker\n'; printf complete > '$completion_marker'
 EOF
 }
 
 run_adapter() {
-    TERM=xterm-256color cargo test -p zterm-daemon --test terminal_blackbox -- "$@"
+    TERM=xterm-256color cargo test -p voytty-daemon --test terminal_blackbox -- "$@"
 }
 
 cd "$repo_root"
@@ -89,7 +89,7 @@ if [ "$run_tmux" = true ]; then
     tmux_interaction="$tmux_case_dir/interaction"
     tmux_resize="$tmux_case_dir/resize"
     tmux_complete="$tmux_case_dir/complete"
-    write_interaction "$tmux_interaction" "$tmux_resize" "$tmux_complete" ZTERM-TMUX-LATEST
+    write_interaction "$tmux_interaction" "$tmux_resize" "$tmux_complete" VOYTTY-TMUX-LATEST
     tmux_started=true
     run_adapter \
         --case tmux-3.7c \
@@ -106,7 +106,7 @@ if [ "$run_tmux" = true ]; then
         --interaction-file "$tmux_interaction" \
         --resize-marker "$tmux_resize" \
         --completion-marker "$tmux_complete" \
-        --expect-latest ZTERM-TMUX-LATEST \
+        --expect-latest VOYTTY-TMUX-LATEST \
         --quit-hex 657869740a
     "$tmux_bin" -S "$tmux_socket" kill-server >/dev/null 2>&1 || true
     tmux_started=false
@@ -150,7 +150,7 @@ EOF
     herdr_interaction="$herdr_case_dir/interaction"
     herdr_resize="$herdr_case_dir/resize"
     herdr_complete="$herdr_case_dir/complete"
-    write_interaction "$herdr_interaction" "$herdr_resize" "$herdr_complete" ZTERM-HERDR-LATEST
+    write_interaction "$herdr_interaction" "$herdr_resize" "$herdr_complete" VOYTTY-HERDR-LATEST
     run_adapter \
         --case herdr-0.8.2 \
         --mode interaction \
@@ -167,7 +167,7 @@ EOF
         --interaction-file "$herdr_interaction" \
         --resize-marker "$herdr_resize" \
         --completion-marker "$herdr_complete" \
-        --expect-latest ZTERM-HERDR-LATEST \
+        --expect-latest VOYTTY-HERDR-LATEST \
         --quit-hex 0271
 
     if [ -S "$herdr_socket" ]; then

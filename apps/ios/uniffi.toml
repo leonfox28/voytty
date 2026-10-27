@@ -1,4 +1,4 @@
-[crates.zterm_android.bindings.swift]
-module_name = "ZtermNative"
-ffi_module_name = "ZtermNativeFFI"
+[crates.voytty_android.bindings.swift]
+module_name = "VoyttyNative"
+ffi_module_name = "VoyttyNativeFFI"
 generate_module_map = true

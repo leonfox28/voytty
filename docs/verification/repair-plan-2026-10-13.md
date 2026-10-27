@@ -19,15 +19,15 @@
   本轮记录不等同于历史文档中的核心十轮／一小时验收。
 - 每项先建立能够验证行为的失败对照，再修改实现；测试器缺陷与产品缺陷分开记录。
 - 保留五秒/十五秒请求预算、恢复期限、操作去重与未知结果语义。若证据表明必须改变产品契约，先说明具体取舍。
-- 不改真实 `~/.zterm`、用户会话、网络代理或系统防火墙。三端实验仅使用运行器拥有的 A/B/C 与既有故障清理机制。
-- 验证证据放在 `${XDG_STATE_HOME:-~/.local/state}/zterm-verification/`，不放 `target/`。
+- 不改真实 `~/.voytty`、用户会话、网络代理或系统防火墙。三端实验仅使用运行器拥有的 A/B/C 与既有故障清理机制。
+- 验证证据放在 `${XDG_STATE_HOME:-~/.local/state}/voytty-verification/`，不放 `target/`。
 - 真手机节电/键盘、真实跨物理网络、登录注销及正式签名包验收需要对应设备/环境，不能用模拟器或本机单元测试代替。
 - 本次不发布。提交、推送或 PR 如需进行，遵守仓库的完整检查与平台边界。
 
 ## 执行记录
 
 2026-10-13：已重新 fetch origin/main，确认起点干净；审查复现与报告保存在
-`~/.local/state/zterm-verification/reviews/2026-10-13-ed5df8d/`。开始顺序 1。
+`~/.local/state/voytty-verification/reviews/2026-10-13-ed5df8d/`。开始顺序 1。
 
 顺序 1：CLI 保留旧历史请求的在途边界，等待旧回应后仅补发最新滚动目标。失败对照
 `cli-before-02.log`，最终定向结果 `cli-after-02.log`（109 通过、3 忽略）及
@@ -41,7 +41,7 @@
 耗时 9.16 秒；另增真实背压后的取消与有序续写测试。daemon 216 / platform 34 / IPC 6
 项通过（两个库各 1 项忽略），PTY 生命周期 gate 及 Clippy 通过。
 
-本轮原始记录统一位于 `~/.local/state/zterm-verification/checks/sequential-fixes-20261013/`。
+本轮原始记录统一位于 `~/.local/state/voytty-verification/checks/sequential-fixes-20261013/`。
 其中 `r14-interruptible-after/` 误选旧测试二进制，已标为 INVALID，不作为修复后证据；
 其他中间候选的失败结果保留，最终结果为 `r14-chunked-full-after/summary.json`、
 `r14-targeted-final.log`、`r14-clippy-final.log`。这不证明其他 macOS 版本或 Linux 的内核行为。
@@ -109,7 +109,7 @@ NOQ 独立 Clippy 通过。`just-check-05.log` 中途停止且没有完成结果
 跨路径补正后的完整本机 `just check` 通过（`just-check-06.log` / `.exit=0`），NOQ
 441 项、Iroh 33 项通过。Linux 第五轮在 `cross_uid` 复制测试程序时遇到磁盘满
 （`linux-ci-unix-05.log`，不是产品断言失败）；仅清理隔离 A VM 的
-`~/zterm-build/target/debug/incremental`，释放约 18 GB，源码、二进制和证据保留，
+`~/voytty-build/target/debug/incremental`，释放约 18 GB，源码、二进制和证据保留，
 见 `linux-incremental-cleanup.json`。释放空间后原样重新执行完整 Linux 配方。
 
 最终跨路径补正的 Linux 完整配方通过（`linux-ci-unix-06.log` / `.exit=0`），含 NOQ

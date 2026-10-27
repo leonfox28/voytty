@@ -7,8 +7,8 @@ use iroh::{
     address_lookup::{N0_DNS_ENDPOINT_ORIGIN_PROD, N0_DNS_PKARR_RELAY_PROD},
     defaults::DEFAULT_RELAY_QUIC_PORT,
 };
-use zterm_daemon::transport::{
-    InfrastructureProfile, InfrastructureProfileSummary, ZTERM_ALPN, ZTERM_PAIR_ALPN,
+use voytty_daemon::transport::{
+    InfrastructureProfile, InfrastructureProfileSummary, VOYTTY_ALPN, VOYTTY_PAIR_ALPN,
 };
 
 const EXPECTED_N0_PRODUCTION_RELAYS: [&str; 4] = [
@@ -22,17 +22,17 @@ const SELF_HOSTED_RELAY: &str = "https://relay.zenithconsulting.cn";
 const EXPECTED_N0_PRODUCTION_PKARR_URL: &str = "https://dns.iroh.link/pkarr";
 const EXPECTED_N0_PRODUCTION_DNS_ORIGIN: &str = "dns.iroh.link.";
 const STAGING_INFRA_ENV: &str = "IROH_FORCE_STAGING_RELAYS";
-const STAGING_ENV_CHILD: &str = "ZTERM_STAGING_ENV_PROFILE_CHILD";
+const STAGING_ENV_CHILD: &str = "VOYTTY_STAGING_ENV_PROFILE_CHILD";
 
 #[test]
 fn effective_profile_is_the_exact_n0_production_map_with_qad() {
-    let profile = InfrastructureProfile::zterm();
+    let profile = InfrastructureProfile::voytty();
     assert_production_relay_contract(&profile);
 }
 
 #[test]
 fn effective_profile_excludes_staging_and_the_optional_self_hosted_relay() {
-    let profile = InfrastructureProfile::zterm();
+    let profile = InfrastructureProfile::voytty();
     let summary = profile.summary();
     let actual = relay_urls(summary.relays.into_iter().map(|relay| relay.url));
     let staging = relay_urls(
@@ -54,7 +54,7 @@ fn effective_profile_excludes_staging_and_the_optional_self_hosted_relay() {
 
 #[test]
 fn effective_profile_uses_relay_only_n0_lookup_and_gate_alpn() {
-    let profile = InfrastructureProfile::zterm();
+    let profile = InfrastructureProfile::voytty();
     assert_production_lookup_contract(&profile);
 }
 
@@ -95,7 +95,7 @@ fn production_profile_under_staging_environment_child() {
     }
 
     assert!(std::env::var_os(STAGING_INFRA_ENV).is_some());
-    let profile = InfrastructureProfile::zterm();
+    let profile = InfrastructureProfile::voytty();
     assert_production_relay_contract(&profile);
     assert_production_lookup_contract(&profile);
 
@@ -193,7 +193,7 @@ fn assert_common_summary_contract(summary: &InfrastructureProfileSummary) {
     assert!(summary.portmapper_enabled);
     assert_eq!(
         summary.alpns,
-        [ZTERM_ALPN.to_vec(), ZTERM_PAIR_ALPN.to_vec()]
+        [VOYTTY_ALPN.to_vec(), VOYTTY_PAIR_ALPN.to_vec()]
     );
 }
 
@@ -235,6 +235,6 @@ fn assert_common_builder_contract(builder_debug: &str) {
     assert!(!builder_debug.contains("staging-dns.iroh.link"));
     assert!(builder_debug.contains("addr_filter: Some(AddrFilter"));
     assert!(builder_debug.contains("portmapper_config: Enabled"));
-    let expected_alpns = vec![ZTERM_ALPN.to_vec(), ZTERM_PAIR_ALPN.to_vec()];
+    let expected_alpns = vec![VOYTTY_ALPN.to_vec(), VOYTTY_PAIR_ALPN.to_vec()];
     assert!(builder_debug.contains(&format!("alpn_protocols: {expected_alpns:?}")));
 }

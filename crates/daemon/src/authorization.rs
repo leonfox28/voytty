@@ -12,7 +12,7 @@ use std::future::{Future, poll_fn};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock, watch};
-use zterm_core::{
+use voytty_core::{
     AuthGeneration, AuthorizationSnapshot, AuthorizationStatus, DeviceId, DomainErrorKind,
 };
 

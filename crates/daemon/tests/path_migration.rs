@@ -1,17 +1,17 @@
 //! Socket-free route ordering and redacted path-observation gate.
 
 use iroh::{RelayUrl, SecretKey, TransportAddr};
-use zterm_core::{
+use voytty_core::{
     AuthGeneration, AuthorizationSnapshot, AuthorizationStatus, DeviceDisplayName, DeviceId,
     RelayHint,
 };
-use zterm_daemon::authorization::AuthorizationRegistry;
-use zterm_daemon::connection_broker::path_observation_test_evidence;
-use zterm_daemon::network::PathKind;
-use zterm_daemon::route::{RouteSource, plan_relay_candidates_for_test};
-use zterm_daemon::session::SessionService;
-use zterm_daemon::store::DeviceAuthorization;
-use zterm_daemon::transport::InfrastructureProfile;
+use voytty_daemon::authorization::AuthorizationRegistry;
+use voytty_daemon::connection_broker::path_observation_test_evidence;
+use voytty_daemon::network::PathKind;
+use voytty_daemon::route::{RouteSource, plan_relay_candidates_for_test};
+use voytty_daemon::session::SessionService;
+use voytty_daemon::store::DeviceAuthorization;
+use voytty_daemon::transport::InfrastructureProfile;
 
 fn relay(url: &str) -> RelayHint {
     RelayHint::new(url).expect("fixture Relay URL is valid")

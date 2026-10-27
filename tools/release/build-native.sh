@@ -35,15 +35,15 @@ esac
 host=$(rustc +1.98.0 -vV | sed -n 's/^host: //p')
 [ "$host" = "$target" ] || fail "Rust host $host does not equal release target $target"
 
-source_commit=${ZTERM_SOURCE_COMMIT:-}
+source_commit=${VOYTTY_SOURCE_COMMIT:-}
 source_epoch=${SOURCE_DATE_EPOCH:-}
-[ -n "$source_commit" ] || fail "candidate build requires ZTERM_SOURCE_COMMIT"
+[ -n "$source_commit" ] || fail "candidate build requires VOYTTY_SOURCE_COMMIT"
 [ -n "$source_epoch" ] || fail "candidate build requires SOURCE_DATE_EPOCH"
 [ "$(git rev-parse HEAD)" = "$source_commit" ] \
-    || fail "checkout does not match ZTERM_SOURCE_COMMIT"
+    || fail "checkout does not match VOYTTY_SOURCE_COMMIT"
 
-cargo +1.98.0 build --locked --release --package zterm-cli
-binary=target/release/zterm
+cargo +1.98.0 build --locked --release --package voytty-cli
+binary=target/release/voytty
 [ -x "$binary" ] || fail "release binary is missing or not executable"
 
 case "$platform" in
@@ -75,8 +75,8 @@ case "$platform" in
 esac
 
 mkdir -p "$output_dir"
-candidate="$output_dir/zterm-$target"
-identity="$output_dir/zterm-$target.identity.json"
+candidate="$output_dir/voytty-$target"
+identity="$output_dir/voytty-$target.identity.json"
 if [ -e "$candidate" ] || [ -e "$identity" ]; then
     fail "candidate output already exists for $target"
 fi

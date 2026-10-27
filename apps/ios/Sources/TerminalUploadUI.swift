@@ -194,7 +194,7 @@ func uploadMessage(_ code: String, strings: AppStrings) -> String {
     case "upload_source_invalid", "upload_already_started": return strings("无法读取此文件，请重新选择。")
     case "upload_storage_failed": return strings("远端主机无法保存文件。")
     case "upload_outcome_unknown": return strings("文件可能已上传，但结果未确认。重试会创建另一个文件。")
-    case "service_not_implemented": return strings("请升级远端主机的 zterm 以使用文件上传。")
+    case "service_not_implemented": return strings("请升级远端主机的 voytty 以使用文件上传。")
     case "input_not_ready", "lease_lost": return strings("等待连接恢复，此次输入未发送。")
     default: return strings("操作未完成（%@）。请检查电脑和网络后重试。", code)
     }

@@ -17,7 +17,7 @@ async fn main() -> ProbeResult<()> {
     let raw_url = args.next().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: zterm-relay-handshake-probe <relay-url>",
+            "usage: voytty-relay-handshake-probe <relay-url>",
         )
     })?;
     if args.next().is_some() {

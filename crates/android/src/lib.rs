@@ -75,7 +75,7 @@ pub struct NativeRuntime {
     state: watch::Sender<RuntimeState>,
     closed: CancellationToken,
     network: Arc<OnceCell<network::Network>>,
-    sessions: Arc<zterm_client::unary::SessionUnaryClient>,
+    sessions: Arc<voytty_client::unary::SessionUnaryClient>,
 }
 
 #[uniffi::export]
@@ -85,7 +85,7 @@ impl NativeRuntime {
     pub fn new() -> Result<Arc<Self>, NativeError> {
         let executor = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
-            .thread_name("zterm-mobile")
+            .thread_name("voytty-mobile")
             .enable_all()
             .build()
             .map_err(|_| NativeError::RuntimeUnavailable)?;
@@ -98,7 +98,7 @@ impl NativeRuntime {
             state,
             closed: CancellationToken::new(),
             network: Arc::new(OnceCell::new()),
-            sessions: Arc::new(zterm_client::unary::SessionUnaryClient::default()),
+            sessions: Arc::new(voytty_client::unary::SessionUnaryClient::default()),
         }))
     }
 
@@ -198,8 +198,8 @@ impl NativeRuntime {
         task.await.map_err(|_| NativeError::RuntimeUnavailable)?
     }
 }
-impl From<zterm_client::error::ClientError> for NativeError {
-    fn from(error: zterm_client::error::ClientError) -> Self {
+impl From<voytty_client::error::ClientError> for NativeError {
+    fn from(error: voytty_client::error::ClientError) -> Self {
         Self::RequestFailed {
             code: error.kind().code().to_owned(),
         }

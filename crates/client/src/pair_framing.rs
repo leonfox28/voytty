@@ -1,6 +1,6 @@
 //! Bounded framing for one short-lived pairing handshake.
 //!
-//! This module reuses [`zterm_proto::FrameDecoder`] for the wire format and
+//! This module reuses [`voytty_proto::FrameDecoder`] for the wire format and
 //! owns the single byte budget shared by both directions of a handshake. It
 //! deliberately knows nothing about Iroh, pairing transcripts, or validated
 //! domain conversion.
@@ -10,11 +10,11 @@ use std::fmt;
 use std::time::Instant;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use zeroize::{Zeroize, Zeroizing};
-use zterm_core::{
+use voytty_core::{
     DomainErrorKind, MAX_PAIR_HELLO_FRAME_BYTES, PairHandshakeBudget, PairHandshakeBudgetError,
 };
-use zterm_proto::{DecodedFrame, FrameDecoder, ProtocolError, WireKind, encode_message};
+use voytty_proto::{DecodedFrame, FrameDecoder, ProtocolError, WireKind, encode_message};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::ClientError;
 
@@ -304,8 +304,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use zterm_core::{DomainErrorKind, MAX_PAIR_HANDSHAKE_BYTES, MAX_PAIR_HELLO_FRAME_BYTES};
-    use zterm_proto::{WireKind, encode_message, v2};
+    use voytty_core::{DomainErrorKind, MAX_PAIR_HANDSHAKE_BYTES, MAX_PAIR_HELLO_FRAME_BYTES};
+    use voytty_proto::{WireKind, encode_message, v2};
 
     use super::PairFraming;
 

@@ -6,13 +6,13 @@ mod state_fixture;
 use std::future::{Future, poll_fn};
 
 use tokio::sync::{mpsc, oneshot};
-use zterm_core::{
+use voytty_core::{
     AuthGeneration, AuthorizationSnapshot, AuthorizationStatus, DeviceDisplayName, DeviceId,
     DomainErrorKind,
 };
-use zterm_daemon::authorization::AuthorizationRegistry;
-use zterm_daemon::error::DaemonError;
-use zterm_daemon::store::{DeviceAuthorization, StateStore, StoreActor, default_store_deadline};
+use voytty_daemon::authorization::AuthorizationRegistry;
+use voytty_daemon::error::DaemonError;
+use voytty_daemon::store::{DeviceAuthorization, StateStore, StoreActor, default_store_deadline};
 
 use state_fixture::TestState;
 

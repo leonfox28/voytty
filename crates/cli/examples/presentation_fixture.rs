@@ -1,18 +1,18 @@
 //! Explicit disposable host/CLI fixture for emulator and outer-terminal acceptance.
-//! `init <new-root>`, `start <root>`, `pair <root>`, or `cli <root> <zterm args...>`.
+//! `init <new-root>`, `start <root>`, `pair <root>`, or `cli <root> <voytty args...>`.
 //! Every path comes from the new root; the user's daemon is never discovered.
 #[cfg(unix)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use clap::Parser;
     use std::{fs, io::Write, os::unix::fs::OpenOptionsExt, path::PathBuf};
-    use zterm_daemon::{
+    use voytty_daemon::{
         bootstrap::bootstrap,
         client::LocalPairingClient,
         config::{ValidatedInfrastructure, validate_setup_input},
         lifecycle::{DaemonLauncher, run_daemon},
         operations::LocalRuntime,
     };
-    use zterm_platform::user_state::UserPaths;
+    use voytty_platform::user_state::UserPaths;
     let mut args = std::env::args().skip(1);
     let action = args.next().ok_or("fixture action required")?;
     let root = PathBuf::from(args.next().ok_or("explicit disposable root required")?);
@@ -65,11 +65,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 DaemonLauncher::for_test("/must-not-launch".into(), "--unused".into()),
             );
             let cli =
-                zterm_cli::Cli::try_parse_from(std::iter::once("zterm".to_owned()).chain(args))?;
-            match zterm_cli::execute(cli, &local, zterm_cli::InteractionMode::detect()).await? {
-                zterm_cli::CommandOutcome::Text(text) => print!("{text}"),
-                zterm_cli::CommandOutcome::Terminal(request) => {
-                    zterm_cli::run_terminal(request, &local).await?;
+                voytty_cli::Cli::try_parse_from(std::iter::once("voytty".to_owned()).chain(args))?;
+            match voytty_cli::execute(cli, &local, voytty_cli::InteractionMode::detect()).await? {
+                voytty_cli::CommandOutcome::Text(text) => print!("{text}"),
+                voytty_cli::CommandOutcome::Terminal(request) => {
+                    voytty_cli::run_terminal(request, &local).await?;
                 }
                 _ => return Err("use the fixture pair action for bearer tickets".into()),
             }

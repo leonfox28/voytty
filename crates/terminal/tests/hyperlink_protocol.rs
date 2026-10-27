@@ -1,7 +1,7 @@
 //! Hyperlinks remain bounded semantic content across projection and retention.
 use std::sync::Arc;
-use zterm_core::terminal::*;
-use zterm_terminal::TerminalModel;
+use voytty_core::terminal::*;
+use voytty_terminal::TerminalModel;
 
 #[test]
 fn links_are_chunk_invariant_shared_and_preserved_in_deltas_and_history() {

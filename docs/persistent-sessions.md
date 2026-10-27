@@ -1,7 +1,7 @@
 # Persistent session engine and local attachment
 
 Phase One M4 adds the terminal-session engine inside each user's daemon. It is
-used by the public `zterm connect` and `zterm session` commands through both
+used by the public `voytty connect` and `voytty session` commands through both
 same-UID local IPC and authenticated remote Iroh streams. See
 [Remote sessions and the public CLI](remote-cli.md) for the command and
 reconnect UX.
@@ -79,7 +79,7 @@ did not opt in is a protocol error. Hosts that ignore the field never number
 frames, and controllers acknowledge only numbered frames; local attachments do
 not opt in.
 
-An attachment checkpoint contains one fixed Zterm-owned projection of the
+An attachment checkpoint contains one fixed Voytty-owned projection of the
 latest active viewport. It retains `rows × columns` cells and no engine,
 inactive screen, or history. Main/alternate transitions resynchronize, while
 styles, Unicode, and resize resynchronization preserve the same latest-visible
@@ -103,7 +103,7 @@ Current independent service and hostile-input bounds are fixed:
 
 There is no aggregate terminal-memory estimate or RSS admission gate. Alacritty
 owns its internal allocation/capacity; dropping the Session drops the model.
-Zterm still caps every PTY-controlled string, reply, event, and combining extra
+Voytty still caps every PTY-controlled string, reply, event, and combining extra
 before it can become unbounded persistent state. Snapshot encoding always
 preserves the current screen; when necessary it removes only the oldest
 complete history lines at an ANSI reset/line boundary to remain within the
@@ -111,18 +111,18 @@ frame ceiling.
 
 The login PTY receives `TERM=xterm-256color`, `COLORTERM=truecolor`, and
 `TERM_PROGRAM_VERSION` set to the host build's package version (for example,
-`0.1.45`). `TERM_PROGRAM` defaults to `zterm`; the host can explicitly select
+`0.1.45`). `TERM_PROGRAM` defaults to `voytty`; the host can explicitly select
 `ghostty` compatibility for programs that gate ordinary notifications by name:
 
 ```sh
-zterm config terminal-identity          # Show this host's saved choice
-zterm config terminal-identity ghostty  # Enable compatibility for new sessions
-zterm config terminal-identity zterm    # Restore the default for new sessions
+voytty config terminal-identity          # Show this host's saved choice
+voytty config terminal-identity ghostty  # Enable compatibility for new sessions
+voytty config terminal-identity voytty    # Restore the default for new sessions
 ```
 
-Run the command on the host that owns the sessions, after `zterm setup`. The
-choice is saved as `terminal_identity` in `~/.zterm/config.toml`; existing files
-without that field default to `zterm`. New sessions read the saved choice without
+Run the command on the host that owns the sessions, after `voytty setup`. The
+choice is saved as `terminal_identity` in `~/.voytty/config.toml`; existing files
+without that field default to `voytty`. New sessions read the saved choice without
 a daemon restart, including sessions created from Android or another remote
 client. Existing shells and reattachments retain their original environment.
 Repeated setup preserves the choice. These commands do not start or stop the
@@ -132,9 +132,9 @@ Only `TERM_PROGRAM` changes. `TERM`, terminfo, capability-query replies, and
 the host's actual `TERM_PROGRAM_VERSION` remain unchanged; selecting `ghostty`
 does not implement additional Ghostty features or advertise its version.
 
-If the user runs Zterm inside Ghostty, kitty,
+If the user runs Voytty inside Ghostty, kitty,
 Alacritty, tmux, or another terminal, that outer application only interprets
-Zterm's allowlisted ANSI. It does not contain, share, or nest the daemon's
+Voytty's allowlisted ANSI. It does not contain, share, or nest the daemon's
 Alacritty model object or its PTY.
 
 The rest of the login environment is built like a fresh login, not copied from
@@ -146,7 +146,7 @@ the XDG base directories, `DBUS_SESSION_BUS_ADDRESS`, `SSH_AUTH_SOCK`,
 daemon started or updated from inside tmux, Herdr, an SSH connection, or another
 terminal therefore never hands markers such as `TMUX`, `HERDR_ENV`, or
 `SSH_CONNECTION` to new sessions. The outer terminal's `TERM_PROGRAM` and
-`TERM_PROGRAM_VERSION` are replaced by the host's configured identity and Zterm
+`TERM_PROGRAM_VERSION` are replaced by the host's configured identity and Voytty
 build version; everything else comes from the login shell's own profile.
 
 ## Trust and architecture boundary
@@ -217,12 +217,12 @@ local stream treats lifecycle as authoritative and stays open for
 ## Focused verification
 
 ```bash
-cargo test -p zterm-daemon --test session_lifecycle
-cargo test -p zterm-daemon --test controller_lease
-cargo test -p zterm-daemon --test session_limits
-cargo test -p zterm-daemon --test session_concurrency
-cargo test -p zterm-daemon --test local_session_ipc
-cargo test -p zterm-daemon --test terminal_recovery
+cargo test -p voytty-daemon --test session_lifecycle
+cargo test -p voytty-daemon --test controller_lease
+cargo test -p voytty-daemon --test session_limits
+cargo test -p voytty-daemon --test session_concurrency
+cargo test -p voytty-daemon --test local_session_ipc
+cargo test -p voytty-daemon --test terminal_recovery
 ```
 
 The explicit Foundation black-box gate additionally exercises pinned tmux and
@@ -239,7 +239,7 @@ printf '\033]9;Build finished\007'
 printf '\033]777;notify;Build;Tests passed\033\\'
 ```
 
-Zterm parses and validates the request on the host, then sends it only to the
+Voytty parses and validates the request on the host, then sends it only to the
 currently connected controller. Desktop clients forward the same form to the
 outer terminal; Ghostty is the primary supported target. The outer terminal and
 OS control permission, sound and display. Android posts an ordinary system
@@ -256,11 +256,11 @@ OSC 99, standalone bell forwarding, numeric OSC 9 progress/subcommands, actions,
 notification updates, tmux passthrough and external push are not included.
 Programs must actually emit OSC 9/777. Applications that select notification
 protocols by terminal name may need the explicit `ghostty` compatibility choice
-above. For example, Herdr 0.9.5 does not recognize `TERM_PROGRAM=zterm`, but
+above. For example, Herdr 0.9.5 does not recognize `TERM_PROGRAM=voytty`, but
 emits OSC 9 for `TERM_PROGRAM=ghostty`. Set Herdr's `[ui.toast]`
-`delivery = "terminal"` and launch or attach Herdr from a newly created Zterm
+`delivery = "terminal"` and launch or attach Herdr from a newly created Voytty
 session after changing the identity. Herdr suppresses notifications for its
 active tab. Android additionally needs **Settings → Terminal notifications**
-enabled and OS notification permission. The default remains `zterm`.
+enabled and OS notification permission. The default remains `voytty`.
 Use matching updated host and client builds; notification kind 325 has no
 compatibility fallback to older receivers.

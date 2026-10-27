@@ -11,17 +11,17 @@ the complete current command surface.
 
 | Command | Starts a daemon | Purpose |
 | --- | --- | --- |
-| `zterm setup --name <name>` | yes | Idempotently create/validate state and wait for readiness |
-| `zterm setup --name <name> --profile self-hosted --relay-url <https-url>` | yes | Select one explicit self-hosted Relay profile |
-| `zterm status` | no | Report running, configured/stopped, or not configured |
-| `zterm doctor` | no | Check account home/shell, committed state, socket/lock state, and lifecycle limits |
-| `zterm daemon stop [-y|--yes]` | no | Flush a graceful stop response; stopped is success |
-| `zterm daemon restart [-y|--yes]` | yes | Stop, wait, then explicitly start one daemon |
-| `zterm daemon autostart <enable/disable/status>` | no | Opt-in next-login daemon startup; status is read-only |
-| `zterm logs [-n|--lines <n>]` | no | Read at most 1,000 recent lines and 1 MiB |
+| `voytty setup --name <name>` | yes | Idempotently create/validate state and wait for readiness |
+| `voytty setup --name <name> --profile self-hosted --relay-url <https-url>` | yes | Select one explicit self-hosted Relay profile |
+| `voytty status` | no | Report running, configured/stopped, or not configured |
+| `voytty doctor` | no | Check account home/shell, committed state, socket/lock state, and lifecycle limits |
+| `voytty daemon stop [-y|--yes]` | no | Flush a graceful stop response; stopped is success |
+| `voytty daemon restart [-y|--yes]` | yes | Stop, wait, then explicitly start one daemon |
+| `voytty daemon autostart <enable/disable/status>` | no | Opt-in next-login daemon startup; status is read-only |
+| `voytty logs [-n|--lines <n>]` | no | Read at most 1,000 recent lines and 1 MiB |
 
-After setup, running `zterm` with no command attaches local `main`; before setup
-it prints fixed setup guidance without creating an identity. `zterm --help`
+After setup, running `voytty` with no command attaches local `main`; before setup
+it prints fixed setup guidance without creating an identity. `voytty --help`
 always prints help. The hidden daemon entry accepts no state-path argument and
 is omitted from help.
 
@@ -57,14 +57,14 @@ Persistent paths are derived from the effective UID's account database, not
 `$HOME` or `$SHELL`:
 
 ```text
-<account-home>/.zterm/config.toml
-<account-home>/.zterm/identity.key
-<account-home>/.zterm/state.sqlite3
-<account-home>/.zterm/install.json       (reserved for the installer)
-<account-home>/.zterm/logs/daemon.log[.1]
-<account-home>/.zterm/logs/daemon.debug.log[.1]
-<account-home>/.zterm/logs/diagnostics.json
-<account-home>/.zterm/logs/writer.lock
+<account-home>/.voytty/config.toml
+<account-home>/.voytty/identity.key
+<account-home>/.voytty/state.sqlite3
+<account-home>/.voytty/install.json       (reserved for the installer)
+<account-home>/.voytty/logs/daemon.log[.1]
+<account-home>/.voytty/logs/daemon.debug.log[.1]
+<account-home>/.voytty/logs/diagnostics.json
+<account-home>/.voytty/logs/writer.lock
 ```
 
 Managed directories are mode `0700`; files and the Unix socket are no wider
@@ -211,17 +211,17 @@ discovery, or create a second Session registry.
 ## Focused verification
 
 ```bash
-cargo test -p zterm-daemon --test persistence
-cargo test -p zterm-daemon --test setup_idempotency
-cargo test -p zterm-daemon --test local_ipc
-cargo test -p zterm-daemon --test local_session_ipc
-cargo test -p zterm-daemon --test session_concurrency
-cargo test -p zterm-daemon --test terminal_recovery
-cargo test -p zterm-daemon --test single_instance
-cargo test -p zterm-daemon --test detached_lifecycle
-cargo test -p zterm-cli --test setup_permissions
-cargo test -p zterm-cli --test daemon_autospawn
-cargo test -p zterm-cli --test command_side_effects
+cargo test -p voytty-daemon --test persistence
+cargo test -p voytty-daemon --test setup_idempotency
+cargo test -p voytty-daemon --test local_ipc
+cargo test -p voytty-daemon --test local_session_ipc
+cargo test -p voytty-daemon --test session_concurrency
+cargo test -p voytty-daemon --test terminal_recovery
+cargo test -p voytty-daemon --test single_instance
+cargo test -p voytty-daemon --test detached_lifecycle
+cargo test -p voytty-cli --test setup_permissions
+cargo test -p voytty-cli --test daemon_autospawn
+cargo test -p voytty-cli --test command_side_effects
 sh tests/core-local-daemon/cross-uid.sh
 ```
 

@@ -18,7 +18,7 @@ The production default and recommended infrastructure profile is Iroh's
 official N0 profile. The exact setup syntax is:
 
 ```text
-zterm setup [--name <name>]
+voytty setup [--name <name>]
             [--profile <official-n0|self-hosted>]
             [--relay-url <https-url>]
 ```
@@ -26,13 +26,13 @@ zterm setup [--name <name>]
 The recommended noninteractive invocation is:
 
 ```text
-zterm setup --name <name>
+voytty setup --name <name>
 ```
 
 First setup defaults to `official-n0` without a profile prompt. An interactive
 terminal asks for a missing device name; noninteractive setup requires `--name`.
 Explicit `--profile self-hosted` still requires a Relay URL, prompted when
-interactive or supplied with `--relay-url`. Running `zterm setup` with no
+interactive or supplied with `--relay-url`. Running `voytty setup` with no
 overrides after setup preserves the committed identity and configuration and ensures that one daemon
 is running. The existing `self-hosted` profile remains an explicit optional
 configuration, but it is not the production default and this milestone adds no
@@ -41,10 +41,10 @@ public or self-hosted Relay acceptance workflow.
 These inspection commands do not start a daemon or create state:
 
 ```text
-zterm status
-zterm doctor
-zterm logs [-n|--lines <n>]
-zterm config terminal-identity
+voytty status
+voytty doctor
+voytty logs [-n|--lines <n>]
+voytty config terminal-identity
 ```
 
 `status` summarizes the device name, version, daemon state,
@@ -60,9 +60,9 @@ A typed missing-Session error includes a shell-quoted `session list --target=...
 hint, while cancellation, unknown outcomes and created-but-not-attached failures
 retain their distinct diagnostics.
 
-After setup, `zterm config terminal-identity [zterm|ghostty]` reads or changes
+After setup, `voytty config terminal-identity [voytty|ghostty]` reads or changes
 the local host's child-program identity. With no value it shows the saved choice;
-`zterm` is the default and restores native identification. `ghostty` enables
+`voytty` is the default and restores native identification. `ghostty` enables
 compatibility for applications such as Herdr that select OSC 9 notifications by
 terminal name. Changes are persisted and apply to new sessions on this host
 without restarting or starting its daemon. Existing sessions keep their identity.
@@ -80,8 +80,8 @@ export. See [Local logs and diagnostics](logging.md) for limits and migration.
 Daemon lifecycle commands are:
 
 ```text
-zterm daemon stop [-y|--yes]
-zterm daemon restart [-y|--yes]
+voytty daemon stop [-y|--yes]
+voytty daemon restart [-y|--yes]
 ```
 
 Stopping an already stopped daemon succeeds. With no running Sessions, stop
@@ -90,7 +90,7 @@ for English `[y/N]` confirmation because those Sessions and PTYs will end.
 Detached Sessions also need confirmation; connections without Sessions do not.
 A newly admitted Session encountered by the stop request is presented in the
 same invocation before it can be ended. `restart` explicitly starts a daemon.
-Like `update`, both may be run inside a remote or local zterm Session: after
+Like `update`, both may be run inside a remote or local voytty Session: after
 confirmation a one-shot process independent of that terminal completes the
 stop and any restart while the Session ends. Reconnect after a restart.
 
@@ -105,8 +105,8 @@ update. Reset/uninstall still confirm actual deletion even with no Sessions.
 Pairing commands are:
 
 ```text
-zterm pair create
-zterm pair accept [--stdin] [--alias <alias>]
+voytty pair create
+voytty pair accept [--stdin] [--alias <alias>]
 ```
 
 `pair create` creates one ticket with a 10-minute validity. Interactive stdout
@@ -125,7 +125,7 @@ A non-TTY is rejected without reading unless automation explicitly selects
 `--stdin`; that mode reads the bounded standard input to EOF, trims surrounding
 whitespace, and rejects input over 16 KiB. `--alias` assigns the exact outbound
 alias after acceptance; the old `--name` spelling is rejected. Success reports
-the control direction and a `zterm connect` command using the actual stored
+the control direction and a `voytty connect` command using the actual stored
 alias, quoted for shell use when needed.
 
 Trust is directional. If host A creates a ticket and controller B accepts it:
@@ -138,9 +138,9 @@ Trust is directional. If host A creates a ticket and controller B accepts it:
 Device management preserves those two directions:
 
 ```text
-zterm device list
-zterm device rename <device> <alias>
-zterm device revoke <device> [-y|--yes]
+voytty device list
+voytty device rename <device> <alias>
+voytty device revoke <device> [-y|--yes]
 ```
 
 The table leads with device names and aliases and retains full device IDs,
@@ -187,11 +187,11 @@ connection, perform DNS/Pkarr lookup, or use a Relay.
 The public commands are:
 
 ```text
-zterm connect [<target>] [--session <name-or-id>] [--takeover]
-zterm session list [--target <target>]
-zterm session create <name> [--target <target>] [--cwd <host-path>]
-zterm session rename <session> <new-name> [--target <target>]
-zterm session close <session> [--target <target>] [-y|--yes]
+voytty connect [<target>] [--session <name-or-id>] [--takeover]
+voytty session list [--target <target>]
+voytty session create <name> [--target <target>] [--cwd <host-path>]
+voytty session rename <session> <new-name> [--target <target>]
+voytty session close <session> [--target <target>] [-y|--yes]
 ```
 
 `connect` defaults to target `local`. Only when `--session` is omitted does the
@@ -219,11 +219,11 @@ takeover use the same rule and continue the same Session and PTY.
 
 With no command, behavior is setup-sensitive:
 
-- Before setup, `zterm` prints the fixed `zterm setup` guidance and does not
+- Before setup, `voytty` prints the fixed `voytty setup` guidance and does not
   create an identity or start a daemon.
-- After setup, `zterm` is equivalent to
-  `zterm connect local`.
-- `zterm --help`, `zterm --version`, parse failures, and all inspection
+- After setup, `voytty` is equivalent to
+  `voytty connect local`.
+- `voytty --help`, `voytty --version`, parse failures, and all inspection
   commands remain side-effect free.
 
 Commands that need pairing, device, Session, or terminal service validate an
@@ -234,7 +234,7 @@ perform setup implicitly.
 
 Interactive attach requires both stdin and stdout to be TTYs. Before any
 attachment request, the CLI saves the exact terminal attributes, enters raw
-mode and a zterm-owned alternate screen, and installs SIGWINCH, SIGINT,
+mode and a voytty-owned alternate screen, and installs SIGWINCH, SIGINT,
 SIGTERM, and SIGHUP handling. Normal detach, typed failure, captured signal,
 cancellation, and panic unwind restore terminal modes and display state before
 printing a content-free diagnostic. SIGKILL and process abort cannot run this
@@ -244,7 +244,7 @@ The view moves through preparing, synchronizing, active, and reconnecting
 states. A temporary remote transport loss displays:
 
 ```text
-[zterm: reconnecting]
+[voytty: reconnecting]
 ```
 
 The host Session and PTY continue. After the first successful attach, the
@@ -289,8 +289,8 @@ disconnecting or losing control cancels the operation and prevents delayed input
 from reaching another attachment. A single-row terminal must be enlarged first.
 
 Uploads are private to the host's effective user under
-`/tmp/zterm-<uid>/<session>/<transfer>/file[.ext]`. Successful files are retained
-without a zterm age or cumulative-size cleanup policy; normal host `/tmp` cleanup
+`/tmp/voytty-<uid>/<session>/<transfer>/file[.ext]`. Successful files are retained
+without a voytty age or cumulative-size cleanup policy; normal host `/tmp` cleanup
 may still remove them. An uncertain result can mean a file remains on the host;
 retrying is an explicit new upload. The AI tool decides how to interpret the
 inserted path and supported file format.
@@ -341,7 +341,7 @@ a new, independent command.
 ## Identity reset
 
 ```text
-zterm reset [-y|--yes]
+voytty reset [-y|--yes]
 ```
 
 Identity reset is destructive but does not uninstall the binary. It reports
@@ -353,7 +353,7 @@ It then performs a bounded daemon stop, obtains the lifecycle lock, rechecks
 the exact identity and daemon state, and removes only the validated managed
 state root. No `RevokeSelf` is sent and setup is not run automatically.
 
-After reset, run `zterm setup` to create a different identity and pair again.
+After reset, run `voytty setup` to create a different identity and pair again.
 The signed installer, explicit updater, and uninstaller reuse this local
 lifecycle boundary; see [Install, update, and uninstall](install.md).
 

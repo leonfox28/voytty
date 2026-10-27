@@ -7,11 +7,11 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use zterm_core::DomainErrorKind;
-use zterm_platform::account::EffectiveAccount;
+use voytty_core::DomainErrorKind;
+use voytty_platform::account::EffectiveAccount;
 #[cfg(unix)]
-use zterm_platform::user_state::FileLock;
-use zterm_platform::user_state::UserPaths;
+use voytty_platform::user_state::FileLock;
+use voytty_platform::user_state::UserPaths;
 
 use crate::client::LocalClient;
 use crate::error::DaemonError;
@@ -56,12 +56,12 @@ impl fmt::Debug for DaemonLauncher {
 }
 
 impl DaemonLauncher {
-    /// Resolves the current zterm executable and product hidden argument.
+    /// Resolves the current voytty executable and product hidden argument.
     pub fn current() -> Result<Self, DaemonError> {
         let executable = std::env::current_exe().map_err(|error| {
             DaemonError::new(
                 DomainErrorKind::DaemonStartTimeout,
-                format!("unable to locate current zterm executable: {error}"),
+                format!("unable to locate current voytty executable: {error}"),
             )
         })?;
         Ok(Self {
@@ -135,7 +135,7 @@ pub async fn ensure_daemon_with(
     }
 
     let mut command =
-        zterm_platform::local_unix::detached_command(executable, paths, internal_argument)
+        voytty_platform::local_unix::detached_command(executable, paths, internal_argument)
             .map_err(platform_error)?;
     let mut child = command.spawn().map_err(|error| {
         DaemonError::new(
@@ -183,7 +183,7 @@ pub async fn ensure_current_daemon(_paths: &UserPaths) -> Result<DaemonReadiness
 /// Product hidden entry: detach before runtime initialization, then serve.
 pub fn run_internal_daemon() -> Result<(), DaemonError> {
     #[cfg(unix)]
-    zterm_platform::local_unix::detach_current_process().map_err(platform_error)?;
+    voytty_platform::local_unix::detach_current_process().map_err(platform_error)?;
     run_internal_daemon_foreground()
 }
 
@@ -194,25 +194,25 @@ pub fn run_internal_daemon_foreground() -> Result<(), DaemonError> {
         let paths = production_user_paths()?;
         let _diagnostics = crate::diagnostics::install(&paths);
         std::panic::set_hook(Box::new(|_| {
-            zterm_diagnostics::record(
-                zterm_diagnostics::Event::new(zterm_diagnostics::Kind::ProcessPanicked)
-                    .level(zterm_diagnostics::Level::Error),
+            voytty_diagnostics::record(
+                voytty_diagnostics::Event::new(voytty_diagnostics::Kind::ProcessPanicked)
+                    .level(voytty_diagnostics::Level::Error),
             );
-            let _ = zterm_diagnostics::flush(Duration::from_millis(250));
+            let _ = voytty_diagnostics::flush(Duration::from_millis(250));
         }));
-        zterm_diagnostics::record(zterm_diagnostics::Event::new(
-            zterm_diagnostics::Kind::ProcessStarted,
+        voytty_diagnostics::record(voytty_diagnostics::Event::new(
+            voytty_diagnostics::Kind::ProcessStarted,
         ));
         let result = run_daemon(&paths);
         if let Err(error) = &result {
-            zterm_diagnostics::record(
-                zterm_diagnostics::Event::new(zterm_diagnostics::Kind::ProcessFailed)
-                    .level(zterm_diagnostics::Level::Error)
+            voytty_diagnostics::record(
+                voytty_diagnostics::Event::new(voytty_diagnostics::Kind::ProcessFailed)
+                    .level(voytty_diagnostics::Level::Error)
                     .error(error.kind()),
             );
         } else {
-            zterm_diagnostics::record(zterm_diagnostics::Event::new(
-                zterm_diagnostics::Kind::ProcessStopped,
+            voytty_diagnostics::record(voytty_diagnostics::Event::new(
+                voytty_diagnostics::Kind::ProcessStopped,
             ));
         }
         result
@@ -289,7 +289,7 @@ fn run_daemon_with_network_mode(
         DaemonNetworkMode::LocalOnlyTest => None,
     };
     let (listener, socket_ownership) =
-        zterm_platform::local_unix::bind_owned_daemon_socket(paths, &daemon_lock)
+        voytty_platform::local_unix::bind_owned_daemon_socket(paths, &daemon_lock)
             .map_err(platform_error)?;
     let (service, network, _store_actor) = match network_inputs {
         Some((authorizations, identity)) => {
@@ -300,14 +300,14 @@ fn run_daemon_with_network_mode(
             let directory = DeviceDirectory::new(store_handle.clone());
             let connection_identity =
                 ConnectionIdentity::product(setup.device_id, setup.config.device_name.clone())?
-                    .with_capabilities(zterm_core::Capabilities::from_bits_retain(
-                        zterm_core::Capabilities::LOCAL_LIFECYCLE
-                            | zterm_core::Capabilities::SESSION_SERVICE
-                            | zterm_core::Capabilities::TERMINAL_SERVICE
-                            | zterm_core::Capabilities::FILE_UPLOAD_SERVICE,
+                    .with_capabilities(voytty_core::Capabilities::from_bits_retain(
+                        voytty_core::Capabilities::LOCAL_LIFECYCLE
+                            | voytty_core::Capabilities::SESSION_SERVICE
+                            | voytty_core::Capabilities::TERMINAL_SERVICE
+                            | voytty_core::Capabilities::FILE_UPLOAD_SERVICE,
                     ));
             let profile = InfrastructureProfile::from_validated(&setup.config.infrastructure);
-            let limits = zterm_core::TransportLimits::default();
+            let limits = voytty_core::TransportLimits::default();
             let (network_startup, network_handle) = NetworkStartup::prepare(
                 identity,
                 profile,
@@ -392,7 +392,7 @@ fn run_daemon_with_network_mode(
     tracing::info!(
         component = "daemon",
         operation = "ready",
-        version = zterm_core::BuildIdentity::current().version,
+        version = voytty_core::BuildIdentity::current().version,
         pid = std::process::id(),
         "Local daemon ready"
     );
@@ -412,7 +412,7 @@ fn run_daemon_with_network_mode(
 #[cfg(unix)]
 fn acquire_daemon_lock(
     paths: &UserPaths,
-) -> Result<zterm_platform::local_unix::DaemonLock, DaemonError> {
+) -> Result<voytty_platform::local_unix::DaemonLock, DaemonError> {
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
         if Instant::now() >= deadline {
@@ -422,7 +422,7 @@ fn acquire_daemon_lock(
             ));
         }
         if let Some(lock) =
-            zterm_platform::local_unix::DaemonLock::try_acquire(paths).map_err(platform_error)?
+            voytty_platform::local_unix::DaemonLock::try_acquire(paths).map_err(platform_error)?
         {
             return Ok(lock);
         }
@@ -437,9 +437,9 @@ fn acquire_daemon_lock(
 #[allow(clippy::too_many_arguments)]
 fn run_owned_daemon_listener(
     paths: &UserPaths,
-    daemon_lock: &zterm_platform::local_unix::DaemonLock,
+    daemon_lock: &voytty_platform::local_unix::DaemonLock,
     mut listener: std::os::unix::net::UnixListener,
-    mut socket_ownership: zterm_platform::local_unix::DaemonSocketOwnership,
+    mut socket_ownership: voytty_platform::local_unix::DaemonSocketOwnership,
     service: std::sync::Arc<DaemonService>,
     mut limits: crate::local_ipc::LocalIpcLimits,
     cleanup_timeout: Duration,
@@ -488,7 +488,7 @@ fn run_owned_daemon_listener(
                     Some(network) => runtime.block_on(network.shutdown_until(cleanup_deadline)),
                     None => Ok(()),
                 };
-                let socket_cleanup = zterm_platform::local_unix::remove_owned_daemon_socket(
+                let socket_cleanup = voytty_platform::local_unix::remove_owned_daemon_socket(
                     paths,
                     daemon_lock,
                     &socket_ownership,
@@ -521,7 +521,7 @@ fn run_owned_daemon_listener(
                         "network cleanup failed after fatal local listener exit"
                     );
                 }
-                zterm_platform::local_unix::remove_owned_daemon_socket(
+                voytty_platform::local_unix::remove_owned_daemon_socket(
                     paths,
                     daemon_lock,
                     &socket_ownership,
@@ -551,7 +551,7 @@ fn run_owned_daemon_listener(
                 }
                 limits = limits.without_accept_failure_injection();
                 let rebound = loop {
-                    match zterm_platform::local_unix::rebind_owned_daemon_socket(
+                    match voytty_platform::local_unix::rebind_owned_daemon_socket(
                         paths,
                         daemon_lock,
                         &socket_ownership,
@@ -591,9 +591,9 @@ fn spawn_inside_runtime<T>(runtime: &tokio::runtime::Runtime, spawn: impl FnOnce
 #[doc(hidden)]
 pub fn run_owned_daemon_listener_for_test(
     paths: &UserPaths,
-    daemon_lock: zterm_platform::local_unix::DaemonLock,
+    daemon_lock: voytty_platform::local_unix::DaemonLock,
     listener: std::os::unix::net::UnixListener,
-    socket_ownership: zterm_platform::local_unix::DaemonSocketOwnership,
+    socket_ownership: voytty_platform::local_unix::DaemonSocketOwnership,
     service: std::sync::Arc<DaemonService>,
     limits: crate::local_ipc::LocalIpcLimits,
     cleanup_timeout: Duration,
@@ -647,14 +647,14 @@ pub(crate) async fn acquire_lifecycle_lock(
 }
 
 #[cfg(unix)]
-fn platform_error(error: zterm_platform::local_unix::LocalPlatformError) -> DaemonError {
+fn platform_error(error: voytty_platform::local_unix::LocalPlatformError) -> DaemonError {
     let kind = platform_error_kind(&error);
     DaemonError::new(kind, error.to_string())
 }
 
 #[cfg(unix)]
-fn platform_error_kind(error: &zterm_platform::local_unix::LocalPlatformError) -> DomainErrorKind {
-    use zterm_platform::local_unix::LocalPlatformError;
+fn platform_error_kind(error: &voytty_platform::local_unix::LocalPlatformError) -> DomainErrorKind {
+    use voytty_platform::local_unix::LocalPlatformError;
     match error {
         LocalPlatformError::Path(_) | LocalPlatformError::UnsafeSocket(_) => {
             DomainErrorKind::PathUnsafe

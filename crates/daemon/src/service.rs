@@ -9,16 +9,16 @@ use std::sync::Arc;
 #[cfg(unix)]
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use voytty_core::DeviceId;
 #[cfg(unix)]
-use zeroize::{Zeroize, Zeroizing};
-use zterm_core::DeviceId;
-#[cfg(unix)]
-use zterm_core::{
+use voytty_core::{
     AuthorizationSnapshot, AuthorizationStatus, Capabilities, DeviceAlias, DeviceSummary,
     DomainErrorKind,
 };
 #[cfg(unix)]
-use zterm_proto::{DecodedFrame, WireKind, encode_message, v2};
+use voytty_proto::{DecodedFrame, WireKind, encode_message, v2};
+#[cfg(unix)]
+use zeroize::{Zeroize, Zeroizing};
 
 #[cfg(unix)]
 use crate::authorization::AuthorizationRegistry;
@@ -427,7 +427,7 @@ impl DaemonService {
         self.dispatch_until_with_progress(
             frame,
             deadline,
-            zterm_client::progress::ProgressObserver::default(),
+            voytty_client::progress::ProgressObserver::default(),
         )
         .await
     }
@@ -437,7 +437,7 @@ impl DaemonService {
         &self,
         frame: DecodedFrame,
         deadline: Instant,
-        progress: zterm_client::progress::ProgressObserver,
+        progress: voytty_client::progress::ProgressObserver,
     ) -> ServiceReply {
         if matches!(
             frame.kind,
@@ -480,7 +480,7 @@ impl DaemonService {
         &self,
         mut frame: DecodedFrame,
         deadline: Instant,
-        progress: zterm_client::progress::ProgressObserver,
+        progress: voytty_client::progress::ProgressObserver,
     ) -> ServiceReply {
         let request_id = frame.request_id;
         let request = decode_request::<v2::LocalSessionUnaryRequest>(&frame);
@@ -514,7 +514,7 @@ impl DaemonService {
                     if request.report_progress {
                         progress
                     } else {
-                        zterm_client::progress::ProgressObserver::default()
+                        voytty_client::progress::ProgressObserver::default()
                     },
                 )
                 .await?;
@@ -603,7 +603,7 @@ impl DaemonService {
         request: v2::LocalPairCreateRequest,
         deadline: Instant,
     ) -> Result<ServiceReply, DaemonError> {
-        let (operation_id, fingerprint) = zterm_proto::validate_pair_operation(
+        let (operation_id, fingerprint) = voytty_proto::validate_pair_operation(
             &request.ephemeral_operation_id,
             &request.fingerprint,
         )
@@ -643,7 +643,7 @@ impl DaemonService {
                 "local device management is required for pair acceptance",
             ));
         };
-        let (operation_id, fingerprint) = zterm_proto::validate_pair_operation(
+        let (operation_id, fingerprint) = voytty_proto::validate_pair_operation(
             &request.ephemeral_operation_id,
             &request.fingerprint,
         )
@@ -784,7 +784,7 @@ impl DaemonService {
         devices: &DeviceManagement,
         deadline: Instant,
     ) -> Result<ServiceReply, DaemonError> {
-        use zterm_diagnostics::{Event as DiagnosticEvent, Kind, Level, Operation, Outcome};
+        use voytty_diagnostics::{Event as DiagnosticEvent, Kind, Level, Operation, Outcome};
         let diagnostic = Operation::default();
         let request: v2::LocalDeviceRevokeRequest = decode_request(&frame)?;
         let device_id = request.try_into().map_err(device_wire_error)?;
@@ -817,7 +817,7 @@ impl DaemonService {
             generation = generation.get(),
             "Inbound authorization revoked"
         );
-        zterm_diagnostics::record(
+        voytty_diagnostics::record(
             DiagnosticEvent::new(Kind::AuthorizationRevoked)
                 .operation(&diagnostic)
                 .committed(true)
@@ -855,7 +855,7 @@ impl DaemonService {
                 .outcome(Outcome::PartialCompletion)
                 .error(error.kind()),
         };
-        zterm_diagnostics::record(event);
+        voytty_diagnostics::record(event);
         cleanup?;
         drop(guard);
 
@@ -949,7 +949,7 @@ impl DaemonService {
                     &v2::LocalStatusResponse {
                         protocol: Some(protocol_proto()),
                         version: self.build_version(),
-                        phase: zterm_core::PHASE_NAME.to_owned(),
+                        phase: voytty_core::PHASE_NAME.to_owned(),
                         device_id: Some(self.setup.device_id.into()),
                         endpoint_id: self.setup.endpoint_id.clone(),
                         device_name: self.setup.config.device_name.clone(),
@@ -1035,7 +1035,7 @@ impl DaemonService {
             }
             WireKind::LocalTargetResolveRequest => {
                 let request: v2::LocalTargetResolveRequest = decode_request(&frame)?;
-                let target = if request.selector == zterm_core::RESERVED_DEVICE_ALIAS {
+                let target = if request.selector == voytty_core::RESERVED_DEVICE_ALIAS {
                     crate::device_directory::ResolvedSessionTarget::local()
                 } else {
                     self.remote_sessions
@@ -1179,8 +1179,8 @@ async fn await_service_until<R>(
 }
 
 #[cfg(unix)]
-fn device_wire_error(error: zterm_proto::WireFieldError) -> DaemonError {
-    let kind = if matches!(error, zterm_proto::WireFieldError::InvalidAlias(_)) {
+fn device_wire_error(error: voytty_proto::WireFieldError) -> DaemonError {
+    let kind = if matches!(error, voytty_proto::WireFieldError::InvalidAlias(_)) {
         DomainErrorKind::InvalidDeviceAlias
     } else {
         DomainErrorKind::MalformedFrame
@@ -1189,7 +1189,7 @@ fn device_wire_error(error: zterm_proto::WireFieldError) -> DaemonError {
 }
 
 #[cfg(unix)]
-fn pair_operation_wire_error(error: zterm_proto::PairOperationError) -> DaemonError {
+fn pair_operation_wire_error(error: voytty_proto::PairOperationError) -> DaemonError {
     DaemonError::new(DomainErrorKind::MalformedFrame, error.to_string())
 }
 
@@ -1248,7 +1248,7 @@ impl ServiceReply {
 
     pub(crate) fn decoded(frame: DecodedFrame) -> Result<Self, DaemonError> {
         let bytes = Zeroizing::new(
-            zterm_proto::encode_payload(
+            voytty_proto::encode_payload(
                 frame.kind,
                 frame.request_id,
                 frame.deadline_ms,
@@ -1277,7 +1277,7 @@ fn resolved_target_wire(
 }
 
 #[cfg(unix)]
-pub(crate) use zterm_client::protocol::protocol_error;
+pub(crate) use voytty_client::protocol::protocol_error;
 
 #[cfg(unix)]
 fn decode_request<Message>(frame: &DecodedFrame) -> Result<Message, DaemonError>
@@ -1290,8 +1290,8 @@ where
 #[cfg(unix)]
 fn protocol_proto() -> v2::ProtocolVersion {
     v2::ProtocolVersion {
-        wire_major: zterm_proto::WIRE_MAJOR,
-        state_schema: zterm_proto::STATE_SCHEMA_VERSION,
+        wire_major: voytty_proto::WIRE_MAJOR,
+        state_schema: voytty_proto::STATE_SCHEMA_VERSION,
         capabilities: Capabilities::LOCAL_LIFECYCLE
             | Capabilities::SESSION_SERVICE
             | Capabilities::TERMINAL_SERVICE
@@ -1329,7 +1329,7 @@ fn now_unix() -> u64 {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use zterm_core::{ConnectionAttemptId, ConnectionCandidateKey};
+    use voytty_core::{ConnectionAttemptId, ConnectionCandidateKey};
 
     #[test]
     fn live_device_projection_uses_peer_and_session_owners() {

@@ -1,11 +1,11 @@
 //! Upload stream owner: existing authorization/controller admission plus off-actor disk IO.
 
 use super::*;
-use zterm_client::framing::FrameReader;
-use zterm_core::upload::*;
-use zterm_diagnostics::{Event, Kind, Level, Operation, Outcome};
-use zterm_platform::upload::StagedUpload;
-use zterm_proto::upload::UploadMessage;
+use voytty_client::framing::FrameReader;
+use voytty_core::upload::*;
+use voytty_diagnostics::{Event, Kind, Level, Operation, Outcome};
+use voytty_platform::upload::StagedUpload;
+use voytty_proto::upload::UploadMessage;
 
 #[derive(Default)]
 struct Observation {
@@ -64,7 +64,7 @@ impl SessionWireServer {
             if let Some(session) = observation.session {
                 event = event.session(session);
             }
-            zterm_diagnostics::record(event);
+            voytty_diagnostics::record(event);
             write_error_best_effort(
                 &mut writer,
                 request_id,
@@ -103,7 +103,7 @@ impl SessionWireServer {
         let id = TransferId::from_bytes(&random[..TransferId::LENGTH])
             .expect("fixed random transfer ID");
         let size = metadata.size();
-        zterm_diagnostics::record(
+        voytty_diagnostics::record(
             Event::new(Kind::UploadStarted)
                 .operation(operation)
                 .session(binding.session_id)
@@ -174,7 +174,7 @@ impl SessionWireServer {
                     }
                 }
                 UploadMessage::Cancel { id: received } if received == id => {
-                    zterm_diagnostics::record(
+                    voytty_diagnostics::record(
                         Event::new(Kind::UploadCancelled)
                             .operation(operation)
                             .session(binding.session_id)
@@ -209,7 +209,7 @@ impl SessionWireServer {
                         )
                         .await?;
                     observation.committed = true;
-                    zterm_diagnostics::record(
+                    voytty_diagnostics::record(
                         Event::new(Kind::UploadCompleted)
                             .operation(operation)
                             .session(binding.session_id)

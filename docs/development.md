@@ -31,13 +31,13 @@ upgrade is an explicit repository change and must rerun every quality gate.
 ## Product version
 
 The root `[workspace.package].version` is the single lockstep product version,
-and all six zterm product crates inherit it with `version.workspace = true`;
+and all six voytty product crates inherit it with `version.workspace = true`;
 do not assign a component-specific version to a crate. A release preparation
 changes this one value, refreshes `Cargo.lock`, and advances the CLI, daemon,
 protocol, platform libraries, apps, and Relay wrapper as one product.
 
 `tests/relay/handshake-probe` is deliberately outside the root workspace. It is
-an internal acceptance tool rather than a shipped zterm component, so its
+an internal acceptance tool rather than a shipped voytty component, so its
 `0.0.0` package version is not part of the lockstep release contract.
 
 ## Install missing tools on macOS
@@ -90,20 +90,20 @@ rustup target add \
   --toolchain 1.98.0-aarch64-apple-darwin
 ```
 
-Do not install a global `protoc` for this project. `zterm-proto` uses the exact
+Do not install a global `protoc` for this project. `voytty-proto` uses the exact
 `protoc-bin-vendored` dependency from `Cargo.lock`, then passes that executable
 directly to `prost-build`.
 
 ## Workspace dependency direction
 
 ```text
-                         zterm-core
+                         voytty-core
                     /        |        \
-             zterm-proto  zterm-platform  zterm-terminal
+             voytty-proto  voytty-platform  voytty-terminal
                     \        |        /
-                         zterm-daemon
+                         voytty-daemon
                               |
-                          zterm-cli
+                          voytty-cli
 ```
 
 Arrows run from a consumer to its dependency. Core owns domain and
@@ -144,7 +144,7 @@ those boundaries and the recipes print that distinction.
 
 `ci-unix` also runs `ci-askama`, the upstream library/config tests for the
 temporary UniFFI template-parser backport. Its provenance and removal condition
-are recorded in [the vendor note](../vendor/askama_derive/ZTERM.md).
+are recorded in [the vendor note](../vendor/askama_derive/VOYTTY.md).
 
 The terminal-identity integration test uses the real account's login shell.
 It waits for Bash/Zsh's bracketed-paste mode, or the default Bash `$`/`#` prompt
@@ -217,7 +217,7 @@ dependencies (`target/{debug,release,aarch64-linux-android/release}`). Only PRs
 restore it; main builds the APK candidate cold, then trims and saves for later
 PRs when the lockfile key is new. A local cold/restored comparison on
 2026-10-10 compiled 630 versus 19 crates and produced a byte-identical
-`libzterm_android.so`.
+`libvoytty_android.so`.
 
 The Android job also enables Gradle's task-output build cache. Only PRs restore
 `~/.gradle/caches/build-cache-1`; main looks up the key without downloading it,
@@ -296,7 +296,7 @@ For a failed job, use the matching recipe printed in its step summary. Runner
 queue delay is separate from job execution time; job timeouts prevent hangs
 but do not eliminate GitHub-hosted queueing.
 
-`cargo run --quiet --package zterm-cli -- --help` and `--version` are
-side-effect free. Never use real `~/.zterm` for mutation tests; inject
+`cargo run --quiet --package voytty-cli -- --help` and `--version` are
+side-effect free. Never use real `~/.voytty` for mutation tests; inject
 task-private `UserPaths` through the library harnesses. Local readiness must
 remain independent of Iroh, DNS, Relay, and Internet access.

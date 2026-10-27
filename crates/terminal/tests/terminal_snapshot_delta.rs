@@ -1,7 +1,9 @@
 //! Semantic snapshot, checkpoint, delta, and resource-boundary regressions.
 
-use zterm_core::terminal::{ActiveScreen, TerminalColor, TerminalSize, TerminalSurfaceDeltaResult};
-use zterm_terminal::{TerminalError, TerminalModel};
+use voytty_core::terminal::{
+    ActiveScreen, TerminalColor, TerminalSize, TerminalSurfaceDeltaResult,
+};
+use voytty_terminal::{TerminalError, TerminalModel};
 
 fn ingest_chunked(model: &mut TerminalModel, bytes: &[u8], widths: &[usize]) {
     let mut offset = 0;

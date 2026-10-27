@@ -6,7 +6,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
-use zterm_core::{
+use voytty_core::{
     AuthorizationSnapshot, AuthorizationStatus, DeviceAlias, DeviceDisplayName, DeviceId,
     DomainErrorKind,
 };
@@ -54,7 +54,7 @@ struct ReservationEntry {
     count: usize,
 }
 
-pub use zterm_client::model::ResolvedSessionTarget;
+pub use voytty_client::model::ResolvedSessionTarget;
 
 /// The single owner of the directional device merge and alias reservations.
 #[derive(Clone)]
@@ -83,7 +83,7 @@ impl DeviceDirectory {
         selector: &str,
         deadline: Instant,
     ) -> Result<ResolvedSessionTarget, DaemonError> {
-        if selector == zterm_core::RESERVED_DEVICE_ALIAS {
+        if selector == voytty_core::RESERVED_DEVICE_ALIAS {
             return Ok(ResolvedSessionTarget::local());
         }
 

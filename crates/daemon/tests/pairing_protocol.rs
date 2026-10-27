@@ -12,15 +12,15 @@ mod state_fixture;
 
 use std::time::{Duration, Instant};
 
-use zeroize::Zeroizing;
-use zterm_core::{
+use voytty_core::{
     AuthorizationSnapshot, AuthorizationStatus, DeviceAlias, DeviceDisplayName, DeviceId,
     DomainErrorKind, EphemeralOperationId, PAIR_PROTOCOL_VERSION, PairBegin, PairFingerprint,
     PairNonce, PairProof, RelayHint, TransportLimits,
 };
-use zterm_daemon::device_directory::DeviceDirectory;
-use zterm_daemon::pairing::{PairOfferRequest, PairOfferState, PairingError, PairingManager};
-use zterm_daemon::store::{StateStore, StoreActor};
+use voytty_daemon::device_directory::DeviceDirectory;
+use voytty_daemon::pairing::{PairOfferRequest, PairOfferState, PairingError, PairingManager};
+use voytty_daemon::store::{StateStore, StoreActor};
+use zeroize::Zeroizing;
 
 use state_fixture::TestState;
 
@@ -31,7 +31,7 @@ fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(2)
 }
 
-fn offer(manager: &PairingManager, operation: u8) -> zterm_daemon::pairing::PairOfferCreated {
+fn offer(manager: &PairingManager, operation: u8) -> voytty_daemon::pairing::PairOfferCreated {
     let ttl = 60;
     manager
         .create_offer(
@@ -53,7 +53,7 @@ fn proof_before_cas_and_durable_commit_preserve_one_way_rows() {
     let created = offer(&manager, 1);
     let offer_id = created.fields().offer_id();
     let (fields, secret) =
-        zterm_proto::decode_pair_ticket(created.ticket().expose()).expect("ticket decode");
+        voytty_proto::decode_pair_ticket(created.ticket().expose()).expect("ticket decode");
     let begin = PairBegin::new(
         offer_id,
         "controller-device",
@@ -151,7 +151,7 @@ fn proof_before_cas_and_durable_commit_preserve_one_way_rows() {
     let reverse_created = offer(&reverse_manager, 2);
     let reverse_offer_id = reverse_created.fields().offer_id();
     let (reverse_fields, reverse_secret) =
-        zterm_proto::decode_pair_ticket(reverse_created.ticket().expose())
+        voytty_proto::decode_pair_ticket(reverse_created.ticket().expose())
             .expect("reverse ticket decode");
     let reverse_begin = PairBegin::new(
         reverse_offer_id,

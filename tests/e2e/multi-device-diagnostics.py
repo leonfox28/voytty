@@ -15,7 +15,7 @@ spec = importlib.util.spec_from_file_location("multi_device", Path(__file__).wit
 md = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(md)
 BASE = md.BASE
-PACKAGE = "io.github.leonfox28.zterm.dev"
+PACKAGE = "io.github.leonfox28.voytty.dev"
 SDK = Path(os.environ.get("ANDROID_HOME", Path.home() / "Library/Android/sdk"))
 
 
@@ -36,17 +36,17 @@ def renew(environment, devices):
                      if (item := json.loads(line))}
         for device in set(devices) & {"A", "B"}:
             name = environment["vms"][device]
-            if not name.startswith("zterm-md-") or instances.get(name) != "Running":
+            if not name.startswith("voytty-md-") or instances.get(name) != "Running":
                 raise RuntimeError(f"owned {device} must already be running; no instance was started")
     if "C" in devices:
         name = call([*adb, "emu", "avd", "name"]).splitlines()[0]
-        if name != environment["avd"] or not name.startswith("zterm-md-"):
+        if name != environment["avd"] or not name.startswith("voytty-md-"):
             raise RuntimeError("recorded serial does not identify the owned emulator")
 
     for device in devices:
         if device in ("A", "B"):
             output = call(["limactl", "shell", "--workdir=/tmp", environment["vms"][device],
-                           "sudo", "-Hu", "zterm-" + device.lower(), "/usr/local/bin/zterm",
+                           "sudo", "-Hu", "voytty-" + device.lower(), "/usr/local/bin/voytty",
                            "logs", "debug", "on"])
             yield {"device": device, "method": "local CLI logs debug on", "output": output}
         else:

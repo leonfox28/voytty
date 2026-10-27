@@ -3,8 +3,8 @@
 use std::sync::{Arc, Barrier};
 use std::thread;
 
-use zterm_core::{ConnectionAttemptId, ConnectionCandidateKey, DeviceId};
-use zterm_daemon::connection_broker::{
+use voytty_core::{ConnectionAttemptId, ConnectionCandidateKey, DeviceId};
+use voytty_daemon::connection_broker::{
     DuplicateConnectionTestEvidence, duplicate_connection_test_evidence,
 };
 

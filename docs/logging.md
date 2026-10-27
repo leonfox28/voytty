@@ -1,6 +1,6 @@
 # Local logs and diagnostics
 
-Zterm saves key events by default on desktop, Android and iOS release/debug builds:
+Voytty saves key events by default on desktop, Android and iOS release/debug builds:
 startup/shutdown, Session and controller changes, pairing/revocation, network and
 route changes, connection/reconnect, upload/update outcomes, and frontend failures.
 Records include safe IDs, timestamps, stable error categories and operation timing.
@@ -10,10 +10,10 @@ paths and network addresses are excluded in both modes. Logs stay on this device
 ## Inspect desktop logs
 
 ```sh
-zterm logs -n 100
-zterm logs --level warn --since 30m
-zterm logs --component connection --session <session-id>
-zterm logs --include-debug --json
+voytty logs -n 100
+voytty logs --level warn --since 30m
+voytty logs --component connection --session <session-id>
+voytty logs --include-debug --json
 ```
 
 The default is the latest 100 key records; maximum selection is 1,000 lines from
@@ -31,9 +31,9 @@ context in `fields`. Human output renders these as English event descriptions.
 ## Enable detail for a problem
 
 ```sh
-zterm logs debug on
-zterm logs debug status
-zterm logs debug off
+voytty logs debug on
+voytty logs debug status
+voytty logs debug off
 ```
 
 `on` enables or renews a **15-minute** local interval; `off` stops collection early.
@@ -65,8 +65,8 @@ fails. Each application variant has its own private logs and control state.
 ## Export explicitly
 
 ```sh
-zterm logs export --output ./zterm-logs.jsonl
-zterm logs export --output ./zterm-detail.jsonl --include-debug
+voytty logs export --output ./voytty-logs.jsonl
+voytty logs export --output ./voytty-detail.jsonl --include-debug
 ```
 
 Desktop export creates a new 0600 file, refuses overwrite and destinations inside
@@ -77,7 +77,7 @@ Cancelling leaves terminal work unchanged.
 The JSONL header includes build/platform and omitted/truncated/pending-loss counts.
 Only validated event records follow; old text or arbitrary unknown fields are
 excluded. No config, identity or full status dump is included. Sharing the result
-is your explicit action; Zterm does not upload it.
+is your explicit action; Voytty does not upload it.
 
 ## Retention and older versions
 
@@ -88,7 +88,7 @@ is your explicit action; Zterm does not upload it.
 
 Files rotate during runtime. Detailed traffic cannot evict key history. Retention
 is based on size, not days. Desktop files live below the effective account's
-`~/.zterm/logs`: `daemon.log[.1]`, `daemon.debug.log[.1]`, `diagnostics.json` and
+`~/.voytty/logs`: `daemon.log[.1]`, `daemon.debug.log[.1]`, `diagnostics.json` and
 `writer.lock`. Android and iOS files are private and excluded from backup. iOS stores them in
 the application support directory, with file protection configured to permit
 access after the first device unlock following a restart; a cancelled/completed export removes its private staging copy. Control files

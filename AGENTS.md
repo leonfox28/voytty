@@ -1,4 +1,4 @@
-# Working on zterm
+# Working on voytty
 
 - Read `docs/development.md` for development commands and platform boundaries;
   read `docs/releasing.md` before release work. `docs/ci-release-optimization.md`

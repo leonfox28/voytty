@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-repository="leonfox28/zterm"
+repository="leonfox28/voytty"
 version=""
 install_dir=""
 maximum_script_bytes=262144
@@ -12,12 +12,12 @@ Usage: install.sh [--version <vSEMVER>] [--install-dir <directory>]
 
 Without --version, installs the latest stable GitHub Release. An exact stable
 or prerelease tag may be selected explicitly. This bootstrap downloads and
-runs the immutable installer from that Release; it never runs zterm setup.
+runs the immutable installer from that Release; it never runs voytty setup.
 EOF
 }
 
 fail() {
-    echo "zterm bootstrap failed: $*" >&2
+    echo "voytty bootstrap failed: $*" >&2
     exit 1
 }
 
@@ -54,9 +54,9 @@ if [ -n "$version" ]; then
         /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$/ { valid = 1 }
         END { exit valid ? 0 : 1 }
     ' || fail "--version must be a canonical v-prefixed SemVer tag"
-    installer_url="https://github.com/$repository/releases/download/$version/zterm-install.sh"
+    installer_url="https://github.com/$repository/releases/download/$version/voytty-install.sh"
 else
-    installer_url="https://github.com/$repository/releases/latest/download/zterm-install.sh"
+    installer_url="https://github.com/$repository/releases/latest/download/voytty-install.sh"
 fi
 
 if command -v curl >/dev/null 2>&1; then
@@ -82,17 +82,17 @@ else
     fail "curl or wget is required"
 fi
 
-temporary=$(mktemp -d "${TMPDIR:-/tmp}/zterm-bootstrap.XXXXXX") \
+temporary=$(mktemp -d "${TMPDIR:-/tmp}/voytty-bootstrap.XXXXXX") \
     || fail "unable to create a private temporary directory"
 chmod 700 "$temporary" || fail "unable to secure the temporary directory"
 cleanup() {
-    rm -f "$temporary/zterm-install.sh"
+    rm -f "$temporary/voytty-install.sh"
     rmdir "$temporary" 2>/dev/null || true
 }
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
 
-installer="$temporary/zterm-install.sh"
+installer="$temporary/voytty-install.sh"
 download "$installer_url" "$installer" "$maximum_script_bytes" \
     || fail "unable to download immutable installer"
 script_bytes=$(wc -c < "$installer" | tr -d '[:space:]')

@@ -4,8 +4,8 @@ use std::fs;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use zterm_core::DomainErrorKind;
-use zterm_platform::user_state::{FileLock, UserPaths};
+use voytty_core::DomainErrorKind;
+use voytty_platform::user_state::{FileLock, UserPaths};
 
 use crate::config::{ValidatedConfig, load_config, validate_setup_input, write_config};
 use crate::error::DaemonError;
@@ -19,7 +19,7 @@ const LOCK_POLL: Duration = Duration::from_millis(10);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BootstrapResult {
     /// Stable public device identity.
-    pub device_id: zterm_core::DeviceId,
+    pub device_id: voytty_core::DeviceId,
     /// Iroh canonical public endpoint encoding.
     pub endpoint_id: String,
     /// Committed configuration.

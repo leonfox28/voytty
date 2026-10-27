@@ -146,7 +146,7 @@ final class AppModel: ObservableObject {
                 self.monitor.pathUpdateHandler = { [weak self] _ in
                     Task { @MainActor [weak self] in await self?.networkChanged() }
                 }
-                self.monitor.start(queue: DispatchQueue(label: "zterm.network"))
+                self.monitor.start(queue: DispatchQueue(label: "voytty.network"))
             }
         }
         guard ready else {

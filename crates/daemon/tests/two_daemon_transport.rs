@@ -7,10 +7,10 @@
 
 use std::time::{Duration, Instant};
 
-use zterm_core::{AuthorizationStatus, DomainErrorKind, TransportLimits};
-use zterm_daemon::connection_broker::{AuthenticatedBiStream, StreamPurpose};
-use zterm_daemon::network::NetworkObserver;
-use zterm_proto::{FrameDecoder, WireKind, encode_message, v2};
+use voytty_core::{AuthorizationStatus, DomainErrorKind, TransportLimits};
+use voytty_daemon::connection_broker::{AuthenticatedBiStream, StreamPurpose};
+use voytty_daemon::network::NetworkObserver;
+use voytty_proto::{FrameDecoder, WireKind, encode_message, v2};
 
 #[path = "support/two_daemon_fixture.rs"]
 mod two_daemon_fixture;
@@ -61,7 +61,7 @@ async fn normal_setup_with_delays(
         .set_test_route(host_id, host.direct_address())
         .expect("direct fixture route");
     let started = Instant::now();
-    let deadline = started + zterm_client::protocol::REMOTE_STARTUP_DEADLINE;
+    let deadline = started + voytty_client::protocol::REMOTE_STARTUP_DEADLINE;
     let demand = controller
         .broker()
         .demand(host_id, deadline)
@@ -130,8 +130,8 @@ async fn startup_budget_normal_setup_still_has_one_total_deadline() {
     ignore = "real Iroh loopback is Linux CI only"
 )]
 async fn restarted_owner_replaces_stale_primary_and_rejects_late_old_handshake() {
-    use zterm_core::{Capabilities, ConnectionAttemptId};
-    use zterm_daemon::connection_broker::ConnectionIdentity;
+    use voytty_core::{Capabilities, ConnectionAttemptId};
+    use voytty_daemon::connection_broker::ConnectionIdentity;
     assert_linux_before_bind();
     let host = PreparedDaemonOwner::new("host");
     let controller = PreparedDaemonOwner::new("controller");
@@ -206,7 +206,7 @@ async fn restarted_owner_replaces_stale_primary_and_rejects_late_old_handshake()
     .expect("request");
     send.write_all(&request).await.expect("write request");
     send.finish().expect("finish request");
-    let frame = zterm_client::handshake::read_one_frame(
+    let frame = voytty_client::handshake::read_one_frame(
         &mut recv,
         16 * 1024,
         Instant::now() + Duration::from_secs(5),
@@ -314,7 +314,7 @@ fn production_cli_has_no_state_override_argument() {
         "--state-path",
         "--identity-path",
         "--socket-path",
-        "ZTERM_HOME",
+        "VOYTTY_HOME",
         "UserPaths::for_test",
     ] {
         assert!(
@@ -525,7 +525,7 @@ async fn complete_fallback_service_exchange(stream: &mut AuthenticatedBiStream, 
     stream.send.finish().expect("finish one service request");
     let response = stream
         .recv
-        .read_to_end(zterm_proto::MAX_FRAME_BYTES)
+        .read_to_end(voytty_proto::MAX_FRAME_BYTES)
         .await
         .expect("read one service response");
     let mut decoder = FrameDecoder::new();

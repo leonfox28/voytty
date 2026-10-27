@@ -1,6 +1,6 @@
 import XCTest
 import Darwin
-@testable import Zterm
+@testable import Voytty
 
 final class DiagnosticsTests: XCTestCase {
     private var directory: URL!
@@ -72,7 +72,7 @@ final class DiagnosticsTests: XCTestCase {
         XCTAssertThrowsError(try unavailable.setControl(diagnosticControl(enabled: false)))
         XCTAssertEqual(existing.control(), control)
         XCTAssertThrowsError(try unavailable.prepareExport(includeDebug: true, lost: 0))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("zterm-logs.jsonl").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("voytty-logs.jsonl").path))
     }
 
     func testControlExpiryMalformedControlAndExportCancellationCleanup() throws {

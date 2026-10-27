@@ -1,6 +1,6 @@
 import XCTest
 import UIKit
-@testable import Zterm
+@testable import Voytty
 
 @MainActor
 final class TerminalRenderingTests: XCTestCase {
@@ -138,7 +138,7 @@ final class TerminalRenderingTests: XCTestCase {
 
     func testOpenLinkOnlyAcceptsWebURLs() {
         XCTAssertNotNil(TerminalSelectionController.webURL("https://example.com/中文?q=x"))
-        for value in [nil, "file:///tmp/a", "javascript:alert(1)", "zterm://host", "https:", "relative/path", "https:///" ] as [String?] {
+        for value in [nil, "file:///tmp/a", "javascript:alert(1)", "voytty://host", "https:", "relative/path", "https:///" ] as [String?] {
             XCTAssertNil(TerminalSelectionController.webURL(value))
         }
     }

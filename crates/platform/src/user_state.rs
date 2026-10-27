@@ -51,7 +51,7 @@ impl UserPaths {
     /// Derives product paths from the effective account and safe runtime candidates.
     #[must_use]
     pub fn for_account(account: &EffectiveAccount) -> Self {
-        let state_root = account.home().join(".zterm");
+        let state_root = account.home().join(".voytty");
         let runtime_dir =
             runtime_candidate(account.uid()).unwrap_or_else(|| runtime_fallback(account.uid()));
         Self::from_roots(
@@ -113,7 +113,7 @@ impl UserPaths {
         &self.login_shell
     }
 
-    /// Persistent root (`~/.zterm`).
+    /// Persistent root (`~/.voytty`).
     #[must_use]
     pub fn state_root(&self) -> &Path {
         &self.state_root
@@ -514,8 +514,11 @@ pub fn activate_executable(
         .parent()
         .ok_or_else(|| PathError::NotAbsolute(target.to_path_buf()))?;
     let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let staged = parent.join(format!(".zterm.update-{}-{sequence}", std::process::id()));
-    let backup = parent.join(format!(".zterm.rollback-{}-{sequence}", std::process::id()));
+    let staged = parent.join(format!(".voytty.update-{}-{sequence}", std::process::id()));
+    let backup = parent.join(format!(
+        ".voytty.rollback-{}-{sequence}",
+        std::process::id()
+    ));
     let mut file = create_new_executable(&staged)?;
     let result = writer(&mut file)
         .and_then(|()| file.sync_all())
@@ -565,7 +568,7 @@ pub fn install_executable(source: &Path, target: &Path, uid: u32) -> Result<(), 
     }
 
     let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let staged = parent.join(format!(".zterm.install-{}-{sequence}", std::process::id()));
+    let staged = parent.join(format!(".voytty.install-{}-{sequence}", std::process::id()));
     let mut input = File::open(source).map_err(|error| io_error(source, error))?;
     let mut output = create_new_executable(&staged)?;
     let result = io::copy(&mut input, &mut output)
@@ -974,9 +977,9 @@ fn runtime_candidate(uid: u32) -> Option<PathBuf> {
     candidate.and_then(|base| {
         if validate_runtime_base(&base, uid) {
             #[cfg(target_os = "linux")]
-            let runtime = base.join("zterm");
+            let runtime = base.join("voytty");
             #[cfg(not(target_os = "linux"))]
-            let runtime = base.join(format!("zterm-{uid}"));
+            let runtime = base.join(format!("voytty-{uid}"));
             let socket = runtime.join("daemon.sock");
             (socket_path_bytes(&socket) <= MAX_SOCKET_PATH_BYTES).then_some(runtime)
         } else {
@@ -986,7 +989,7 @@ fn runtime_candidate(uid: u32) -> Option<PathBuf> {
 }
 
 fn runtime_fallback(uid: u32) -> PathBuf {
-    PathBuf::from(format!("/tmp/zterm-{uid}"))
+    PathBuf::from(format!("/tmp/voytty-{uid}"))
 }
 
 fn validate_runtime_base(path: &Path, uid: u32) -> bool {
@@ -1050,7 +1053,7 @@ mod tests {
         let paths = UserPaths::for_test(
             Uid::effective().as_raw(),
             home.clone(),
-            home.join(".zterm"),
+            home.join(".voytty"),
             temporary.path().join("run"),
         );
         (temporary, paths)
@@ -1167,7 +1170,7 @@ mod tests {
         fs::create_dir(&directory).expect("binary directory");
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o755))
             .expect("binary directory mode");
-        let target = directory.join("zterm");
+        let target = directory.join("voytty");
         fs::write(&target, b"old").expect("old executable");
         fs::set_permissions(&target, fs::Permissions::from_mode(0o700))
             .expect("old executable mode");
@@ -1213,7 +1216,7 @@ mod tests {
 
         fs::set_permissions(&target, fs::Permissions::from_mode(0o700))
             .expect("safe executable mode");
-        let link = directory.join("zterm");
+        let link = directory.join("voytty");
         symlink(&target, &link).expect("executable symlink");
         assert!(matches!(
             validate_owned_executable(&link, uid),
@@ -1237,10 +1240,10 @@ mod tests {
             .expect("source directory mode");
         fs::set_permissions(&destination_directory, fs::Permissions::from_mode(0o775))
             .expect("destination directory mode");
-        let source = source_directory.join("zterm");
+        let source = source_directory.join("voytty");
         fs::write(&source, b"candidate").expect("candidate bytes");
         fs::set_permissions(&source, fs::Permissions::from_mode(0o700)).expect("candidate mode");
-        let target = destination_directory.join("zterm");
+        let target = destination_directory.join("voytty");
         let uid = Uid::effective().as_raw();
 
         install_executable(&source, &target, uid).expect("first install");
@@ -1254,7 +1257,7 @@ mod tests {
             0o700
         );
         assert!(
-            !home.join(".zterm").exists(),
+            !home.join(".voytty").exists(),
             "binary install must not create product state"
         );
         assert!(install_executable(&source, &target, uid).is_err());
@@ -1284,7 +1287,7 @@ mod tests {
                 & 0o777,
             0o775
         );
-        assert!(!home.join(".zterm").exists());
+        assert!(!home.join(".voytty").exists());
     }
 
     #[cfg(unix)]
@@ -1554,7 +1557,7 @@ mod tests {
         let uid = Uid::effective().as_raw();
         assert_eq!(
             runtime_fallback(uid),
-            PathBuf::from(format!("/tmp/zterm-{uid}"))
+            PathBuf::from(format!("/tmp/voytty-{uid}"))
         );
 
         let home = temporary.path().join("home");
@@ -1571,7 +1574,7 @@ mod tests {
         }
 
         let long_runtime = temporary.path().join("r".repeat(MAX_SOCKET_PATH_BYTES));
-        let paths = UserPaths::for_test(uid, home.clone(), home.join(".zterm"), long_runtime);
+        let paths = UserPaths::for_test(uid, home.clone(), home.join(".voytty"), long_runtime);
         assert!(matches!(
             paths.prepare_runtime_directory(),
             Err(PathError::SocketPathTooLong(_))

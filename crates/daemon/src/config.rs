@@ -5,12 +5,12 @@ use std::fs;
 
 use iroh::RelayUrl;
 use serde::{Deserialize, Deserializer, Serialize};
-use zterm_core::DomainErrorKind;
-use zterm_platform::user_state::{UserPaths, atomic_write, validate_regular_file};
+use voytty_core::DomainErrorKind;
+use voytty_platform::user_state::{UserPaths, atomic_write, validate_regular_file};
 
 use crate::error::DaemonError;
 
-pub use zterm_platform::pty::TerminalIdentity;
+pub use voytty_platform::pty::TerminalIdentity;
 
 /// Current configuration schema.
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
@@ -23,7 +23,7 @@ pub struct ConfigV1 {
     pub schema_version: u32,
     /// User-facing device name.
     pub device_name: String,
-    /// Child-program identity for newly created sessions; older configs use zterm.
+    /// Child-program identity for newly created sessions; older configs use voytty.
     #[serde(default)]
     pub terminal_identity: TerminalIdentity,
     /// Mutually exclusive infrastructure selection.
@@ -163,7 +163,7 @@ impl ConfigV1 {
         }
     }
 
-    /// Applies zterm's semantic configuration validation.
+    /// Applies voytty's semantic configuration validation.
     pub fn validate(self) -> Result<ValidatedConfig, DaemonError> {
         if self.schema_version != CONFIG_SCHEMA_VERSION {
             return Err(DaemonError::new(

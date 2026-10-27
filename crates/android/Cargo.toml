@@ -1,5 +1,5 @@
 [package]
-name = "zterm-android"
+name = "voytty-android"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,12 +11,12 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 tracing-subscriber.workspace = true
-zterm-diagnostics.workspace = true
+voytty-diagnostics.workspace = true
 iroh.workspace = true
 zeroize.workspace = true
-zterm-client.workspace = true
-zterm-core.workspace = true
-zterm-proto.workspace = true
+voytty-client.workspace = true
+voytty-core.workspace = true
+voytty-proto.workspace = true
 tokio = { workspace = true, features = ["fs"] }
 tokio-util.workspace = true
 uniffi = { workspace = true, features = ["tokio"] }

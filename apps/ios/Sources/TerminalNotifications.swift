@@ -76,7 +76,7 @@ final class TerminalNotifications: ObservableObject {
         permission = fresh
         guard fresh == .allowed, enabled, admitted == revision, !Task.isCancelled, current() else { return false }
         let content = UNMutableNotificationContent()
-        content.title = event.title.flatMap { $0.isEmpty ? nil : $0 } ?? "zterm"
+        content.title = event.title.flatMap { $0.isEmpty ? nil : $0 } ?? "voytty"
         content.body = event.body
         content.sound = .default
         // Check the repository epoch and native generation immediately before the platform call.

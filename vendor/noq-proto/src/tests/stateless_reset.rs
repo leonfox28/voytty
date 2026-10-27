@@ -139,7 +139,7 @@ fn assert_reset(pair: &mut ConnPair, receiver: Side, path: PathId) {
 }
 
 #[test]
-fn zterm_reset_nonzero_path() {
+fn voytty_reset_nonzero_path() {
     let _guard = subscribe();
     for receiver in [Client, Server] {
         let mut pair = connected();
@@ -149,7 +149,7 @@ fn zterm_reset_nonzero_path() {
 }
 
 #[test]
-fn zterm_reset_after_initial_path_discarded() {
+fn voytty_reset_after_initial_path_discarded() {
     let _guard = subscribe();
     for receiver in [Client, Server] {
         let mut pair = connected();
@@ -162,7 +162,7 @@ fn zterm_reset_after_initial_path_discarded() {
 }
 
 #[test]
-fn zterm_reset_rejects_wrong_source_and_token() {
+fn voytty_reset_rejects_wrong_source_and_token() {
     let _guard = subscribe();
     for receiver in [Client, Server] {
         let mut pair = connected();
@@ -184,7 +184,7 @@ fn zterm_reset_rejects_wrong_source_and_token() {
 }
 
 #[test]
-fn zterm_reset_retired_path_and_queued_reset_are_ignored() {
+fn voytty_reset_retired_path_and_queued_reset_are_ignored() {
     let _guard = subscribe();
     for retired in [PathId::ZERO, PathId::from(1u8)] {
         for receiver in [Client, Server] {
@@ -211,7 +211,7 @@ fn zterm_reset_retired_path_and_queued_reset_are_ignored() {
 }
 
 #[test]
-fn zterm_reset_after_network_change_rotates_cids() {
+fn voytty_reset_after_network_change_rotates_cids() {
     let _guard = subscribe();
     #[derive(Debug)]
     struct Recoverable;
@@ -237,7 +237,7 @@ fn zterm_reset_after_network_change_rotates_cids() {
 }
 
 #[test]
-fn zterm_reset_after_peer_address_migration() {
+fn voytty_reset_after_peer_address_migration() {
     let _guard = subscribe();
     for path in [PathId::ZERO, PathId::from(1u8)] {
         let mut pair = connected();
@@ -252,7 +252,7 @@ fn zterm_reset_after_peer_address_migration() {
 }
 
 #[test]
-fn zterm_reset_with_known_cid_still_checks_source_and_retirement() {
+fn voytty_reset_with_known_cid_still_checks_source_and_retirement() {
     let _guard = subscribe();
     for receiver in [Client, Server] {
         for retired in [false, true] {

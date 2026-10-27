@@ -10,11 +10,11 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
-use zterm_client::{
+use voytty_client::{
     error::ClientError,
     upload::{UploadConnector, UploadOrigin},
 };
-use zterm_core::{
+use voytty_core::{
     DomainErrorKind,
     upload::{MAX_UPLOAD_BYTES, UploadMetadata, UploadPhase, UploadProgress, UploadedFile},
 };
@@ -37,7 +37,7 @@ impl DesktopUpload {
     ) -> Self {
         let cancel = CancellationToken::new();
         let cancellation = cancel.clone();
-        let (updates, progress) = watch::channel(zterm_client::upload::preparing());
+        let (updates, progress) = watch::channel(voytty_client::upload::preparing());
         let task = tokio::spawn(async move {
             let semaphore = CLIPBOARD_JOB.get_or_init(|| Arc::new(Semaphore::new(1)));
             let permit = semaphore
@@ -58,7 +58,7 @@ impl DesktopUpload {
                 metadata,
                 _temporary,
             } = source;
-            zterm_client::upload::upload(
+            voytty_client::upload::upload(
                 &*connector,
                 origin.target,
                 origin.binding,
@@ -246,7 +246,7 @@ pub(super) struct UploadStatus {
 impl UploadStatus {
     pub(super) fn preparing() -> Self {
         Self {
-            progress: zterm_client::upload::preparing(),
+            progress: voytty_client::upload::preparing(),
             sampled: Instant::now(),
             sampled_bytes: 0,
             speed: 0.0,

@@ -14,19 +14,19 @@ use iroh::{
     Endpoint, SecretKey,
     endpoint::{Builder, Connection},
 };
-use zterm_client::{
+use voytty_client::{
     handshake::{read_one_frame, write_handshake_message},
-    iroh_controller::{IrohController, ZTERM_ALPN},
+    iroh_controller::{IrohController, VOYTTY_ALPN},
     model::ResolvedSessionTarget,
     unary::{SessionUnaryRequest, SessionUnaryTransport},
 };
-use zterm_core::{AuthGeneration, Capabilities, ConnectionWelcome, DeviceId, RelayHint};
-use zterm_proto::{FrameDecoder, WireKind, encode_message, v2};
+use voytty_core::{AuthGeneration, Capabilities, ConnectionWelcome, DeviceId, RelayHint};
+use voytty_proto::{FrameDecoder, WireKind, encode_message, v2};
 
 async fn list(
     controller: &IrohController,
     remote: DeviceId,
-) -> Result<(), zterm_client::error::ClientError> {
+) -> Result<(), voytty_client::error::ClientError> {
     let bytes = encode_message(
         WireKind::SessionListRequest,
         0,
@@ -70,7 +70,7 @@ async fn serve(connection: Connection, expected: DeviceId, requests: Arc<AtomicU
         .decode_message(WireKind::ConnectionHello)
         .expect("Hello message");
     let welcome = ConnectionWelcome::new(
-        zterm_proto::WIRE_MAJOR,
+        voytty_proto::WIRE_MAJOR,
         Capabilities::from_bits_retain(
             Capabilities::SESSION_SERVICE | Capabilities::TERMINAL_SERVICE,
         ),
@@ -151,7 +151,7 @@ pub async fn first_query_recovers(make_builder: impl Fn(SecretKey) -> Builder) {
     let bind_host = || {
         builder(host_key.clone())
             .add_custom_transport(gate.clone())
-            .alpns(vec![ZTERM_ALPN.to_vec()])
+            .alpns(vec![VOYTTY_ALPN.to_vec()])
             .bind()
     };
     let host = bind_host().await.expect("host");

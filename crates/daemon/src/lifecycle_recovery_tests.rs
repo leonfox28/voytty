@@ -3,12 +3,12 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use zterm_core::terminal::TerminalSize;
-use zterm_core::{
+use voytty_core::terminal::TerminalSize;
+use voytty_core::{
     AttachmentId, DeviceId, DomainErrorKind, OperationId, ResourceLimits, SessionName,
 };
-use zterm_platform::local_unix::{DaemonLock, bind_owned_daemon_socket};
-use zterm_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
+use voytty_platform::local_unix::{DaemonLock, bind_owned_daemon_socket};
+use voytty_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
 
 use super::run_owned_daemon_listener_for_test;
 use crate::bootstrap::bootstrap;

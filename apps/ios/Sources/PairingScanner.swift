@@ -301,7 +301,7 @@ private struct ManualTicketSheet: View {
             Form {
                 Section {
                     Text(strings("在电脑上运行")).foregroundStyle(.secondary)
-                    Text("zterm pair create").font(.body.monospaced()).textSelection(.enabled)
+                    Text("voytty pair create").font(.body.monospaced()).textSelection(.enabled)
                     Text(strings("粘贴完整的一次性配对码。")).font(.footnote).foregroundStyle(.secondary)
                 }
                 Section(strings("配对码")) {
@@ -360,7 +360,7 @@ private final class CameraPreview: UIView {
 /// Only the preview layer receives the session on main; callbacks return to main.
 private final class CameraCapture: NSObject, AVCaptureMetadataOutputObjectsDelegate, @unchecked Sendable {
     let session = AVCaptureSession()
-    private let queue = DispatchQueue(label: "zterm.qr.camera")
+    private let queue = DispatchQueue(label: "voytty.qr.camera")
     private var active = false
     private var notifications: [NSObjectProtocol] = []
     private let recognized: @MainActor ([String]) -> Void

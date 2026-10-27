@@ -1,5 +1,5 @@
 import XCTest
-@testable import Zterm
+@testable import Voytty
 
 final class TerminalInputQueueTests: XCTestCase {
     @MainActor

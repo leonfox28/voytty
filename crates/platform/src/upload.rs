@@ -7,7 +7,7 @@ use std::{
     os::unix::fs::DirBuilderExt,
     path::PathBuf,
 };
-use zterm_core::{
+use voytty_core::{
     SessionId,
     upload::{TransferId, UploadMetadata, UploadedFile},
 };
@@ -30,7 +30,7 @@ impl StagedUpload {
         metadata: UploadMetadata,
     ) -> io::Result<Self> {
         let uid = nix::unistd::geteuid().as_raw();
-        let name = format!("zterm-{uid}");
+        let name = format!("voytty-{uid}");
         let root = fs::canonicalize("/tmp")?.join(&name);
         Self::create_at(root, format!("/tmp/{name}"), uid, session, id, metadata)
     }
@@ -148,7 +148,7 @@ mod tests {
     fn create(root: PathBuf, id: u8, size: u64) -> io::Result<StagedUpload> {
         StagedUpload::create_at(
             root,
-            "/tmp/zterm-1".into(),
+            "/tmp/voytty-1".into(),
             nix::unistd::geteuid().as_raw(),
             SessionId::from_array([1; 16]),
             TransferId::from_array([id; 16]),

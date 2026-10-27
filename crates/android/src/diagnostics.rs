@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
-use zterm_diagnostics::{
+use voytty_diagnostics::{
     Control, Event, FrontendFailure, Kind, Level, Outcome, Recorder, Sink, Stage,
 };
 
@@ -168,7 +168,7 @@ impl NativeDiagnostics {
                 .frontend_error(FrontendFailure::Export),
         };
         let code = category.as_deref().and_then(|code| {
-            use zterm_core::DomainErrorKind as D;
+            use voytty_core::DomainErrorKind as D;
             D::from_code(code).or(match code {
                 "update_network" => Some(D::ReleaseUnavailable),
                 "update_signature" => Some(D::ReleaseSignatureInvalid),
@@ -204,14 +204,14 @@ impl NativeDiagnostics {
 #[uniffi::export]
 pub fn install_diagnostics(sink: Box<dyn DiagnosticSink>) -> Arc<NativeDiagnostics> {
     let recorder = Recorder::new(Arc::new(AndroidSink(sink))).unwrap_or_default();
-    if zterm_diagnostics::install(recorder.clone()) {
+    if voytty_diagnostics::install(recorder.clone()) {
         use tracing_subscriber::prelude::*;
         let _ = tracing_subscriber::registry()
-            .with(zterm_diagnostics::transport_trace_layer(recorder.clone()))
+            .with(voytty_diagnostics::transport_trace_layer(recorder.clone()))
             .try_init();
         std::panic::set_hook(Box::new(|_| {
-            zterm_diagnostics::record(Event::new(Kind::ProcessPanicked).level(Level::Error));
-            let _ = zterm_diagnostics::flush(Duration::from_millis(250));
+            voytty_diagnostics::record(Event::new(Kind::ProcessPanicked).level(Level::Error));
+            let _ = voytty_diagnostics::flush(Duration::from_millis(250));
         }));
     }
     Arc::new(NativeDiagnostics { recorder })
@@ -220,7 +220,7 @@ pub fn install_diagnostics(sink: Box<dyn DiagnosticSink>) -> Arc<NativeDiagnosti
 #[uniffi::export]
 pub fn diagnostic_control(enabled: bool) -> DiagnosticControl {
     if enabled {
-        Control::enabled(zterm_diagnostics::now_ms())
+        Control::enabled(voytty_diagnostics::now_ms())
     } else {
         Control::disabled()
     }
@@ -229,12 +229,12 @@ pub fn diagnostic_control(enabled: bool) -> DiagnosticControl {
 /// Validates a persisted interval for Settings without altering identity/configuration.
 #[uniffi::export]
 pub fn diagnostic_remaining_ms(control: DiagnosticControl) -> u64 {
-    Control::from(control).remaining_ms(zterm_diagnostics::now_ms())
+    Control::from(control).remaining_ms(voytty_diagnostics::now_ms())
 }
 /// Validates a bounded input line and returns canonical safe JSONL for export.
 #[uniffi::export]
 pub fn diagnostic_export_record(line: Vec<u8>) -> Option<String> {
-    zterm_diagnostics::Record::decode(&line)
+    voytty_diagnostics::Record::decode(&line)
         .and_then(|record| record.encode())
         .and_then(|bytes| String::from_utf8(bytes).ok())
 }
@@ -246,7 +246,7 @@ pub fn diagnostic_export_header(
     truncated_bytes: u64,
     pending_lost: u64,
 ) -> String {
-    zterm_diagnostics::ExportHeader::new(include_debug, omitted, truncated_bytes, pending_lost)
+    voytty_diagnostics::ExportHeader::new(include_debug, omitted, truncated_bytes, pending_lost)
         .encode()
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())

@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   recover:
-    if: github.repository == 'leonfox28/zterm' && github.ref == 'refs/heads/main'
+    if: github.repository == 'leonfox28/voytty' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -86,8 +86,8 @@ jobs:
 
       - name: Authenticate the original signed inventory
         run: >-
-          cargo +1.98.0 run --manifest-path source/Cargo.toml --locked --release
-          --package zterm-release-tool -- verify signed
+          cargo +1.98.0 run --manifest-path source/tools/release/Cargo.toml
+          --locked --release -- verify signed
 
       - name: Download and compare the existing draft assets
         run: >-
@@ -95,7 +95,9 @@ jobs:
           --plan recovery-plan.json --signed signed --roundtrip roundtrip
 
       - name: Authenticate the exact round-trip inventory
-        run: source/target/release/zterm-release-tool verify roundtrip
+        run: >-
+          cargo +1.98.0 run --manifest-path source/tools/release/Cargo.toml
+          --locked --release -- verify roundtrip
 
       - name: Attest the verified existing draft inventory
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3

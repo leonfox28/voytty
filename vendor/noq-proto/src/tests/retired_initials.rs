@@ -50,7 +50,7 @@ fn deliver(pair: &mut Pair, initial: &Inbound) -> Option<DatagramEvent> {
 }
 
 #[test]
-fn zterm_delayed_initial_after_drain_does_not_create_another_incoming() {
+fn voytty_delayed_initial_after_drain_does_not_create_another_incoming() {
     let (mut pair, initial, _) = closed_connection();
     pair.time += Duration::from_millis(275);
     for _ in 0..32 {
@@ -65,7 +65,7 @@ fn zterm_delayed_initial_after_drain_does_not_create_another_incoming() {
 }
 
 #[test]
-fn zterm_delayed_initial_on_another_path_after_drain_is_still_a_duplicate() {
+fn voytty_delayed_initial_on_another_path_after_drain_is_still_a_duplicate() {
     let (mut pair, mut initial, _) = closed_connection();
     pair.time += Duration::from_millis(275);
     // Iroh exposes Direct as the actual IP socket address and Relay as a
@@ -83,7 +83,7 @@ fn zterm_delayed_initial_on_another_path_after_drain_is_still_a_duplicate() {
 }
 
 #[test]
-fn zterm_retired_initial_filter_preserves_other_peers_and_expires() {
+fn voytty_retired_initial_filter_preserves_other_peers_and_expires() {
     let (mut pair, initial, clock) = closed_connection();
     // Another peer starts its own handshake. Replaying the original bytes at
     // another address is instead a second path, covered by the regression above.

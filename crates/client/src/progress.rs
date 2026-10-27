@@ -9,7 +9,7 @@ use std::{
     },
 };
 use tokio::sync::watch;
-use zterm_core::{DomainErrorKind, connection_progress::ConnectionStage};
+use voytty_core::{DomainErrorKind, connection_progress::ConnectionStage};
 
 /// Maximum retained stage records for a slow screen or local progress reader.
 pub const CONNECTION_PROGRESS_CAPACITY: usize = 64;
@@ -188,7 +188,7 @@ use crate::{
     error::ClientError as DaemonError,
     protocol::{malformed, protocol_error},
 };
-use zterm_proto::{DecodedFrame, WireKind, connection_stage_from_message, v2};
+use voytty_proto::{DecodedFrame, WireKind, connection_stage_from_message, v2};
 
 /// The only same-UID stage validator, shared by tunnel and unary readers.
 pub struct LocalProgressDecoder {
@@ -237,7 +237,7 @@ impl LocalProgressDecoder {
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    use zterm_proto::{FrameDecoder, encode_message};
+    use voytty_proto::{FrameDecoder, encode_message};
 
     #[test]
     fn progress_journal_retains_bursts_bounds_history_and_retires_all_clones() {

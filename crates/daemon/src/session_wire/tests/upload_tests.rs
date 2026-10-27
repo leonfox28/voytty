@@ -1,10 +1,10 @@
 use super::*;
 use tokio_util::sync::CancellationToken;
-use zterm_client::{
+use voytty_client::{
     transport::TransportFuture,
     upload::{self, AsyncUploadWriter, FramedUploadReader, UploadConnection, UploadConnector},
 };
-use zterm_core::{Capabilities, upload::*};
+use voytty_core::{Capabilities, upload::*};
 
 struct Fixture {
     server: SessionWireServer,
@@ -63,7 +63,7 @@ impl Drop for Fixture {
 impl UploadConnector for Fixture {
     fn open_upload(
         &self,
-        _target: zterm_client::model::ResolvedSessionTarget,
+        _target: voytty_client::model::ResolvedSessionTarget,
     ) -> TransportFuture<'_, Result<UploadConnection, DaemonError>> {
         Box::pin(async move {
             // Smaller than a chunk: full-duplex flow control is necessary to finish.
@@ -93,8 +93,8 @@ impl UploadConnector for Fixture {
     }
 }
 
-fn target() -> zterm_client::model::ResolvedSessionTarget {
-    zterm_client::model::ResolvedSessionTarget::device(device(0xd1))
+fn target() -> voytty_client::model::ResolvedSessionTarget {
+    voytty_client::model::ResolvedSessionTarget::device(device(0xd1))
 }
 fn remove_published(file: &UploadedFile) {
     let path = Path::new(file.path());
@@ -237,7 +237,7 @@ async fn cancellation_and_detach_retire_staging_while_terminal_survives() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn malformed_streams_remove_staging_without_disturbing_controller() {
-    use zterm_proto::upload::UploadMessage;
+    use voytty_proto::upload::UploadMessage;
     let fixture = Fixture::new();
     for case in 0..5 {
         let mut connection = fixture
@@ -268,7 +268,7 @@ async fn malformed_streams_remove_staging_without_disturbing_controller() {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         let path = format!(
-            "/tmp/zterm-{}/{}/{transfer}",
+            "/tmp/voytty-{}/{}/{transfer}",
             nix::unistd::geteuid(),
             fixture.binding().session_id
         );

@@ -19,7 +19,7 @@ final class KeyboardUITests: XCTestCase, @unchecked Sendable {
     private var restoreSession = ""
     private var hostID = ""
     private var photoIDs: [String] = []
-    private var photoIDsFile: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("zterm-ui-photo-ids.json") }
+    private var photoIDsFile: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("voytty-ui-photo-ids.json") }
     private var created = false
     private var fixture: [String: String] = [:]
     private var terminal: XCUIElement { app.descendants(matching: .any)["terminalSelection"].firstMatch }
@@ -86,7 +86,7 @@ final class KeyboardUITests: XCTestCase, @unchecked Sendable {
         field.tap(); field.typeText(sessionName)
         app.textFields["sessionDirectory"].tap(); app.textFields["sessionDirectory"].typeText("/tmp")
         created = true
-        print("ZTERM_UI_SESSION " + sessionName)
+        print("VOYTTY_UI_SESSION " + sessionName)
         app.buttons["sessionEditorSubmit"].tap()
         XCTAssertTrue(field.waitForNonExistence(timeout: 15))
         XCTAssertTrue(panelClose.waitForNonExistence(timeout: 15))
@@ -241,7 +241,7 @@ final class KeyboardUITests: XCTestCase, @unchecked Sendable {
         let actionsID = actions.identifier
         let sessionID = String(actionsID.dropFirst("sessionActions-".count))
         let renamed = "ios-keyboard-ui-" + UUID().uuidString.prefix(8)
-        print("ZTERM_UI_SESSION " + renamed)
+        print("VOYTTY_UI_SESSION " + renamed)
         for name in [renamed, sessionName] {
             app.buttons[actionsID].tap()
             app.buttons.matching(NSPredicate(format: "label IN %@", ["重命名", "Rename"])).firstMatch.tap()
@@ -448,7 +448,7 @@ final class KeyboardUITests: XCTestCase, @unchecked Sendable {
     }
 
     func testOccupiedTakeoverAndEndedRecovery() throws {
-        print("ZTERM_UI_TAKEOVER " + sessionName)
+        print("VOYTTY_UI_TAKEOVER " + sessionName)
         let alert = app.alerts.firstMatch
         let confirm = alert.buttons["confirmTakeoverSession"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 15), app.debugDescription)
@@ -476,7 +476,7 @@ final class KeyboardUITests: XCTestCase, @unchecked Sendable {
         waitFor { self.app.buttons["uploadFile"].isEnabled }
         app.typeText("printf 'UI_PANEL_TAKEOVER_%s\\n' OK\n")
         waitFor { (self.terminal.value as? String)?.contains("UI_PANEL_TAKEOVER_OK") == true }
-        print("ZTERM_UI_TAKEOVER " + sessionName)
+        print("VOYTTY_UI_TAKEOVER " + sessionName)
         XCTAssertTrue(alert.buttons["dismissConnectionNotice"].firstMatch.waitForExistence(timeout: 15))
         alert.buttons["dismissConnectionNotice"].firstMatch.tap()
         XCTAssertTrue(alert.waitForNonExistence(timeout: 5))
@@ -531,14 +531,14 @@ final class KeyboardUITests: XCTestCase, @unchecked Sendable {
         navigationBack.tap()
         let host = app.buttons["host-" + hostID]
         XCTAssertTrue(host.waitForExistence(timeout: 5))
-        print("ZTERM_UI_PAUSE " + sessionName)
+        print("VOYTTY_UI_PAUSE " + sessionName)
         host.tap()
         let alert = app.alerts.firstMatch
         let retry = alert.buttons["retryConnectionAlert"].firstMatch
         XCTAssertTrue(retry.waitForExistence(timeout: 40), app.debugDescription)
         XCTAssertTrue(["连接失败", "Connection failed"].contains(alert.label), alert.label)
         attachScreenshot("System alert after real connection failure")
-        print("ZTERM_UI_RESUME " + sessionName)
+        print("VOYTTY_UI_RESUME " + sessionName)
         retry.tap()
         XCTAssertTrue(alert.waitForNonExistence(timeout: 5))
         waitFor { self.app.buttons["uploadFile"].isEnabled }
@@ -552,13 +552,13 @@ final class KeyboardUITests: XCTestCase, @unchecked Sendable {
     func testTransportReconnectPreservesSessionAndOutput() throws {
         app.typeText("printf '\\nUI_RECONNECT_%s\\n' BEFORE\n")
         waitFor { (self.terminal.value as? String)?.contains("UI_RECONNECT_BEFORE") == true }
-        print("ZTERM_UI_PAUSE " + sessionName)
+        print("VOYTTY_UI_PAUSE " + sessionName)
         let progress = app.descendants(matching: .any)["connectionProgress"].firstMatch
         XCTAssertTrue(progress.waitForExistence(timeout: 40), app.debugDescription)
         XCTAssertFalse(app.buttons["uploadFile"].isEnabled)
         XCTAssertFalse(app.alerts.firstMatch.exists, "automatic reconnection does not interrupt with an alert")
         attachScreenshot("Real transport timeout reconnecting")
-        print("ZTERM_UI_RESUME " + sessionName)
+        print("VOYTTY_UI_RESUME " + sessionName)
         XCTAssertTrue(progress.waitForNonExistence(timeout: 15))
         waitFor { self.app.buttons["uploadFile"].isEnabled }
         app.typeText("printf '\\nUI_RECONNECT_%s\\n' AFTER\n")
@@ -607,7 +607,7 @@ finally:
         app.typeKey(.tab, modifierFlags: .shift)
         // The recipe injects exact HID usages through the simulator's keyboard
         // service: Xcode 27's typeKey mistranslates several AppKit special keys.
-        print("ZTERM_UI_KEYBOARD_NAVIGATION")
+        print("VOYTTY_UI_KEYBOARD_NAVIGATION")
         waitFor { (self.terminal.value as? String)?.contains("UI_HARDWARE_DONE") == true }
         app.buttons["keyboardToggle"].tap()
         app.typeText("visible")
@@ -685,7 +685,7 @@ finally:
         app.buttons["host-" + hostID].tap()
         XCTAssertTrue(terminal.waitForExistence(timeout: 15))
         let marker = "iOS notification " + UUID().uuidString.prefix(8)
-        app.typeText("printf '\\033]777;notify;zterm acceptance;\(marker)\\a'\n")
+        app.typeText("printf '\\033]777;notify;voytty acceptance;\(marker)\\a'\n")
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let notification = springboard.staticTexts[marker].firstMatch
         XCTAssertTrue(notification.waitForExistence(timeout: 10), springboard.debugDescription)

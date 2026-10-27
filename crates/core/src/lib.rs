@@ -1,4 +1,4 @@
-//! Shared zterm domain types and build identity.
+//! Shared voytty domain types and build identity.
 
 pub mod authorization;
 pub mod connection_progress;
@@ -78,12 +78,12 @@ impl BuildIdentity {
         Self {
             version: env!("CARGO_PKG_VERSION"),
             phase: PHASE_NAME,
-            target: env!("ZTERM_BUILD_TARGET"),
-            source_commit: env!("ZTERM_SOURCE_COMMIT"),
+            target: env!("VOYTTY_BUILD_TARGET"),
+            source_commit: env!("VOYTTY_SOURCE_COMMIT"),
             wire_major: WIRE_MAJOR,
             state_schema: STATE_SCHEMA_VERSION,
             release_key_id: release::RELEASE_KEY_ID,
-            release_classification: env!("ZTERM_RELEASE_CLASSIFICATION"),
+            release_classification: env!("VOYTTY_RELEASE_CLASSIFICATION"),
         }
     }
 }

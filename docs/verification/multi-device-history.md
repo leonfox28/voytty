@@ -535,7 +535,7 @@ Android 回归和真实三端验证继续执行，剩余断网检测问题仍待
 `6f8ea24898d03fe9d9f97ba4e2aba59f17fc4bb52b043ca53ffa254ff5aa8ce1`，instrumentation 为
 `6cf99a747b2541133981d29ecbb90be6a6116ccaea10d2ea522737b04524ab31`。完整摘要见
 `checks/compression-installed.json`；A / B 二进制和已安装 APK 均通过核对。
-Android 构建日志确认 `zterm-proto`、`flate2`、`zterm-client` 与 native 库重新编译，
+Android 构建日志确认 `voytty-proto`、`flate2`、`voytty-client` 与 native 库重新编译，
 instrumentation 源码没有变化，因此测试 APK 摘要与上一制品相同。
 
 `final-validation-v13` 的 Linux 全量检查在链接 `session_limits` 时因 VM 磁盘耗尽
@@ -660,13 +660,13 @@ APK 的本地构建、lint、单元测试已通过，见 `checks/first-route-and
 
 | 设备 | 实际配置 |
 | --- | --- |
-| A | `zterm-md-20261003t024103z-a`，Ubuntu 24.04 ARM64，VZ，4 vCPU / 6 GiB / 60 GiB，账户 `zterm-a`（UID 2001） |
-| B | `zterm-md-20261003t024103z-b`，同配置，账户 `zterm-b`（UID 2002） |
-| C | `zterm-md-20261003t024103z-c`，API 36 Google APIs ARM64，2 vCPU / 3 GiB，`emulator-5586`，独立可写数据目录，`adb root` 已验证 |
+| A | `voytty-md-20261003t024103z-a`，Ubuntu 24.04 ARM64，VZ，4 vCPU / 6 GiB / 60 GiB，账户 `voytty-a`（UID 2001） |
+| B | `voytty-md-20261003t024103z-b`，同配置，账户 `voytty-b`（UID 2002） |
+| C | `voytty-md-20261003t024103z-c`，API 36 Google APIs ARM64，2 vCPU / 3 GiB，`emulator-5586`，独立可写数据目录，`adb root` 已验证 |
 
 Linux 二进制在 A 构建后复制到两端，并核对 SHA-256；Android debug 和 instrumentation
 APK 来自同一工作区。各次运行的 manifest 记录源码基线、改动文件摘要和制品摘要。
-仅使用独立测试账户的 `~/.zterm`，未操作开发者真实身份与会话。默认 `official-n0`。
+仅使用独立测试账户的 `~/.voytty`，未操作开发者真实身份与会话。默认 `official-n0`。
 
 原方案的单独 `vzNAT` 无法让两个 VM 互访。实际预检复现这一限制后，保留 `vzNAT`
 用于 Mac / C 访问 VM，增加无需特权网络组件的共享 `user-v2` 网卡用于 A ↔ B。
@@ -1010,7 +1010,7 @@ TCP/UDP 端口，双栈阻断相应入站包；回环、SSH 和 adb 管理流量
 `checks/noq-vendored-suite-01.log`。更早的 40 秒复现和首次诊断测试编译失败也保留。
 
 为保证 Linux 与 Android 使用同一补丁，源码固定在
-[`vendor/noq-proto`](../../vendor/noq-proto/ZTERM.md)，保留上游许可证、版本与来源摘要；
+[`vendor/noq-proto`](../../vendor/noq-proto/VOYTTY.md)，保留上游许可证、版本与来源摘要；
 Cargo patch 选择该源码，Android Gradle 也将 vendor 源码纳入构建输入。
 除测试外仅修改连接状态机的两个文件。`--offline-scope egress` 可复现旧单向丢包条件，
 它独立记入 manifest，不能代替默认双向矩阵。最终流水线依次执行补丁冒烟、三次重复的
@@ -1134,7 +1134,7 @@ instrumentation APK 为 `6cf99a747b2541133981d29ecbb90be6a6116ccaea10d2ea522737b
 
 独立的双 NAT / 受控 QAD 网络门禁在 A 内的隔离 namespace 执行，见
 `checks/network-gate-final.log`。最初因夹具固定将 NAT 出口设为 `eth0` 而失败；本机
-真实默认出口为 `lima0`。新增 `ZTERM_GATE_EGRESS_INTERFACE`，保持 Docker 默认值，
+真实默认出口为 `lima0`。新增 `VOYTTY_GATE_EGRESS_INTERFACE`，保持 Docker 默认值，
 修正后 A/B/C/D 四个网络门禁全部通过：官方发现保持 Relay、注入候选地址转 Direct、
 双端阻断 UDP 使用 WSS/TCP Relay、受控 QAD 转 Direct。最终判定仍是
 `GO_WITH_DEFERRED_ADDRESS_DISCOVERY`。这些字母是网络门禁用例名，不是三台设备；

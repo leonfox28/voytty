@@ -1,5 +1,5 @@
 [package]
-name = "zterm-client"
+name = "voytty-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-zterm-diagnostics.workspace = true
+voytty-diagnostics.workspace = true
 iroh.workspace = true
 futures-util.workspace = true
 ring.workspace = true
@@ -15,8 +15,8 @@ prost.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 zeroize.workspace = true
-zterm-proto.workspace = true
-zterm-core.workspace = true
+voytty-proto.workspace = true
+voytty-core.workspace = true
 
 [dev-dependencies]
 iroh = { workspace = true, features = ["test-utils", "unstable-custom-transports"] }

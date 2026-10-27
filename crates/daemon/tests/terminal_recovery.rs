@@ -12,15 +12,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use zterm_core::{ResourceLimits, Revision, SessionName};
-use zterm_daemon::bootstrap::bootstrap;
-use zterm_daemon::config::{ValidatedInfrastructure, validate_setup_input};
-use zterm_daemon::local_ipc::{
+use voytty_core::{ResourceLimits, Revision, SessionName};
+use voytty_daemon::bootstrap::bootstrap;
+use voytty_daemon::config::{ValidatedInfrastructure, validate_setup_input};
+use voytty_daemon::local_ipc::{
     LocalAttachmentClient, LocalAttachmentEvent, LocalClient, serve_local,
 };
-use zterm_daemon::service::DaemonService;
-use zterm_platform::local_unix::{DaemonLock, bind_daemon_socket, remove_own_socket};
-use zterm_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
+use voytty_daemon::service::DaemonService;
+use voytty_platform::local_unix::{DaemonLock, bind_daemon_socket, remove_own_socket};
+use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
 
 use state_fixture::TestState;
 
@@ -88,7 +88,7 @@ async fn future_snapshot_ack_recovers_and_wrong_kind_is_stream_local() -> Result
         &v2::TerminalAttachRequest {
             accept_zlib_frames: false,
             acknowledge_surface_frames: false,
-            base_colors: Some(zterm_core::terminal::TerminalColorProfile::default().into()),
+            base_colors: Some(voytty_core::terminal::TerminalColorProfile::default().into()),
 
             target: Some(v2::TargetSelector {
                 target: Some(v2::target_selector::Target::Local(true)),

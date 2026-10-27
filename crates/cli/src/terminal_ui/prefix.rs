@@ -14,7 +14,7 @@ pub(super) enum LocalCommand {
     CancelUpload,
 }
 
-// New zterm controls extend this table and the command executor, not decoding.
+// New voytty controls extend this table and the command executor, not decoding.
 const BINDINGS: &[(Shortcut, LocalCommand)] = &[
     (Shortcut::plain('.'), LocalCommand::Detach),
     (Shortcut::plain('v'), LocalCommand::Upload),

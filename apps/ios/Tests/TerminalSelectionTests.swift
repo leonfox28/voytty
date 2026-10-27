@@ -1,6 +1,6 @@
 import XCTest
 import UIKit
-@testable import Zterm
+@testable import Voytty
 
 final class TerminalSelectionTests: XCTestCase {
     private func cell(_ text: String, _ width: UInt8 = 1) -> NativeCell {

@@ -4,13 +4,13 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use zterm_core::terminal::{
+use voytty_core::terminal::{
     COLOR_BACKGROUND, COLOR_CURSOR, COLOR_CURSOR_TEXT, COLOR_FOREGROUND,
     COLOR_SELECTION_BACKGROUND, COLOR_SELECTION_FOREGROUND, TerminalCell, TerminalClipboardWrite, TerminalNotification,
     TerminalColor, TerminalColorSnapshot, TerminalColorValue, TerminalKeyboardFlags, TerminalModes,
     TerminalStyle, TerminalUnderline, TerminalCursorShape,
 };
-use zterm_core::terminal_selection::{TerminalTextPoint, TerminalTextRange};
+use voytty_core::terminal_selection::{TerminalTextPoint, TerminalTextRange};
 
 use super::{
     CliError, ComposedFrame, HOST_INPUT_CAPTURE, HOST_SYNC_BEGIN, HOST_SYNC_END,
@@ -34,7 +34,7 @@ pub(super) struct DesktopPresenter {
 }
 
 /// Exact child modes which change bytes produced by the physical outer
-/// terminal. Mouse reporting and alternate-scroll remain Zterm-routed state
+/// terminal. Mouse reporting and alternate-scroll remain Voytty-routed state
 /// and are intentionally absent.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct HostInputModes {
@@ -236,7 +236,7 @@ impl DesktopPresenter {
             frame.extend_from_slice(b"\x1b]8;;\x1b\\");
         }
         if baseline.is_none_or(|before| before.application_title != desired.application_title) {
-            let title = if desired.application_title.is_empty() { "zterm" } else { &desired.application_title };
+            let title = if desired.application_title.is_empty() { "voytty" } else { &desired.application_title };
             write!(frame, "\x1b]2;{title}\x1b\\")
                 .map_err(|error| terminal_io("compose terminal title", error))?;
         }
@@ -719,7 +719,7 @@ fn write_keyboard_mode(writer: &mut impl Write, flags: TerminalKeyboardFlags) ->
 mod color_tests {
     use super::super::composition::{ComposedCursor, LayoutIdentity};
     use super::*;
-    use zterm_core::{Revision, terminal::TerminalSize};
+    use voytty_core::{Revision, terminal::TerminalSize};
 
     #[test]
     fn strike_and_conceal_are_encoded_and_reset_between_runs() {
@@ -735,7 +735,7 @@ mod color_tests {
 
     #[test]
     fn web_link_spans_close_before_plain_text_and_run_boundaries() {
-        let link = std::sync::Arc::new(zterm_core::terminal::TerminalHyperlink::new("doc", "https://example.com/").expect("link"));
+        let link = std::sync::Arc::new(voytty_core::terminal::TerminalHyperlink::new("doc", "https://example.com/").expect("link"));
         let linked = TerminalCell { contents: "label".into(), hyperlink: Some(link), ..Default::default() };
         let plain = TerminalCell { contents: "plain".into(), ..Default::default() };
         let mut output = Vec::new();
@@ -838,7 +838,7 @@ mod color_tests {
         assert!(bytes.is_empty());
         desired.application_title.clear();
         presenter.present(&mut bytes, desired, None).expect("clear title");
-        assert!(String::from_utf8_lossy(&bytes).contains("\x1b]2;zterm\x1b\\"));
+        assert!(String::from_utf8_lossy(&bytes).contains("\x1b]2;voytty\x1b\\"));
     }
 
     #[test]

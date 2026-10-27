@@ -6,14 +6,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
-use zterm_core::terminal::{TerminalSize, TerminalSurfaceSnapshot};
-use zterm_core::{
+use voytty_core::terminal::{TerminalSize, TerminalSurfaceSnapshot};
+use voytty_core::{
     AttachmentId, AttachmentPrincipal, DeviceId, DomainErrorKind, OperationId, OperationLease,
     ResourceLimits, Revision, SessionName,
 };
-use zterm_daemon::error::DaemonError;
-use zterm_daemon::session::{PreparedAttachment, SessionAttachment, SessionService};
-use zterm_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
+use voytty_daemon::error::DaemonError;
+use voytty_daemon::session::{PreparedAttachment, SessionAttachment, SessionService};
+use voytty_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
 
 pub const DEADLINE: Duration = Duration::from_secs(10);
 
@@ -49,7 +49,7 @@ impl Fixture {
         &self,
         sequence: u64,
         name: &str,
-    ) -> Result<zterm_daemon::session::SessionSummary, DaemonError> {
+    ) -> Result<voytty_daemon::session::SessionSummary, DaemonError> {
         self.service.create(
             self.principal,
             self.op(sequence),

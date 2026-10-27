@@ -1,8 +1,9 @@
-name: zterm-relay
+name: voytty-relay
 
 services:
   relay:
-    container_name: zterm-relay
+    container_name: voytty-relay
+    # Historical published image; image publication remains paused.
     image: ghcr.io/leonfox28/zterm-relay:latest
     volumes:
       - ./relay.toml:/etc/iroh-relay/relay.toml:ro

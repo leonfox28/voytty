@@ -22,17 +22,17 @@ pub(crate) use transport::{RemoteDaemonRestarter, UnixAttachmentConnector};
 #[cfg(unix)]
 pub fn upload_connector(
     socket: impl Into<std::path::PathBuf>,
-) -> std::sync::Arc<dyn zterm_client::upload::UploadConnector> {
+) -> std::sync::Arc<dyn voytty_client::upload::UploadConnector> {
     std::sync::Arc::new(transport::UnixAttachmentConnector::new(socket))
 }
 
 #[cfg(unix)]
-pub(super) use zterm_client::protocol::{
+pub(super) use voytty_client::protocol::{
     decode_response, malformed, resource_error, service_error,
 };
 
 #[cfg(unix)]
-pub(super) use zterm_client::protocol::DEFAULT_DEADLINE;
+pub(super) use voytty_client::protocol::DEFAULT_DEADLINE;
 
 #[cfg(unix)]
 use transport::{connect_error, daemon_io};

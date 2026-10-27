@@ -3,13 +3,13 @@
 use crate::{error::ClientError, pair_framing::PairFraming};
 use std::{fmt, time::Instant};
 use tokio::io::{AsyncRead, AsyncWrite};
-use zeroize::{Zeroize, Zeroizing};
-use zterm_core::{
+use voytty_core::{
     AuthGeneration, DeviceDisplayName, DeviceId, DomainErrorKind, PAIR_PROTOCOL_VERSION, PairBegin,
     PairChallenge, PairNonce, PairSecret, PairTicketError, PairTicketFields, PairTranscript,
     RelayHint, TransportLimits, TransportLimitsError,
 };
-use zterm_proto::{WireKind, v2};
+use voytty_proto::{WireKind, v2};
+use zeroize::{Zeroize, Zeroizing};
 
 /// Typed local pairing failure with a separate generic peer projection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -368,7 +368,7 @@ fn pair_challenge_from_wire(mut wire: v2::PairChallenge) -> Result<PairChallenge
 
 fn validate_pair_accepted(
     wire: &mut v2::PairAccepted,
-    transcript: &zterm_core::PairTranscript,
+    transcript: &voytty_core::PairTranscript,
     offer_key: &[u8; 32],
 ) -> Result<AuthGeneration, ClientError> {
     let generation = AuthGeneration::new(wire.authorization_generation)

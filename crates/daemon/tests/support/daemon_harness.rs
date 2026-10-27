@@ -3,13 +3,13 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use zterm_platform::user_state::UserPaths;
+use voytty_platform::user_state::UserPaths;
 
-const CHILD_PREFIX: &str = "--zterm-test-daemon=";
-const FOREGROUND_CHILD_PREFIX: &str = "--zterm-test-foreground-daemon=";
-const TERMINAL_CHILD_PREFIX: &str = "--zterm-test-terminal-daemon=";
-const SLOW_SOCKET_CHILD_PREFIX: &str = "--zterm-test-slow-socket-daemon=";
-const HANDOFF_OWNER_PREFIX: &str = "--zterm-test-handoff-owner=";
+const CHILD_PREFIX: &str = "--voytty-test-daemon=";
+const FOREGROUND_CHILD_PREFIX: &str = "--voytty-test-foreground-daemon=";
+const TERMINAL_CHILD_PREFIX: &str = "--voytty-test-terminal-daemon=";
+const SLOW_SOCKET_CHILD_PREFIX: &str = "--voytty-test-slow-socket-daemon=";
+const HANDOFF_OWNER_PREFIX: &str = "--voytty-test-handoff-owner=";
 /// Longer than one readiness probe, well inside the launch budget.
 const SLOW_SOCKET_DELAY: std::time::Duration = std::time::Duration::from_millis(750);
 
@@ -45,7 +45,7 @@ pub fn slow_socket_child_argument(paths: &UserPaths) -> String {
 pub fn launcher(
     paths: &UserPaths,
     daemon_argument: &str,
-) -> zterm_daemon::lifecycle::DaemonLauncher {
+) -> voytty_daemon::lifecycle::DaemonLauncher {
     use std::os::unix::fs::PermissionsExt;
 
     let harness = std::env::current_exe().expect("harness executable");
@@ -53,17 +53,17 @@ pub fn launcher(
     let harness = quote(harness.to_str().expect("UTF-8 harness path"));
     let script = format!(
         "#!/bin/sh\nif [ \"$1\" = {} ]; then exec {harness} {}; fi\nexec {harness} \"$@\"\n",
-        zterm_daemon::handoff::INTERNAL_HANDOFF_ARGUMENT,
+        voytty_daemon::handoff::INTERNAL_HANDOFF_ARGUMENT,
         quote(&format!("{HANDOFF_OWNER_PREFIX}{daemon_argument}")),
     );
-    let executable = paths.home().with_file_name("zterm-launcher");
+    let executable = paths.home().with_file_name("voytty-launcher");
     // Rename keeps a launcher another process is executing whole.
     let staged = executable.with_extension(format!("{}.tmp", std::process::id()));
     std::fs::write(&staged, script).expect("launcher script");
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o700))
         .expect("launcher mode");
     std::fs::rename(&staged, &executable).expect("launcher publication");
-    zterm_daemon::lifecycle::DaemonLauncher::for_test(executable, daemon_argument.to_owned())
+    voytty_daemon::lifecycle::DaemonLauncher::for_test(executable, daemon_argument.to_owned())
 }
 
 /// Encodes task-private paths for another test-only child role.
@@ -106,11 +106,11 @@ pub fn run_child_if_requested() -> bool {
             std::process::exit(2);
         }
     };
-    let _diagnostics = zterm_daemon::diagnostics::install(&paths);
+    let _diagnostics = voytty_daemon::diagnostics::install(&paths);
     let result = (if foreground {
         Ok(())
     } else {
-        zterm_platform::local_unix::detach_current_process()
+        voytty_platform::local_unix::detach_current_process()
     })
     .map_err(|error| error.to_string())
     .and_then(|()| {
@@ -131,10 +131,10 @@ pub fn run_child_if_requested() -> bool {
         };
         if deterministic_terminal {
             let sessions = terminal_fixture_sessions(&paths)?;
-            zterm_daemon::lifecycle::run_local_only_daemon_with_sessions_for_test(&paths, sessions)
+            voytty_daemon::lifecycle::run_local_only_daemon_with_sessions_for_test(&paths, sessions)
                 .map_err(|error| error.to_string())
         } else {
-            zterm_daemon::lifecycle::run_local_only_daemon_for_test(&paths)
+            voytty_daemon::lifecycle::run_local_only_daemon_for_test(&paths)
                 .map_err(|error| error.to_string())
         }
     });
@@ -160,22 +160,22 @@ fn run_handoff_owner(daemon_argument: &str) {
         eprintln!("invalid handoff owner paths: {detail}");
         std::process::exit(2);
     });
-    let runtime = zterm_daemon::operations::LocalRuntime::for_test(
+    let runtime = voytty_daemon::operations::LocalRuntime::for_test(
         paths,
-        zterm_daemon::lifecycle::DaemonLauncher::for_test(
+        voytty_daemon::lifecycle::DaemonLauncher::for_test(
             std::env::current_exe().expect("harness executable"),
             daemon_argument.to_owned(),
         ),
     );
-    if zterm_daemon::handoff::run_internal_handoff_for_test(&runtime).is_err() {
+    if voytty_daemon::handoff::run_internal_handoff_for_test(&runtime).is_err() {
         std::process::exit(1);
     }
 }
 
 fn terminal_fixture_sessions(
     paths: &UserPaths,
-) -> Result<zterm_daemon::session::SessionService, String> {
-    let own_device_id = zterm_daemon::identity::DeviceIdentity::load(paths)
+) -> Result<voytty_daemon::session::SessionService, String> {
+    let own_device_id = voytty_daemon::identity::DeviceIdentity::load(paths)
         .map_err(|error| error.to_string())?
         .device_id();
     let shell = [PathBuf::from("/bin/sh"), PathBuf::from("/usr/bin/sh")]
@@ -183,25 +183,25 @@ fn terminal_fixture_sessions(
         .find(|path| path.is_file())
         .ok_or_else(|| "deterministic terminal fixture requires a POSIX shell".to_owned())?;
     let default_working_directory = paths.home().to_path_buf();
-    Ok(zterm_daemon::session::SessionService::with_spawner(
+    Ok(voytty_daemon::session::SessionService::with_spawner(
         own_device_id,
-        zterm_core::ResourceLimits::default(),
+        voytty_core::ResourceLimits::default(),
         move |size, requested_working_directory| {
             let working_directory = requested_working_directory
                 .map(PathBuf::from)
                 .unwrap_or_else(|| default_working_directory.clone());
-            let session = zterm_platform::pty::PtyHost::new()
+            let session = voytty_platform::pty::PtyHost::new()
                 .spawn(
-                    zterm_platform::pty::ExplicitPtyCommand::new(&shell, &working_directory)
+                    voytty_platform::pty::ExplicitPtyCommand::new(&shell, &working_directory)
                         .arg("-c")
                         .arg(
-                            "printf 'ZTERM_LOCAL_UI_SHELL_READY\\r\\n'; while IFS= read -r line; do case \"$line\" in ZTERM_TEST_KEYBOARD_15) printf '\\033[=15uZTERM_KEYS_READY\\r\\n' ;; ZTERM_TEST_NOTIFICATIONS) printf '\\033]9;结果: done\\a\\033]777;notify;标题;body;结果\\033\\\\' ;; ZTERM_TEST_DECSET_1049) printf '\\033[?1049hZTERM_ALT_READY\\r\\n' ;; ZTERM_TEST_DECRST_1049) printf '\\033[?1049lZTERM_MAIN_READY\\r\\n' ;; *) printf '%s\\r\\n%s\\r\\n' \"$line\" \"$line\" ;; esac; done",
+                            "printf 'VOYTTY_LOCAL_UI_SHELL_READY\\r\\n'; while IFS= read -r line; do case \"$line\" in VOYTTY_TEST_KEYBOARD_15) printf '\\033[=15uVOYTTY_KEYS_READY\\r\\n' ;; VOYTTY_TEST_NOTIFICATIONS) printf '\\033]9;结果: done\\a\\033]777;notify;标题;body;结果\\033\\\\' ;; VOYTTY_TEST_DECSET_1049) printf '\\033[?1049hVOYTTY_ALT_READY\\r\\n' ;; VOYTTY_TEST_DECRST_1049) printf '\\033[?1049lVOYTTY_MAIN_READY\\r\\n' ;; *) printf '%s\\r\\n%s\\r\\n' \"$line\" \"$line\" ;; esac; done",
                         ),
-                    zterm_platform::pty::PtySize::new(size.rows, size.columns),
+                    voytty_platform::pty::PtySize::new(size.rows, size.columns),
                 )
                 .map_err(|_| {
-                    zterm_daemon::error::DaemonError::new(
-                        zterm_core::DomainErrorKind::StoreUnavailable,
+                    voytty_daemon::error::DaemonError::new(
+                        voytty_core::DomainErrorKind::StoreUnavailable,
                         "deterministic terminal fixture could not start",
                     )
                 })?;

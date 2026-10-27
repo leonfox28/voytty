@@ -3,7 +3,7 @@ use crate::handshake::{read_one_frame, write_handshake_message};
 use iroh::tls::CaTlsConfig;
 use prost::Message;
 use std::{sync::atomic::AtomicUsize, time::Duration};
-use zterm_core::ConnectionWelcome;
+use voytty_core::ConnectionWelcome;
 
 const ECHO_REQUEST: u64 = 10_000;
 
@@ -43,7 +43,7 @@ impl Fixture {
                 .clear_ip_transports()
         };
         let host = builder()
-            .alpns(vec![ZTERM_ALPN.to_vec(), ZTERM_PAIR_ALPN.to_vec()])
+            .alpns(vec![VOYTTY_ALPN.to_vec(), VOYTTY_PAIR_ALPN.to_vec()])
             .bind()
             .await
             .expect("host");
@@ -72,7 +72,7 @@ impl Fixture {
                     tokio::time::sleep(transport_delay).await;
                     let connection = incoming.await.expect("authenticated connection");
                     assert_eq!(device_from_endpoint_id(connection.remote_id()), client);
-                    if connection.alpn() == ZTERM_PAIR_ALPN {
+                    if connection.alpn() == VOYTTY_PAIR_ALPN {
                         connection.closed().await;
                         return;
                     }
@@ -84,7 +84,7 @@ impl Fixture {
                     assert_eq!(hello.kind, WireKind::ConnectionHello);
                     tokio::time::sleep(handshake_delay).await;
                     let welcome = ConnectionWelcome::new(
-                        zterm_proto::WIRE_MAJOR,
+                        voytty_proto::WIRE_MAJOR,
                         Capabilities::from_bits_retain(
                             Capabilities::SESSION_SERVICE | Capabilities::TERMINAL_SERVICE,
                         ),
@@ -131,7 +131,7 @@ impl Fixture {
                                     connection.closed().await;
                                     return;
                                 }
-                                let bytes = zterm_proto::encode_message(
+                                let bytes = voytty_proto::encode_message(
                                     WireKind::SessionListResponse,
                                     frame.request_id,
                                     0,
@@ -194,7 +194,7 @@ impl Fixture {
 }
 
 async fn echo(stream: &mut IrohSessionIo) {
-    let bytes = zterm_proto::encode_message(
+    let bytes = voytty_proto::encode_message(
         WireKind::SessionListRequest,
         ECHO_REQUEST,
         0,
@@ -301,7 +301,7 @@ async fn startup_budget_transport_change_preserves_pairing_attempt_limit() {
             fixture.remote,
             routes,
             Vec::new(),
-            ZTERM_PAIR_ALPN,
+            VOYTTY_PAIR_ALPN,
             started + crate::protocol::REMOTE_STARTUP_DEADLINE,
         )
         .await;

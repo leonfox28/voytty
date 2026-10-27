@@ -1,6 +1,6 @@
 import XCTest
 import Security
-@testable import Zterm
+@testable import Voytty
 
 @MainActor
 final class SessionWorkflowTests: XCTestCase {
@@ -270,7 +270,7 @@ final class SessionWorkflowTests: XCTestCase {
     }
 
     private func fixtureStore(active: String? = nil) throws -> HostStore {
-        let store = HostStore(service: "zterm.workflow.\(UUID().uuidString)")
+        let store = HostStore(service: "voytty.workflow.\(UUID().uuidString)")
         var saved = try store.load(); saved.hosts = [host]
         saved.activeTerminal = active.map { SessionRecord(host: host.id, session: $0) }
         saved.recent = saved.activeTerminal

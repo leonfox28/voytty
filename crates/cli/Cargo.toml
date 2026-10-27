@@ -1,5 +1,5 @@
 [package]
-name = "zterm-cli"
+name = "voytty-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,11 +7,11 @@ rust-version.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "zterm"
+name = "voytty"
 path = "src/main.rs"
 
 [dependencies]
-zterm-diagnostics.workspace = true
+voytty-diagnostics.workspace = true
 arboard.workspace = true
 base64.workspace = true
 clap.workspace = true
@@ -23,16 +23,16 @@ tokio = { workspace = true, features = ["fs"] }
 tokio-util.workspace = true
 unicode-width.workspace = true
 zeroize.workspace = true
-zterm-core.workspace = true
-zterm-client.workspace = true
-zterm-daemon.workspace = true
+voytty-core.workspace = true
+voytty-client.workspace = true
+voytty-daemon.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["term"] }
 rustix.workspace = true
 
 [dev-dependencies]
-zterm-platform.workspace = true
+voytty-platform.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
 nix = { workspace = true, features = ["signal", "term"] }

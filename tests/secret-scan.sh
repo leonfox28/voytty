@@ -39,7 +39,7 @@ if scan_unapproved 'eyJ[A-Za-z0-9_-]{10,}[.][A-Za-z0-9_-]{10,}[.][A-Za-z0-9_-]{1
     found=1
 fi
 if [ "$found" -ne 0 ]; then
-    echo "possible secret found in the zterm repository" >&2
+    echo "possible secret found in the voytty repository" >&2
     exit 1
 fi
 

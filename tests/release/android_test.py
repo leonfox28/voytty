@@ -30,7 +30,7 @@ class AndroidReleaseTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             apk = Path(temporary) / "stale.apk"
             with zipfile.ZipFile(apk, "w") as archive:
-                archive.writestr("assets/zterm-build.json", "{}")
+                archive.writestr("assets/voytty-build.json", "{}")
             with self.assertRaisesRegex(ValueError, "Packaged build identity"):
                 android.inspect(apk, Path("/missing-sdk"), "a" * 40, False)
 

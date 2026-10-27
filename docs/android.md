@@ -13,14 +13,14 @@ desktop process recovery stays in its Unix adapter. Host authorization, inbound
 services and connection arbitration remain on the daemon.
 
 The first APK targets Android 8.0+ (API 26), arm64 devices, with target SDK 36.
-Download `zterm-android-arm64.apk` from the [GitHub Release](https://github.com/leonfox28/zterm/releases/latest).
+Download `voytty-android-arm64.apk` from the [GitHub Release](https://github.com/leonfox28/voytty/releases/latest).
 Install it directly, without a store listing. Updates retain the existing release
 package and certificate. See [release operations](./releasing.md#android-package-and-signing)
 for version codes and signing.
 
 ## Connect
 
-On the host, create a one-time ticket using the existing `zterm pair create`.
+On the host, create a one-time ticket using the existing `voytty pair create`.
 It automatically displays a camera-readable QR in a sufficiently wide interactive
 terminal together with the same ticket text for manual entry. A narrow terminal
 falls back to text; redirected stdout contains only the ticket and a newline.
@@ -204,14 +204,14 @@ acceptance. See the Android task's research evidence for actual runtime results.
 
 | Build | Application ID | Launcher label |
 | --- | --- | --- |
-| Release | `io.github.leonfox28.zterm` | zterm |
-| Debug | `io.github.leonfox28.zterm.dev` | zterm Dev |
+| Release | `io.github.leonfox28.voytty` | voytty |
+| Debug | `io.github.leonfox28.voytty.dev` | voytty Dev |
 
 Both variants can be installed together. Their identities, paired hosts and
 preferences are independent, so pair each variant separately. `just android-build`
 and `just android-install <serial>` build/install the development variant.
 Its instrumentation runner is
-`io.github.leonfox28.zterm.dev.test/androidx.test.runner.AndroidJUnitRunner`.
+`io.github.leonfox28.voytty.dev.test/androidx.test.runner.AndroidJUnitRunner`.
 The Kotlin namespace is shared by the sources and does not identify the installed app.
 
 Older debug builds used the release application ID. They remain a separate
@@ -223,11 +223,11 @@ updating normally under the stable release ID and key.
 
 ```sh
 just android-apk 1010
-adb -s emulator-5556 install -r target/android-apk/1010/zterm-android-arm64-1010.apk
+adb -s emulator-5556 install -r target/android-apk/1010/voytty-android-arm64-1010.apk
 ```
 
 Choose a versionCode greater than the previous signed build. The helper creates
-one durable private signing identity under `~/.local/share/zterm/android-signing/`
+one durable private signing identity under `~/.local/share/voytty/android-signing/`
 and reuses it. Keep that directory protected and backed up outside the repository;
 losing it prevents updating existing installs with the same signature. Custom
 SDK/signing locations are supported by `python3 tools/android/apk.py --help`.

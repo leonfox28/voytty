@@ -1,15 +1,15 @@
 //! Controlled wire schedules through the real shared driver and Android reducer.
 use super::*;
 use std::{sync::Mutex, time::Duration};
-use zterm_client::{
+use voytty_client::{
     error::ClientError,
     transport::{
         AttachmentConnector, AttachmentIo, AttachmentTransport, AttachmentTransportItem,
         TransportFuture,
     },
 };
-use zterm_core::{AttachmentId, DeviceId, DomainErrorKind, Revision};
-use zterm_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
+use voytty_core::{AttachmentId, DeviceId, DomainErrorKind, Revision};
+use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
 
 const SESSION: SessionId = SessionId::from_array([0x93; 16]);
 const ATTACHMENT: AttachmentId = AttachmentId::from_array([0x94; 16]);
@@ -70,11 +70,11 @@ impl AttachmentConnector for Connector {
         })
     }
 }
-impl zterm_client::upload::UploadConnector for Connector {
+impl voytty_client::upload::UploadConnector for Connector {
     fn open_upload(
         &self,
         _: ResolvedSessionTarget,
-    ) -> TransportFuture<'_, Result<zterm_client::upload::UploadConnection, ClientError>> {
+    ) -> TransportFuture<'_, Result<voytty_client::upload::UploadConnection, ClientError>> {
         Box::pin(async { panic!("synchronization fixture must not open an upload") })
     }
 }
@@ -117,7 +117,7 @@ fn snapshot_frame(revision: u64, size: TerminalSize, request: u64) -> DecodedFra
         WireKind::TerminalSemanticSnapshot,
         request,
         0,
-        &zterm_proto::terminal_surface_snapshot_message(
+        &voytty_proto::terminal_surface_snapshot_message(
             SESSION,
             ATTACHMENT,
             snapshot(revision, size),

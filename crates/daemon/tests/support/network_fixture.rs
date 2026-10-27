@@ -8,11 +8,11 @@ use std::time::Duration;
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
 use tokio::task::JoinHandle;
-use zterm_core::{AuthorizationStatus, Capabilities, DeviceAlias, DeviceId, TransportLimits};
-use zterm_daemon::authorization::AuthorizationRegistry;
-use zterm_daemon::connection_broker::{ConnectionBroker, ConnectionIdentity};
-use zterm_daemon::store::{StateStore, StoreActor};
-use zterm_daemon::transport::{ZTERM_ALPN, ZTERM_PAIR_ALPN};
+use voytty_core::{AuthorizationStatus, Capabilities, DeviceAlias, DeviceId, TransportLimits};
+use voytty_daemon::authorization::AuthorizationRegistry;
+use voytty_daemon::connection_broker::{ConnectionBroker, ConnectionIdentity};
+use voytty_daemon::store::{StateStore, StoreActor};
+use voytty_daemon::transport::{VOYTTY_ALPN, VOYTTY_PAIR_ALPN};
 
 #[path = "state_fixture.rs"]
 mod state_fixture;
@@ -46,7 +46,7 @@ impl NetworkPeer {
         let endpoint = Endpoint::builder(presets::Minimal)
             .secret_key(secret)
             .relay_mode(RelayMode::Disabled)
-            .alpns(vec![ZTERM_ALPN.to_vec(), ZTERM_PAIR_ALPN.to_vec()])
+            .alpns(vec![VOYTTY_ALPN.to_vec(), VOYTTY_PAIR_ALPN.to_vec()])
             .clear_ip_transports()
             .bind_addr((Ipv4Addr::LOCALHOST, 0))
             .expect("task-private IPv4 loopback address is valid")

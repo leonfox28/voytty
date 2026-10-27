@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use zterm_core::DomainErrorKind;
+use voytty_core::DomainErrorKind;
 
 /// Error with a stable category and bounded user-facing diagnostic.
 #[derive(Clone, Eq, PartialEq)]

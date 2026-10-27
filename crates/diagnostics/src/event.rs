@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use zterm_core::{AttachmentId, DomainErrorKind, SessionId};
+use voytty_core::{AttachmentId, DomainErrorKind, SessionId};
 
 /// Maximum encoded record, including its newline.
 pub const MAX_RECORD_BYTES: usize = 4096;
@@ -492,7 +492,7 @@ impl Event {
         self
     }
     /// Existing typed initial-connection stage.
-    pub fn startup(mut self, value: zterm_core::connection_progress::ConnectionStage) -> Self {
+    pub fn startup(mut self, value: voytty_core::connection_progress::ConnectionStage) -> Self {
         self.fields.startup_stage = Some(value.description().0.into());
         self
     }

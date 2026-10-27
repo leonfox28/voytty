@@ -28,19 +28,19 @@ use nix::sys::signal::{Signal, kill};
 #[cfg(unix)]
 use nix::unistd::Pid;
 #[cfg(unix)]
-use zterm_cli::{Cli, CommandOutcome, InteractionMode, execute, run_terminal};
+use voytty_cli::{Cli, CommandOutcome, InteractionMode, execute, run_terminal};
 #[cfg(unix)]
-use zterm_core::{Revision, terminal::TerminalSize};
+use voytty_core::{Revision, terminal::TerminalSize};
 #[cfg(unix)]
-use zterm_daemon::lifecycle::DaemonLauncher;
+use voytty_daemon::lifecycle::DaemonLauncher;
 #[cfg(unix)]
-use zterm_daemon::operations::LocalRuntime;
+use voytty_daemon::operations::LocalRuntime;
 
 #[cfg(unix)]
 use state_fixture::TestState;
 
 #[cfg(unix)]
-const TERMINAL_CHILD_PREFIX: &str = "--zterm-test-terminal=";
+const TERMINAL_CHILD_PREFIX: &str = "--voytty-test-terminal=";
 #[cfg(unix)]
 const TERMINAL_RESTORE_BYTES: &[u8] = b"\x1b]8;;\x1b\\\x1b[23;2t\x1b[?2026l\x1b[?9l\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1005l\x1b[?1006l\x1b[?1007l\x1b[?1015l\x1b[?1016l\x1b[?2004l\x1b[?1l\x1b>\x1b[<u\x1b[0m\x1b[0 q\x1b[?25h\x1b[?1049l";
 #[cfg(unix)]
@@ -123,12 +123,12 @@ fn run_terminal_child_if_requested() -> bool {
     let arguments = match mode {
         "connect" | "screen-switch" | "scroll" | "copy" | "enhanced-prefix"
         | "alternate-detach" | "alternate-reattach" | "alternate-wider" | "main-wider" => {
-            vec!["zterm", "connect", "local"]
+            vec!["voytty", "connect", "local"]
         }
-        "bare-signal" => vec!["zterm"],
-        "non-tty-connect" => vec!["zterm", "connect", "local"],
-        "missing-main" => vec!["zterm", "connect", "--session", "main"],
-        "stop-confirm" => vec!["zterm", "daemon", "stop"],
+        "bare-signal" => vec!["voytty"],
+        "non-tty-connect" => vec!["voytty", "connect", "local"],
+        "missing-main" => vec!["voytty", "connect", "--session", "main"],
+        "stop-confirm" => vec!["voytty", "daemon", "stop"],
         _ => panic!("unknown terminal child mode"),
     };
     let tokio = tokio::runtime::Builder::new_current_thread()
@@ -160,12 +160,12 @@ fn run_terminal_child_if_requested() -> bool {
     });
     if mode == "missing-main" {
         assert!(
-            matches!(result, Err(zterm_cli::CliError::SessionOperation { ref source, .. })
-            if source.kind() == zterm_core::DomainErrorKind::SessionNotFound)
+            matches!(result, Err(voytty_cli::CliError::SessionOperation { ref source, .. })
+            if source.kind() == voytty_core::DomainErrorKind::SessionNotFound)
         );
         return true;
     } else if mode == "non-tty-connect" {
-        if matches!(result, Err(zterm_cli::CliError::Usage(ref detail))
+        if matches!(result, Err(voytty_cli::CliError::Usage(ref detail))
             if detail.contains("both stdin and stdout"))
         {
             return true;
@@ -173,8 +173,8 @@ fn run_terminal_child_if_requested() -> bool {
         eprintln!("non-TTY terminal child crossed preflight: {result:?}");
         std::process::exit(1);
     } else if mode == "bare-signal" {
-        if matches!(result, Err(zterm_cli::CliError::Daemon(ref error))
-            if error.kind() == zterm_core::DomainErrorKind::Cancelled)
+        if matches!(result, Err(voytty_cli::CliError::Daemon(ref error))
+            if error.kind() == voytty_core::DomainErrorKind::Cancelled)
         {
             return true;
         }
@@ -183,16 +183,18 @@ fn run_terminal_child_if_requested() -> bool {
     } else if let Err(error) = result {
         eprintln!("local terminal child failed after restoration: {error:?}");
         let status = match &error {
-            zterm_cli::CliError::Daemon(error)
-            | zterm_cli::CliError::SessionOperation { source: error, .. } => match error.kind() {
-                zterm_core::DomainErrorKind::DeadlineExceeded => 71,
-                zterm_core::DomainErrorKind::Cancelled => 72,
-                zterm_core::DomainErrorKind::LeaseLost => 73,
+            voytty_cli::CliError::Daemon(error)
+            | voytty_cli::CliError::SessionOperation { source: error, .. } => match error.kind() {
+                voytty_core::DomainErrorKind::DeadlineExceeded => 71,
+                voytty_core::DomainErrorKind::Cancelled => 72,
+                voytty_core::DomainErrorKind::LeaseLost => 73,
                 _ => 74,
             },
-            zterm_cli::CliError::TerminalDriverFailure => 75,
-            zterm_cli::CliError::Io(_) => 76,
-            zterm_cli::CliError::Usage(_) | zterm_cli::CliError::CreatedSessionAttach { .. } => 77,
+            voytty_cli::CliError::TerminalDriverFailure => 75,
+            voytty_cli::CliError::Io(_) => 76,
+            voytty_cli::CliError::Usage(_) | voytty_cli::CliError::CreatedSessionAttach { .. } => {
+                77
+            }
         };
         std::process::exit(status);
     }
@@ -204,7 +206,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     let first = run(
         &runtime,
         "initial setup",
-        ["zterm", "setup", "--name", "cli-host"],
+        ["voytty", "setup", "--name", "cli-host"],
     )
     .await;
     assert!(first.contains("Device:  cli-host"));
@@ -228,31 +230,36 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
         0o700
     );
 
-    let repeated = run(&runtime, "repeated setup", ["zterm", "setup"]).await;
+    let repeated = run(&runtime, "repeated setup", ["voytty", "setup"]).await;
     assert_eq!(first, repeated);
     assert_eq!(
         std::fs::read(state.paths.identity()).expect("stable identity"),
         key
     );
-    let human = run(&runtime, "running status", ["zterm", "status"]).await;
+    let human = run(&runtime, "running status", ["voytty", "status"]).await;
     assert!(human.contains("Daemon:          Running"));
     assert!(human.contains("Network:         Disabled"));
     assert!(human.contains("Version:") && human.contains("Device:          cli-host"));
-    let doctor = run(&runtime, "running doctor", ["zterm", "doctor"]).await;
+    let doctor = run(&runtime, "running doctor", ["voytty", "doctor"]).await;
     assert!(doctor.contains("Endpoint bound: false"));
     assert!(doctor.contains("Address publish: disabled"));
     assert!(doctor.contains("Address lookup: disabled"));
     assert!(doctor.contains("Paths: direct=0, relay=0"));
     assert!(doctor.contains("state=disabled"));
-    run(&runtime, "initial daemon stop", ["zterm", "daemon", "stop"]).await;
+    run(
+        &runtime,
+        "initial daemon stop",
+        ["voytty", "daemon", "stop"],
+    )
+    .await;
     wait_for_socket(&state.paths, false).await;
-    let stopped = run(&runtime, "stopped status", ["zterm", "status"]).await;
+    let stopped = run(&runtime, "stopped status", ["voytty", "status"]).await;
     assert!(
         stopped.contains("Setup:           Configured")
             && stopped.contains("Network:         Stopped")
     );
     assert!(!state.paths.socket().exists(), "status does not restart");
-    let doctor = run(&runtime, "stopped doctor", ["zterm", "doctor"]).await;
+    let doctor = run(&runtime, "stopped doctor", ["voytty", "doctor"]).await;
     assert!(doctor.contains("not attempted"));
     assert!(!state.paths.socket().exists(), "doctor does not restart");
 
@@ -270,7 +277,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
         "daemon log must not contain raw identity bytes"
     );
     let mut log =
-        zterm_platform::user_state::open_append(state.paths.daemon_log(), state.paths.uid())
+        voytty_platform::user_state::open_append(state.paths.daemon_log(), state.paths.uid())
             .expect("managed log append");
     for index in 0..1_100 {
         writeln!(log, "bounded-tail-{index}").expect("log fixture line");
@@ -283,7 +290,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     let rendered_log = run(
         &runtime,
         "bounded log tail",
-        ["zterm", "logs", "--lines", "1"],
+        ["voytty", "logs", "--lines", "1"],
     )
     .await;
     assert!(rendered_log.ends_with("bounded-tail-1099\n"));
@@ -291,11 +298,11 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     let status = run(
         &runtime,
         "detail status",
-        ["zterm", "logs", "debug", "status"],
+        ["voytty", "logs", "debug", "status"],
     )
     .await;
     assert!(status.contains("OFF"));
-    let enabled = run(&runtime, "enable detail", ["zterm", "logs", "debug", "on"]).await;
+    let enabled = run(&runtime, "enable detail", ["voytty", "logs", "debug", "on"]).await;
     assert!(enabled.contains("ON"));
     assert!(
         !state.paths.socket().exists(),
@@ -304,12 +311,12 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     let json = run(
         &runtime,
         "structured tail",
-        ["zterm", "logs", "--json", "--component", "diagnostics"],
+        ["voytty", "logs", "--json", "--component", "diagnostics"],
     )
     .await;
     assert!(
         json.lines()
-            .all(|line| zterm_diagnostics::Record::decode(line.as_bytes()).is_some())
+            .all(|line| voytty_diagnostics::Record::decode(line.as_bytes()).is_some())
     );
     assert!(
         !json.contains("bounded-tail-"),
@@ -320,7 +327,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     let exported = run(
         &runtime,
         "export",
-        ["zterm", "logs", "export", "--output", output_name],
+        ["voytty", "logs", "export", "--output", output_name],
     )
     .await;
     assert!(exported.contains("Logs exported"));
@@ -329,7 +336,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     assert!(!export.contains("bounded-tail-"));
     assert!(
         execute(
-            Cli::try_parse_from(["zterm", "logs", "export", "--output", output_name])
+            Cli::try_parse_from(["voytty", "logs", "export", "--output", output_name])
                 .expect("export args"),
             &runtime,
             InteractionMode::NonInteractive
@@ -340,13 +347,13 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     run(
         &runtime,
         "disable detail",
-        ["zterm", "logs", "debug", "off"],
+        ["voytty", "logs", "debug", "off"],
     )
     .await;
     assert!(!state.paths.socket().exists());
 
     let unconfirmed_reset = execute(
-        Cli::try_parse_from(["zterm", "reset"]).expect("unconfirmed reset parses"),
+        Cli::try_parse_from(["voytty", "reset"]).expect("unconfirmed reset parses"),
         &runtime,
         InteractionMode::NonInteractive,
     )
@@ -362,7 +369,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
         key
     );
 
-    let restarted = run(&runtime, "daemon restart", ["zterm", "daemon", "restart"]).await;
+    let restarted = run(&runtime, "daemon restart", ["voytty", "daemon", "restart"]).await;
     assert!(restarted.contains("Daemon ready"));
     assert!(state.paths.socket().exists(), "restart starts daemon");
     assert_eq!(
@@ -442,20 +449,25 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     assert_eq!(bare_sessions[0].session_id, ui_main_id);
     wait_for_detach(&runtime, "local", &ui_main_id.to_string()).await;
 
-    expect_terminal(&runtime, ["zterm", "connect", "local"]).await;
+    expect_terminal(&runtime, ["voytty", "connect", "local"]).await;
     let viewport = Some(TerminalSize::new(24, 80));
     let main = runtime
         .attach("local", None, true, false, viewport)
         .await
         .expect("connect local main after deferred TTY preflight");
     let main_id = main.session_id();
-    let sessions = run(&runtime, "local Session list", ["zterm", "session", "list"]).await;
+    let sessions = run(
+        &runtime,
+        "local Session list",
+        ["voytty", "session", "list"],
+    )
+    .await;
     assert!(sessions.contains(&main_id.to_string()) && sessions.contains("main"));
     assert!(sessions.contains("Attached") && !sessions.contains("working_directory"));
     drop(main);
     wait_for_detach(&runtime, "local", &main_id.to_string()).await;
 
-    expect_terminal(&runtime, ["zterm"]).await;
+    expect_terminal(&runtime, ["voytty"]).await;
     let bare = runtime
         .attach("local", None, true, false, viewport)
         .await
@@ -463,12 +475,12 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     assert_eq!(
         bare.session_id(),
         main_id,
-        "bare zterm reuses connect local main"
+        "bare voytty reuses connect local main"
     );
     drop(bare);
     wait_for_detach(&runtime, "local", &main_id.to_string()).await;
 
-    expect_terminal(&runtime, ["zterm", "session", "create", "build"]).await;
+    expect_terminal(&runtime, ["voytty", "session", "create", "build"]).await;
     let created = runtime
         .session_create_for_attach("local", "build", None, viewport)
         .await
@@ -480,7 +492,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     let build_id = build.session_id();
     expect_terminal(
         &runtime,
-        ["zterm", "connect", "local", "--session", "build"],
+        ["voytty", "connect", "local", "--session", "build"],
     )
     .await;
     let occupied = runtime
@@ -491,7 +503,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     expect_terminal(
         &runtime,
         [
-            "zterm",
+            "voytty",
             "connect",
             "local",
             "--session",
@@ -512,7 +524,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
         &runtime,
         "local Session rename",
         [
-            "zterm",
+            "voytty",
             "session",
             "rename",
             "--target",
@@ -525,7 +537,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     assert!(renamed.contains(&build_id.to_string()));
     assert!(renamed.contains("review"));
     let unconfirmed_close = execute(
-        Cli::try_parse_from(["zterm", "session", "close", "review"])
+        Cli::try_parse_from(["voytty", "session", "close", "review"])
             .expect("unconfirmed close parses"),
         &runtime,
         InteractionMode::NonInteractive,
@@ -545,14 +557,14 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     let closed = run(
         &runtime,
         "local Session close",
-        ["zterm", "session", "close", "review", "--yes"],
+        ["voytty", "session", "close", "review", "--yes"],
     )
     .await;
     assert!(closed.contains(&build_id.to_string()));
     drop(build);
 
     let reset_without_confirmation = execute(
-        Cli::try_parse_from(["zterm", "reset"]).expect("reset parses"),
+        Cli::try_parse_from(["voytty", "reset"]).expect("reset parses"),
         &runtime,
         InteractionMode::NonInteractive,
     )
@@ -562,7 +574,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     assert!(state.paths.identity().exists());
     assert!(state.paths.socket().exists());
 
-    let reset = run(&runtime, "forced identity reset", ["zterm", "reset", "-y"]).await;
+    let reset = run(&runtime, "forced identity reset", ["voytty", "reset", "-y"]).await;
     assert!(reset.contains("Managed identity state removed"));
     wait_for_socket(&state.paths, false).await;
     assert!(!state.paths.state_root().exists());
@@ -573,7 +585,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     let retry = run(
         &runtime,
         "idempotent identity reset",
-        ["zterm", "reset", "-y"],
+        ["voytty", "reset", "-y"],
     )
     .await;
     assert!(retry.contains("already absent"));
@@ -583,7 +595,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
         &runtime,
         "setup after identity reset",
         [
-            "zterm",
+            "voytty",
             "setup",
             "--name",
             "cli-host-reset",
@@ -611,7 +623,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     let restarted = run(
         &runtime,
         "restart after confirmed stop",
-        ["zterm", "daemon", "restart"],
+        ["voytty", "daemon", "restart"],
     )
     .await;
     assert!(restarted.contains("Daemon ready"));
@@ -625,7 +637,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     run(
         &runtime,
         "final forced daemon stop",
-        ["zterm", "daemon", "stop", "-y"],
+        ["voytty", "daemon", "stop", "-y"],
     )
     .await;
     wait_for_socket(&state.paths, false).await;
@@ -634,7 +646,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
 #[cfg(unix)]
 async fn cleanup_failed_daemon(
     runtime: &LocalRuntime,
-    paths: &zterm_platform::user_state::UserPaths,
+    paths: &voytty_platform::user_state::UserPaths,
 ) {
     let deadline = std::time::Instant::now() + TERMINAL_TEST_TIMEOUT;
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
@@ -682,7 +694,7 @@ async fn expect_terminal<const N: usize>(runtime: &LocalRuntime, arguments: [&st
 #[cfg(unix)]
 async fn wait_for_detach(runtime: &LocalRuntime, target: &str, selector: &str) {
     let expected = selector
-        .parse::<zterm_core::SessionId>()
+        .parse::<voytty_core::SessionId>()
         .expect("detach probe uses canonical Session ID");
     let started = std::time::Instant::now();
     loop {
@@ -702,7 +714,7 @@ async fn wait_for_detach(runtime: &LocalRuntime, target: &str, selector: &str) {
 }
 
 #[cfg(unix)]
-async fn wait_for_socket(paths: &zterm_platform::user_state::UserPaths, expected: bool) {
+async fn wait_for_socket(paths: &voytty_platform::user_state::UserPaths, expected: bool) {
     let started = std::time::Instant::now();
     while paths.socket().exists() != expected {
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
@@ -713,7 +725,7 @@ async fn wait_for_socket(paths: &zterm_platform::user_state::UserPaths, expected
 #[cfg(unix)]
 async fn run_local_terminal_child(
     runtime: &LocalRuntime,
-    paths: &zterm_platform::user_state::UserPaths,
+    paths: &voytty_platform::user_state::UserPaths,
     mode: &str,
 ) -> Vec<u8> {
     use nix::pty::{Winsize, openpty};
@@ -772,13 +784,13 @@ async fn run_local_terminal_child(
 
     let input_probe = match mode {
         "connect" => TERMINAL_CONNECT_MARKER,
-        "screen-switch" | "alternate-detach" => b"ZTERM_TEST_DECSET_1049".as_slice(),
-        "alternate-reattach" => b"ZTERM_SAME_SIZE_INPUT".as_slice(),
-        "alternate-wider" => b"ZTERM_ALT_WIDER_INPUT".as_slice(),
-        "main-wider" => b"ZTERM_MAIN_WIDER_INPUT".as_slice(),
-        "scroll" => b"ZTERM_SCROLL_PROBE".as_slice(),
+        "screen-switch" | "alternate-detach" => b"VOYTTY_TEST_DECSET_1049".as_slice(),
+        "alternate-reattach" => b"VOYTTY_SAME_SIZE_INPUT".as_slice(),
+        "alternate-wider" => b"VOYTTY_ALT_WIDER_INPUT".as_slice(),
+        "main-wider" => b"VOYTTY_MAIN_WIDER_INPUT".as_slice(),
+        "scroll" => b"VOYTTY_SCROLL_PROBE".as_slice(),
         "copy" => TERMINAL_COPY_SCREEN,
-        "enhanced-prefix" => b"ZTERM_TEST_KEYBOARD_15".as_slice(),
+        "enhanced-prefix" => b"VOYTTY_TEST_KEYBOARD_15".as_slice(),
         "bare-signal" => TERMINAL_BARE_MARKER,
         "stop-confirm" | "missing-main" => b"".as_slice(),
         _ => panic!("unsupported terminal PTY fixture mode"),
@@ -857,7 +869,7 @@ async fn run_local_terminal_child(
         {
             terminate_failed_child(&mut child, "stop prompt omitted English Session impact");
         }
-        let Ok(zterm_daemon::operations::ObservedState::Running(status)) = runtime.observe().await
+        let Ok(voytty_daemon::operations::ObservedState::Running(status)) = runtime.observe().await
         else {
             terminate_failed_child(&mut child, "daemon stopped before confirmation");
         };
@@ -930,7 +942,7 @@ async fn run_local_terminal_child(
     let input_presentation = presentation_count.load(Ordering::Acquire);
     if mode == "scroll" {
         for index in 0..12 {
-            write!(master_writer, "ZTERM_SCROLL_FILL_{index:02}\r")
+            write!(master_writer, "VOYTTY_SCROLL_FILL_{index:02}\r")
                 .expect("write deterministic history filler");
         }
     } else {
@@ -967,7 +979,7 @@ async fn run_local_terminal_child(
         let log = std::fs::read_to_string(paths.daemon_log()).expect("connection stage log");
         let stages = log
             .lines()
-            .filter_map(|line| zterm_diagnostics::Record::decode(line.as_bytes()))
+            .filter_map(|line| voytty_diagnostics::Record::decode(line.as_bytes()))
             .filter(|record| record.component == "connection_startup" && record.pid == child.id())
             .filter_map(|record| record.fields.startup_stage)
             .collect::<Vec<_>>();
@@ -994,7 +1006,7 @@ async fn run_local_terminal_child(
         wait_for_terminal_quiescence(runtime, &presentation_count, mode).await;
     } else if mode == "alternate-wider" {
         master_writer
-            .write_all(b"ZTERM_TEST_DECRST_1049\r")
+            .write_all(b"VOYTTY_TEST_DECRST_1049\r")
             .expect("return retained child to Main for changed-width reattach");
         wait_for_active_viewport(runtime, 23, columns - 1).await;
         wait_for_terminal_quiescence(runtime, &presentation_count, mode).await;
@@ -1128,7 +1140,7 @@ async fn run_local_terminal_child(
             "local copy must not reach or mutate the child PTY"
         );
         master_writer
-            .write_all(b"ZTERM_TEST_NOTIFICATIONS\r")
+            .write_all(b"VOYTTY_TEST_NOTIFICATIONS\r")
             .expect("request child notifications");
         let deadline = std::time::Instant::now() + TERMINAL_TEST_TIMEOUT;
         let osc9 = "\x1b]9;结果: done\x1b\\".as_bytes();
@@ -1152,7 +1164,7 @@ async fn run_local_terminal_child(
         );
 
         master_writer
-            .write_all(b"ZTERM_TEST_DECRST_1049\r")
+            .write_all(b"VOYTTY_TEST_DECRST_1049\r")
             .expect("write generic DECRST 1049 command");
         let main_revision = wait_for_active_viewport(runtime, 23, 79).await;
         assert!(
@@ -1168,7 +1180,7 @@ async fn run_local_terminal_child(
         let probe_revision = current_controller_revision(runtime).await;
         let probe_presentation = presentation_count.load(Ordering::Acquire);
         master_writer
-            .write_all(b"printf 'ZTERM_AFTER_SWITCH\\n'\r")
+            .write_all(b"printf 'VOYTTY_AFTER_SWITCH\\n'\r")
             .expect("write input after returning to Main");
         let continued = wait_for_terminal_progress(
             runtime,
@@ -1355,7 +1367,7 @@ async fn wait_for_terminal_quiescence(
 }
 
 #[cfg(unix)]
-fn run_non_tty_terminal_child(paths: &zterm_platform::user_state::UserPaths) {
+fn run_non_tty_terminal_child(paths: &voytty_platform::user_state::UserPaths) {
     let argument = format!(
         "{TERMINAL_CHILD_PREFIX}non-tty-connect:{}",
         daemon_harness::encode_paths(paths)

@@ -62,7 +62,7 @@ macro_rules! fixed_id {
     };
 }
 
-fixed_id!(DeviceId, 32, "Stable public identity of one zterm device.");
+fixed_id!(DeviceId, 32, "Stable public identity of one voytty device.");
 fixed_id!(
     TransferId,
     16,
@@ -339,7 +339,7 @@ pub enum SessionSelector {
 /// Why a live session stopped owning its root shell and PTY.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionEndReason {
-    /// The root shell exited without an explicit zterm close.
+    /// The root shell exited without an explicit voytty close.
     NaturalExit {
         /// Portable exit code projection.
         exit_code: u32,
