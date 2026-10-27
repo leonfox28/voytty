@@ -7,6 +7,10 @@ not supported by this installer. Intel macOS is no longer published; its
 historical Releases remain available. Package-manager channels and background
 updates are intentionally absent.
 
+The installer requires `curl` and either `sha256sum` or `shasum`. Linux needs a
+64-bit userspace, not only a 64-bit kernel. On Apple Silicon, a terminal running
+through Rosetta still selects the native arm64 binary.
+
 ## Transition from zterm
 
 voytty is a fresh installation, not an in-place update of zterm. The CLI is
@@ -68,6 +72,26 @@ sh /tmp/voytty-install.sh --version vX.Y.Z
 sh /tmp/voytty-install.sh --install-dir "$HOME/bin"
 ```
 
+`VOYTTY_INSTALL_DIR` also selects the destination; `--install-dir` takes
+precedence. With a pipeline, put the variable on the `sh` process:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leonfox28/voytty/main/install/install.sh \
+  | VOYTTY_INSTALL_DIR="$HOME/bin" sh
+```
+
+Exact version tags may include a prerelease suffix but cannot include SemVer
+build metadata (`+build`), matching the release publisher. The bootstrap defers
+its installation body until its function has been received. This reduces partial
+execution when streamed into `sh`, but does not guarantee that every truncated
+pipeline returns a failure. For an explicit download-success check, use:
+
+```bash
+curl -fsSL --output /tmp/voytty-install.sh \
+  https://raw.githubusercontent.com/leonfox28/voytty/main/install/install.sh \
+  && sh /tmp/voytty-install.sh
+```
+
 The default destination is `~/.local/bin/voytty`. If that directory is not on
 `PATH`, the installer prints the required guidance; it does not edit shell
 startup files. An existing writable `~/.local/bin`, including the ordinary
@@ -76,6 +100,20 @@ without requiring `chmod`. The installer refuses an existing destination, a
 relative, symlinked, non-directory, or unwritable install path, an unsupported
 target, NixOS, musl, an old OS or glibc, and any incomplete or mismatched
 Release asset.
+
+The installer prints download/verification stages and a setup command, and warns
+when another `voytty` shadows the installed binary on `PATH` or `zterm` is still
+installed. PATH suggestions are shell-quoted and never edit configuration files.
+Both installation and update execute candidates in a private directory beside
+the destination executable, so a system temporary directory mounted `noexec`
+does not prevent verification. The install filesystem itself must allow execution.
+
+Downloads retain HTTPS-only redirects and byte limits. Each small asset has a
+60-second budget; assets over 1 MiB have a 600-second budget. These budgets cover
+at most four attempts, including backoff. Stalled or persistently sub-1-KiB/s
+transfers are aborted after a 30-second observation window. Transient network
+errors and HTTP 408/429/500/502/503/504 may retry; permanent responses, unsafe
+redirects, oversize payloads, and integrity failures stop installation.
 
 Installation does not run `setup`, create `~/.voytty`, generate an identity,
 start a daemon, register a service, invoke `sudo`, or change shell files. Run
@@ -88,10 +126,10 @@ voytty setup
 ## What is authenticated
 
 The small mutable repository bootstrap selects latest stable or an exact tag,
-then downloads that Release's immutable `voytty-install.sh`. This first HTTPS
-hop cannot defend against simultaneous compromise of the reviewed bootstrap
-source and GitHub. The versioned script embeds its exact tag, manifest digest,
-and that release's authenticated artifact table.
+then downloads that Release's immutable `voytty-install.sh`. Initial installation
+trusts the HTTPS-delivered scripts: the versioned script pins the manifest and
+archive hashes before executing any candidate. A compromised script source can
+replace those pins, so this is not an independent signing-key trust root.
 
 Before publishing a binary, the versioned script checks target/support floor,
 absolute directory shape and basic writability, bounded download sizes, exact
@@ -102,6 +140,12 @@ cross-checks version, target, source commit, wire/schema versions, and
 release-key ID before an fsynced, atomic no-clobber install. GitHub immutable
 Releases and provenance attestations additionally bind the tag and assets
 inside GitHub's supply-chain audit layer.
+
+The candidate's own signature check confirms release consistency; it cannot
+independently establish the trustworthiness of code that is already executing.
+During `voytty update`, the existing trusted binary verifies the new manifest's
+signature and archive digest before it executes the downloaded candidate. That
+update path has a previously established signing-key trust root.
 
 For a manual audit, download `SHA256SUMS`, `voytty-release.json`, its `.sig`, the
 target archive, and `voytty-install.sh` from one exact Release. Verify the listed

@@ -38,7 +38,7 @@ after_syntax_files=$(find "$syntax_fixture" -type f | wc -l | tr -d '[:space:]')
 if find "$syntax_fixture" -type d -name __pycache__ | grep -q .; then
     fail "Python syntax owner created __pycache__"
 fi
-for invalid_tag in v1 v1.2 v01.2.3 v1.02.3 v1.2.03 v1.2.3-01 v1.2.3-; do
+for invalid_tag in v1 v1.2 v01.2.3 v1.02.3 v1.2.03 v1.2.3-01 v1.2.3- v1.2.3+build; do
     if sh "$bootstrap" --version "$invalid_tag" >/dev/null 2>&1; then
         fail "mutable bootstrap accepted noncanonical SemVer tag: $invalid_tag"
     fi

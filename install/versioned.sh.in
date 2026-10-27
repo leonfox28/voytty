@@ -5,7 +5,7 @@ release_tag='@TAG@'
 release_base='@BASE_URL@'
 manifest_sha256='@MANIFEST_SHA256@'
 test_mode='@TEST_MODE@'
-install_dir=""
+install_dir="${VOYTTY_INSTALL_DIR:-}"
 
 fail() {
     echo "voytty installer failed: $*" >&2
@@ -18,6 +18,7 @@ Usage: voytty-install.sh [--install-dir <directory>]
 
 Installs immutable voytty Release $release_tag without running setup or starting
 a daemon. The destination defaults to \$HOME/.local/bin.
+VOYTTY_INSTALL_DIR overrides the default; --install-dir takes precedence.
 EOF
 }
 
@@ -48,6 +49,17 @@ version_at_least() {
             && [ "$observed_minor" -ge "$required_minor" ] 2>/dev/null; }
 }
 
+for tool in curl date sleep uname tar wc tr chmod mktemp awk sed mkdir rm rmdir; do
+    command -v "$tool" >/dev/null 2>&1 || fail "$tool is required; install it with your system package manager"
+done
+if command -v sha256sum >/dev/null 2>&1; then
+    sha256_file() { sha256sum "$1" | awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then
+    sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
+else
+    fail "sha256sum or shasum is required"
+fi
+
 os=$(uname -s 2>/dev/null) || fail "unable to detect operating system"
 arch=$(uname -m 2>/dev/null) || fail "unable to detect architecture"
 case "$arch" in
@@ -58,6 +70,10 @@ esac
 
 case "$os" in
     Darwin)
+        if [ "$rust_arch" = x86_64 ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then
+            rust_arch=aarch64
+        fi
+        [ "$rust_arch" = aarch64 ] || fail "Intel macOS binaries are no longer published; Apple Silicon is required"
         target="$rust_arch-apple-darwin"
         macos_version=$(sw_vers -productVersion 2>/dev/null) \
             || fail "unable to detect macOS version"
@@ -65,6 +81,8 @@ case "$os" in
             || fail "macOS 13.0 or newer is required"
         ;;
     Linux)
+        [ "$(getconf LONG_BIT 2>/dev/null || true)" = 64 ] \
+            || fail "a 64-bit Linux userspace is required (a 64-bit kernel alone is not sufficient)"
         [ ! -e /etc/NIXOS ] || fail "NixOS native installation is unsupported; use a future Nix package"
         [ ! -e /etc/alpine-release ] || fail "Alpine/musl is unsupported; glibc 2.28 or newer is required"
         ldd_version=$(ldd --version 2>&1 || true)
@@ -86,10 +104,15 @@ case "$target" in
     *) fail "unsupported release target: $target" ;;
 esac
 
+printf 'Detected %s; installing voytty %s.\n' "$target" "$release_tag"
+
 if [ -z "$install_dir" ]; then
     [ -n "${HOME:-}" ] || fail "HOME is required for the default install directory"
     install_dir="$HOME/.local/bin"
 fi
+while [ "$install_dir" != / ] && [ "${install_dir%/}" != "$install_dir" ]; do
+    install_dir=${install_dir%/}
+done
 case "$install_dir" in
     /*) ;;
     *) fail "install directory must be absolute" ;;
@@ -101,42 +124,47 @@ if [ ! -d "$install_dir" ] || [ ! -w "$install_dir" ]; then
 fi
 destination="$install_dir/voytty"
 if [ -e "$destination" ] || [ -L "$destination" ]; then
-    fail "destination already exists; use the installed binary's explicit 'voytty update' command"
+    fail "destination already exists: $destination; use the installed binary's explicit 'voytty update' command"
 fi
 
-for tool in tar wc tr chmod mktemp awk; do
-    command -v "$tool" >/dev/null 2>&1 || fail "$tool is required"
-done
-if command -v sha256sum >/dev/null 2>&1; then
-    sha256_file() { sha256sum "$1" | awk '{print $1}'; }
-elif command -v shasum >/dev/null 2>&1; then
-    sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
-else
-    fail "sha256sum or shasum is required"
-fi
-
-if command -v curl >/dev/null 2>&1; then
-    download() {
-        file_blocks=$((($3 + 511) / 512))
-        (
-            ulimit -f "$file_blocks"
-            curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
-                --connect-timeout 10 --max-time 60 --max-filesize "$3" \
-                --output "$2" "$1"
-        )
-    }
-elif command -v wget >/dev/null 2>&1; then
-    download() {
-        file_blocks=$((($3 + 511) / 512))
-        (
-            ulimit -f "$file_blocks"
-            wget --https-only --timeout=60 --tries=1 --quiet \
-                --output-document="$2" "$1"
-        )
-    }
-else
-    fail "curl or wget is required"
-fi
+# Each asset has one wall-clock budget across at most four attempts. Never
+# retry certificate/protocol failures, oversize responses or permanent HTTP errors.
+download() {
+    download_budget=60
+    if [ "$3" -gt 1048576 ]; then download_budget=600; fi
+    download_deadline=$(($(date +%s) + download_budget))
+    download_attempt=0
+    download_delay=1
+    download_http=000
+    download_status=28
+    while :; do
+        download_remaining=$((download_deadline - $(date +%s)))
+        [ "$download_remaining" -gt 0 ] || break
+        download_attempt=$((download_attempt + 1))
+        download_status=0
+        download_http=$(
+            ulimit -f "$((($3 + 511) / 512))"
+            curl --disable --proto '=https' --proto-redir '=https' --tlsv1.2 \
+                --fail --location --max-redirs 5 --silent --show-error \
+                --connect-timeout 10 --max-time "$download_remaining" \
+                --speed-limit 1024 --speed-time 30 --max-filesize "$3" \
+                --write-out '%{http_code}' --output "$2" "$1"
+        ) || download_status=$?
+        if [ "$download_status" -eq 0 ]; then return 0; fi
+        case "$download_status:$download_http" in
+            5:*|6:*|7:*|18:*|28:*|52:*|55:*|56:*|22:408|22:429|22:500|22:502|22:503|22:504) ;;
+            *) break ;;
+        esac
+        [ "$download_attempt" -lt 4 ] || break
+        download_remaining=$((download_deadline - $(date +%s)))
+        [ "$download_remaining" -gt "$download_delay" ] || break
+        printf 'Download interrupted; retrying in %s seconds (%s/4).\n' "$download_delay" "$download_attempt" >&2
+        sleep "$download_delay"
+        download_delay=$((download_delay * 2))
+    done
+    printf 'Download failed: %s (HTTP %s, curl status %s).\n' "$1" "${download_http:-000}" "${download_status:-28}" >&2
+    return 1
+}
 
 if [ "$test_mode" = 1 ] && [ -n "${VOYTTY_INSTALL_TEST_BASE_URL:-}" ]; then
     case "$VOYTTY_INSTALL_TEST_BASE_URL" in
@@ -145,7 +173,7 @@ if [ "$test_mode" = 1 ] && [ -n "${VOYTTY_INSTALL_TEST_BASE_URL:-}" ]; then
     esac
 fi
 
-temporary=$(mktemp -d "${TMPDIR:-/tmp}/voytty-install.XXXXXX") \
+temporary=$(umask 077; mktemp -d "$install_dir/.voytty-install.XXXXXX") \
     || fail "unable to create a private temporary directory"
 chmod 700 "$temporary" || fail "unable to secure the temporary directory"
 cleanup() {
@@ -156,6 +184,7 @@ cleanup() {
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
 
+printf 'Downloading release metadata...\n'
 manifest="$temporary/voytty-release.json"
 signature="$temporary/voytty-release.json.sig"
 archive="$temporary/$archive_name"
@@ -174,10 +203,12 @@ download "$release_base/voytty-release.json.sig" "$signature" 64 \
 [ "$(wc -c < "$signature" | tr -d '[:space:]')" -eq 64 ] 2>/dev/null \
     || fail "release signature size is invalid"
 
+printf 'Downloading %s (%s bytes)...\n' "$archive_name" "$archive_length"
 download "$release_base/$archive_name" "$archive" "$archive_length" \
     || fail "unable to download release archive"
 [ "$(wc -c < "$archive" | tr -d '[:space:]')" -eq "$archive_length" ] 2>/dev/null \
     || fail "release archive length does not match signed metadata"
+printf 'Verifying release archive...\n'
 [ "$(sha256_file "$archive")" = "$archive_sha256" ] \
     || fail "release archive digest does not match signed metadata"
 [ "$(tar -tzf "$archive")" = "voytty" ] \
@@ -188,15 +219,35 @@ if [ -L "$candidate" ] || [ ! -f "$candidate" ]; then
     fail "release candidate is not a direct regular file"
 fi
 chmod 700 "$candidate" || fail "unable to secure release candidate"
-"$candidate" --internal-release-self-check >/dev/null \
-    || fail "release candidate self-check failed"
+candidate_status=0
+"$candidate" --internal-release-self-check >/dev/null || candidate_status=$?
+case "$candidate_status" in
+    0) ;;
+    126|127) fail "unable to execute $candidate; check execute permissions and whether the install filesystem is mounted noexec" ;;
+    *) fail "release candidate self-check failed (exit $candidate_status)" ;;
+esac
 "$candidate" --internal-release-verify "$manifest" "$signature" \
     || fail "release manifest signature or candidate identity is invalid"
+printf 'Installing verified binary...\n'
 "$candidate" --internal-release-install "$destination" \
     || fail "atomic no-clobber installation failed"
 
 echo "Installed voytty $release_tag at $destination"
 case ":${PATH:-}:" in
     *:"$install_dir":*) ;;
-    *) echo "Add $install_dir to PATH, then run 'voytty setup'." ;;
+    *)
+        echo "Add $install_dir to PATH for this shell:"
+        quoted_dir=$(printf '%s' "$install_dir" | sed "s/'/'\\\\''/g")
+        printf "  export PATH='%s':\"\$PATH\"\n" "$quoted_dir"
+        ;;
 esac
+
+resolved_voytty=$(command -v voytty 2>/dev/null || true)
+if [ -n "$resolved_voytty" ] && [ "$resolved_voytty" != "$destination" ]; then
+    printf 'Warning: PATH currently resolves voytty to %s; prefer %s.\n' "$resolved_voytty" "$destination"
+fi
+if command -v zterm >/dev/null 2>&1; then
+    printf 'Existing zterm detected. Migration: https://github.com/leonfox28/voytty/blob/main/docs/install.md#transition-from-zterm\n'
+fi
+quoted_destination=$(printf '%s' "$destination" | sed "s/'/'\\\\''/g")
+printf "Next: '%s' setup\n" "$quoted_destination"
