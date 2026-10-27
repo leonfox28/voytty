@@ -29,7 +29,10 @@ const SIGNATURE_ASSET: &str = "voytty-release.json.sig";
 const MAX_CANDIDATE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_SELF_CHECK_BYTES: u64 = 16 * 1024;
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const HTTP_TOTAL_TIMEOUT: Duration = Duration::from_secs(60);
+const HTTP_METADATA_BUDGET: Duration = Duration::from_secs(60);
+const HTTP_ARCHIVE_BUDGET: Duration = Duration::from_secs(600);
+const HTTP_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const HTTP_MINIMUM_BYTES_PER_SECOND: u64 = 1024;
 const CANDIDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 const INSTALL_METADATA_SCHEMA: u32 = 1;
 
@@ -54,7 +57,7 @@ impl ReleaseSelection {
             .and_then(|value| {
                 Version::parse(value).map_err(|_| DistributionError::InvalidSelection)
             })?;
-        if tag != format!("v{version}") {
+        if tag != format!("v{version}") || !version.build.is_empty() {
             return Err(DistributionError::InvalidSelection);
         }
         Ok(Self::Exact(tag.to_owned()))
@@ -135,6 +138,8 @@ pub enum DistributionError {
     Archive,
     /// Candidate process failed its side-effect-free self-check.
     Candidate,
+    /// Candidate cannot execute on the selected filesystem.
+    CandidateExecution,
     /// Candidate is not newer than the running CLI.
     NotNewer,
     /// This release has no supported artifact for the current platform.
@@ -154,6 +159,9 @@ impl fmt::Display for DistributionError {
             Self::Artifact => "release archive does not match authenticated metadata",
             Self::Archive => "release archive inventory is invalid",
             Self::Candidate => "release candidate self-check failed",
+            Self::CandidateExecution => {
+                "unable to execute release candidate; check execute permissions and whether the install filesystem is mounted noexec"
+            }
             Self::NotNewer => "release candidate is not newer than this voytty binary",
             Self::UnsupportedTarget => {
                 "this release has no supported update package for this platform"
@@ -179,7 +187,9 @@ impl From<DistributionError> for DaemonError {
             DistributionError::Fetch => DomainErrorKind::ReleaseUnavailable,
             DistributionError::NotNewer => DomainErrorKind::UpdateRejected,
             DistributionError::UnsupportedTarget => DomainErrorKind::UnsupportedPlatform,
-            DistributionError::Staging => DomainErrorKind::PathUnsafe,
+            DistributionError::Staging | DistributionError::CandidateExecution => {
+                DomainErrorKind::PathUnsafe
+            }
         };
         Self::new(kind, error.to_string())
     }
@@ -189,59 +199,206 @@ trait ReleaseFetcher {
     fn fetch(&self, url: &str, maximum: u64) -> Result<Vec<u8>, DistributionError>;
 }
 
+#[derive(Clone, Copy)]
+struct DownloadPolicy {
+    metadata_budget: Duration,
+    archive_budget: Duration,
+    idle_timeout: Duration,
+    retry_delay: Duration,
+}
+
+impl Default for DownloadPolicy {
+    fn default() -> Self {
+        Self {
+            metadata_budget: HTTP_METADATA_BUDGET,
+            archive_budget: HTTP_ARCHIVE_BUDGET,
+            idle_timeout: HTTP_IDLE_TIMEOUT,
+            retry_delay: Duration::from_secs(1),
+        }
+    }
+}
+
 struct HttpReleaseFetcher {
-    client: reqwest::blocking::Client,
+    client: reqwest::Client,
+    runtime: tokio::runtime::Runtime,
+    policy: DownloadPolicy,
+}
+
+#[derive(Debug)]
+enum FetchFailure {
+    Transient,
+    Permanent,
 }
 
 impl HttpReleaseFetcher {
     fn new() -> Result<Self, DistributionError> {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = reqwest::blocking::Client::builder()
+        let policy = DownloadPolicy::default();
+        let client = reqwest::Client::builder()
             .connect_timeout(HTTP_CONNECT_TIMEOUT)
-            .timeout(HTTP_TOTAL_TIMEOUT)
+            .read_timeout(policy.idle_timeout)
             .https_only(true)
+            .retry(reqwest::retry::never())
             .redirect(reqwest::redirect::Policy::limited(5))
             .user_agent(concat!("voytty/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|_| DistributionError::Fetch)?;
-        Ok(Self { client })
+        Self::with_client(client, policy)
     }
-}
 
-impl ReleaseFetcher for HttpReleaseFetcher {
-    fn fetch(&self, url: &str, maximum: u64) -> Result<Vec<u8>, DistributionError> {
+    fn with_client(
+        client: reqwest::Client,
+        policy: DownloadPolicy,
+    ) -> Result<Self, DistributionError> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| DistributionError::Fetch)?;
+        Ok(Self {
+            client,
+            runtime,
+            policy,
+        })
+    }
+
+    async fn attempt(
+        &self,
+        url: &str,
+        maximum: u64,
+        remaining: Duration,
+    ) -> Result<Vec<u8>, FetchFailure> {
         let mut response = self
             .client
             .get(url)
+            .timeout(remaining)
             .send()
-            .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|_| DistributionError::Fetch)?;
+            .await
+            .map_err(classify_fetch_error)?;
+        match response.status().as_u16() {
+            200..=299 => {}
+            408 | 429 | 500 | 502 | 503 | 504 => return Err(FetchFailure::Transient),
+            _ => return Err(FetchFailure::Permanent),
+        }
         if response
             .content_length()
             .is_some_and(|length| length > maximum)
         {
-            return Err(DistributionError::Fetch);
+            return Err(FetchFailure::Permanent);
         }
         let capacity = usize::try_from(maximum.min(1024 * 1024)).unwrap_or(0);
         let mut bytes = Vec::with_capacity(capacity);
-        response
-            .by_ref()
-            .take(maximum.saturating_add(1))
-            .read_to_end(&mut bytes)
-            .map_err(|_| DistributionError::Fetch)?;
-        if u64::try_from(bytes.len()).map_or(true, |length| length > maximum) {
-            return Err(DistributionError::Fetch);
+        let mut window = Instant::now();
+        let mut window_bytes = 0_u64;
+        while let Some(chunk) = response.chunk().await.map_err(|error| {
+            if error.is_body() {
+                FetchFailure::Transient
+            } else {
+                classify_fetch_error(error)
+            }
+        })? {
+            if (bytes.len() as u64).saturating_add(chunk.len() as u64) > maximum {
+                return Err(FetchFailure::Permanent);
+            }
+            bytes.extend_from_slice(&chunk);
+            window_bytes = window_bytes.saturating_add(chunk.len() as u64);
+            let elapsed = window.elapsed();
+            if elapsed >= self.policy.idle_timeout {
+                if window_bytes as f64 / elapsed.as_secs_f64()
+                    < HTTP_MINIMUM_BYTES_PER_SECOND as f64
+                {
+                    return Err(FetchFailure::Transient);
+                }
+                window = Instant::now();
+                window_bytes = 0;
+            }
         }
         Ok(bytes)
     }
 }
 
+// Retry network interruption, not certificate failures, invalid URLs or protocol
+// restrictions. reqwest's is_connect() alone also includes TLS validation errors.
+fn classify_fetch_error(error: reqwest::Error) -> FetchFailure {
+    if error.is_timeout() {
+        return FetchFailure::Transient;
+    }
+    // A peer can close before reqwest exposes a response body (IncompleteMessage).
+    // Retrying request transport errors is safe for these bounded GETs. Connect
+    // failures still need the narrower IO classification below to exclude TLS.
+    if error.is_request() && !error.is_connect() {
+        return FetchFailure::Transient;
+    }
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    while let Some(cause) = source {
+        if cause.downcast_ref::<io::Error>().is_some_and(|error| {
+            matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::TimedOut
+                    | io::ErrorKind::UnexpectedEof
+                    | io::ErrorKind::NotConnected
+            )
+        }) {
+            return FetchFailure::Transient;
+        }
+        source = cause.source();
+    }
+    FetchFailure::Permanent
+}
+
+impl ReleaseFetcher for HttpReleaseFetcher {
+    fn fetch(&self, url: &str, maximum: u64) -> Result<Vec<u8>, DistributionError> {
+        self.runtime.block_on(async {
+            let budget = if maximum > 1024 * 1024 {
+                self.policy.archive_budget
+            } else {
+                self.policy.metadata_budget
+            };
+            let deadline = Instant::now() + budget;
+            let mut delay = self.policy.retry_delay;
+            for attempt in 0..4 {
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    break;
+                };
+                match self.attempt(url, maximum, remaining).await {
+                    Ok(bytes) => return Ok(bytes),
+                    Err(FetchFailure::Permanent) => break,
+                    Err(FetchFailure::Transient) => {}
+                }
+                if attempt == 3 || deadline.saturating_duration_since(Instant::now()) <= delay {
+                    break;
+                }
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+            Err(DistributionError::Fetch)
+        })
+    }
+}
+
 /// Downloads and authenticates a release candidate on a blocking worker.
-pub async fn prepare_update(selection: ReleaseSelection) -> Result<PreparedRelease, DaemonError> {
+pub async fn prepare_update(
+    selection: ReleaseSelection,
+    executable: PathBuf,
+    uid: u32,
+) -> Result<PreparedRelease, DaemonError> {
+    validate_managed_executable(&executable, uid)?;
+    let directory = executable
+        .parent()
+        .ok_or_else(|| DaemonError::from(DistributionError::Staging))?
+        .to_path_buf();
     tokio::task::spawn_blocking(move || {
         let fetcher = HttpReleaseFetcher::new()?;
         let public_key = official_release_public_key().map_err(map_release_error)?;
-        prepare_with(&fetcher, &selection, &public_key, BuildIdentity::current())
+        prepare_with(
+            &fetcher,
+            &selection,
+            &public_key,
+            BuildIdentity::current(),
+            &directory,
+        )
     })
     .await
     .map_err(|_| DaemonError::from(DistributionError::Staging))?
@@ -407,6 +564,7 @@ fn prepare_with(
     selection: &ReleaseSelection,
     public_key: &[u8; 32],
     current: BuildIdentity,
+    staging_directory: &Path,
 ) -> Result<PreparedRelease, DistributionError> {
     let raw_manifest = fetcher.fetch(
         &selection.asset_url(MANIFEST_ASSET),
@@ -443,7 +601,18 @@ fn prepare_with(
         return Err(DistributionError::Artifact);
     }
 
-    let temporary = tempfile::tempdir().map_err(|_| DistributionError::Staging)?;
+    // Execute on the same filesystem as the validated installed executable,
+    // rather than depending on an executable system temporary directory.
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".voytty-update-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o700));
+    }
+    let temporary = builder
+        .tempdir_in(staging_directory)
+        .map_err(|_| DistributionError::Staging)?;
     let candidate = extract_candidate(&archive, temporary.path())?;
     let manifest_path = temporary.path().join(MANIFEST_ASSET);
     let signature_path = temporary.path().join(SIGNATURE_ASSET);
@@ -546,7 +715,13 @@ fn run_candidate(
         .stdout(stdout)
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|_| DistributionError::Candidate)?;
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::PermissionDenied {
+                DistributionError::CandidateExecution
+            } else {
+                DistributionError::Candidate
+            }
+        })?;
     let deadline = Instant::now() + CANDIDATE_CHECK_TIMEOUT;
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|_| DistributionError::Candidate)? {
@@ -633,6 +808,9 @@ fn map_release_error(error: ReleaseError) -> DistributionError {
         | ReleaseError::BuildIdentityMismatch => DistributionError::Manifest,
     }
 }
+
+#[cfg(all(test, unix))]
+mod http_tests;
 
 #[cfg(all(test, unix))]
 pub(crate) mod tests {
@@ -814,7 +992,8 @@ pub(crate) mod tests {
             signer.sign(&raw).as_ref().to_vec(),
         );
         fetcher.0.insert(manifest_url, raw);
-        prepare_with(&fetcher, &selection, &key, current).expect("authenticated update fixture")
+        prepare_with(&fetcher, &selection, &key, current, &std::env::temp_dir())
+            .expect("authenticated update fixture")
     }
 
     pub(crate) fn update_fixture_self_check() -> ReleaseSelfCheck {
@@ -833,12 +1012,45 @@ pub(crate) mod tests {
     fn authenticated_candidate_runs_only_after_manifest_and_archive_match() {
         let (fetcher, selection, public_key, current, temporary) = fixture();
 
-        let prepared =
-            prepare_with(&fetcher, &selection, &public_key, current).expect("prepared release");
+        let prepared = prepare_with(&fetcher, &selection, &public_key, current, temporary.path())
+            .expect("prepared release");
 
         assert_eq!(prepared.version(), "9.1.0");
         assert_eq!(prepared.target(), BuildIdentity::current().target);
         assert!(temporary.path().join("candidate-ran").exists());
+    }
+
+    #[test]
+    fn candidate_staging_uses_the_selected_directory_and_is_private_and_cleaned() {
+        use std::os::unix::fs::PermissionsExt;
+        let (fetcher, selection, key, current, temporary) = fixture();
+        let prepared = prepare_with(&fetcher, &selection, &key, current, temporary.path())
+            .expect("prepared candidate");
+        let staging = prepared._temporary.path().to_path_buf();
+        assert_eq!(staging.parent(), Some(temporary.path()));
+        assert_eq!(
+            fs::metadata(&staging)
+                .expect("staging metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert!(prepared.candidate.starts_with(&staging));
+        drop(prepared);
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn denied_candidate_execution_has_an_actionable_diagnostic() {
+        use std::os::unix::fs::PermissionsExt;
+        let temporary = tempfile::tempdir().expect("fixture");
+        let candidate = temporary.path().join("candidate");
+        fs::write(&candidate, "#!/bin/sh\nexit 0\n").expect("candidate");
+        fs::set_permissions(&candidate, fs::Permissions::from_mode(0o600)).expect("mode");
+        let error = run_candidate_self_check(&candidate).expect_err("nonexecutable candidate");
+        assert_eq!(error, DistributionError::CandidateExecution);
+        assert!(error.to_string().contains("noexec"));
     }
 
     #[test]
@@ -864,7 +1076,7 @@ pub(crate) mod tests {
                 .0
                 .insert(selection.asset_url(SIGNATURE_ASSET), signature);
 
-            let result = prepare_with(&fetcher, &selection, &public_key, current);
+            let result = prepare_with(&fetcher, &selection, &public_key, current, temporary.path());
             if include_host {
                 assert_eq!(result.expect("host-only update").version(), "9.1.0");
                 assert!(temporary.path().join("candidate-ran").exists());
@@ -891,7 +1103,7 @@ pub(crate) mod tests {
             .push(0);
 
         assert!(matches!(
-            prepare_with(&fetcher, &selection, &public_key, current),
+            prepare_with(&fetcher, &selection, &public_key, current, temporary.path()),
             Err(DistributionError::Fetch | DistributionError::Artifact)
         ));
         assert!(!temporary.path().join("candidate-ran").exists());
@@ -899,7 +1111,13 @@ pub(crate) mod tests {
 
     #[test]
     fn exact_selection_rejects_branches_urls_and_noncanonical_tags() {
-        for invalid in ["0.1.2", "main", "https://example.com/v0.1.2", "v01.2.3"] {
+        for invalid in [
+            "0.1.2",
+            "main",
+            "https://example.com/v0.1.2",
+            "v01.2.3",
+            "v1.2.3+build",
+        ] {
             assert_eq!(
                 ReleaseSelection::parse(Some(invalid)),
                 Err(DistributionError::InvalidSelection)

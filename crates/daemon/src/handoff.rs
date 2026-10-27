@@ -394,8 +394,12 @@ fn run_owner(runtime: &LocalRuntime) -> Result<(), DaemonError> {
     let uid = paths.uid();
     tokio.block_on(run_worker(runtime, stream, |version| async move {
         let executable = std::env::current_exe().map_err(|_| channel_error())?;
-        crate::distribution::validate_managed_executable(&executable, uid)?;
-        crate::distribution::prepare_update(ReleaseSelection::parse(version.as_deref())?).await
+        crate::distribution::prepare_update(
+            ReleaseSelection::parse(version.as_deref())?,
+            executable,
+            uid,
+        )
+        .await
     }))
 }
 

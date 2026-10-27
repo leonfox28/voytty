@@ -111,12 +111,18 @@ ci-policy:
     sh tests/ci/trim-cache-fixture.sh
     actionlint
     sh tests/release/static.sh
+    just installer-check
     sh tests/release/operator-fixture.sh
     sh tests/release/candidate-fixture.sh
     PYTHONDONTWRITEBYTECODE=1 python3 tests/release/android_test.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/release/recover_draft_test.py
     shellcheck -s sh install/install.sh tests/release/*.sh tests/ci/*.sh tests/secret-scan*.sh tests/terminal-dependency-policy.sh $(find tools/ci tools/release -type f -name '*.sh' -print)
-    sh tools/ci/check-python-syntax.sh tests/e2e/*.py tests/ci/*.py tools/ci/*.py tests/release/https_fixture.py tests/release/https_fixture_bind_test.py tools/android/*.py tools/ios/*.py tools/release/recover-draft.py tests/release/android_test.py tests/release/recover_draft_test.py
+    sh tools/ci/check-python-syntax.sh tests/e2e/*.py tests/ci/*.py tools/ci/*.py tests/release/https_fixture.py tests/release/https_fixture_bind_test.py tests/release/installer_test.py tests/release/installer_download_test.py tools/android/*.py tools/ios/*.py tools/release/recover-draft.py tests/release/android_test.py tests/release/recover_draft_test.py
+
+# Bootstrap, platform selection, download bounds, and install-path regressions.
+installer-check:
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/release/installer_test.py
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/release/installer_download_test.py
 
 # Full Unix runtime evidence; CI assigns docs to its canonical host. The
 # no-argument CLI smoke runs against each native release candidate instead.
