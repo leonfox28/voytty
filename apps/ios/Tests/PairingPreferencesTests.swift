@@ -59,6 +59,41 @@ final class PairingPreferencesTests: XCTestCase {
         XCTAssertThrowsError(try PairingCodes.candidates(["https://example.com"], limit: 20, inspect: inspect)) { XCTAssertEqual($0 as? ScanIssue, .invalidTicket) }
     }
 
+    func testManualTicketKeepsOverLimitNoticeThroughItsOwnRevert() {
+        var draft = TicketDraft()
+        // Like SwiftUI's onChange, the revert itself is reported as another change.
+        func edit(_ value: String) {
+            let old = draft.text
+            draft.text = value
+            draft.changed(from: old, limit: 8)
+            if draft.text != value { draft.changed(from: value, limit: 8) }
+        }
+        edit("ticket")
+        XCTAssertFalse(draft.overLimit)
+        edit("ticket-too-long")
+        XCTAssertEqual(draft.text, "ticket"); XCTAssertTrue(draft.overLimit)
+        edit("ticket中") // seven characters, nine UTF-8 bytes
+        XCTAssertEqual(draft.text, "ticket"); XCTAssertTrue(draft.overLimit)
+        edit("ticke")
+        XCTAssertEqual(draft.text, "ticke"); XCTAssertFalse(draft.overLimit)
+    }
+
+    func testLeavingForegroundKeepsDeviceChoiceAndRetriesOnlyTheCamera() {
+        let state = PairingScannerState()
+        state.appear()
+        let inspect: (String) throws -> NativeHost = { self.host($0) }
+        XCTAssertNil(state.receive(["first", "second"], limit: 20, inspect: inspect))
+        let generation = state.cameraGeneration
+        state.suspendCamera()
+        XCTAssertEqual(state.candidates.map(\.ticket), ["first", "second"], "a pending device choice survives an app switch")
+        XCTAssertNotEqual(state.cameraGeneration, generation, "late callbacks from the stopped camera are invalidated")
+        state.reset()
+        state.issue = .invalidTicket; state.suspendCamera()
+        XCTAssertEqual(state.issue, .invalidTicket)
+        state.issue = .cameraUnavailable; state.suspendCamera()
+        XCTAssertNil(state.issue, "an interrupted camera is retried on return")
+    }
+
     func testStaleImageCompletionCannotOfferOrPairADevice() {
         let state = PairingScannerState()
         state.appear()

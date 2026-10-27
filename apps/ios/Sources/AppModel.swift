@@ -64,6 +64,7 @@ final class AppModel: ObservableObject {
     private let monitor = NWPathMonitor()
     private var started = false
     private var restoring = false
+    private var deferredRestoration: SessionRecord?
     private var dark = true
     private var applicationPhase: ScenePhase = .active
     private var applicationVisible: Bool { applicationPhase == .active }
@@ -414,9 +415,7 @@ final class AppModel: ObservableObject {
                     self.uploads.authorityChanged()
                     if ["ended", "closed", "lease_lost"].contains(current.state) {
                         self.showConnectionNotice()
-                        try self.save { state in
-                            if state.activeTerminal == SessionRecord(host: host.id, session: actual) { state.activeTerminal = nil }
-                        }
+                        self.clearRestoration(SessionRecord(host: host.id, session: actual))
                         return
                     }
                     current = try await next.waitForFrame(afterGeneration: current.generation)
@@ -428,6 +427,18 @@ final class AppModel: ObservableObject {
         // Layout and appearance may have changed while connection was in flight.
         try await next.resize(viewport: viewport)
         try await next.setDark(dark: dark)
+    }
+
+    /// A Session can end while iOS runs the app behind a locked device, when the
+    /// WhenUnlocked Keychain item is unavailable. Clearing the restoration record is
+    /// only cleanup, so finish it on the next activation instead of reporting failure.
+    private func clearRestoration(_ record: SessionRecord) {
+        do {
+            try save { state in if state.activeTerminal == record { state.activeTerminal = nil } }
+            if deferredRestoration == record { deferredRestoration = nil }
+        } catch StoreError.keychain(let status) where status == errSecInteractionNotAllowed {
+            deferredRestoration = record
+        } catch { self.error = message(error) }
     }
 
     private func retire() {
@@ -517,6 +528,7 @@ final class AppModel: ObservableObject {
         let visible = applicationVisible
         diagnostics?.record(visible ? .foreground : .background)
         if visible { Task { await notifications.refresh() } }
+        if visible, let record = deferredRestoration { clearRestoration(record) }
         if !visible { invalidatePointerGeometry(); inputQueue.cancel(); control = false; alt = false }
         objectWillChange.send()
         guard let terminal else { return }
@@ -537,21 +549,27 @@ final class AppModel: ObservableObject {
 
     func text(_ text: String, paste: Bool = false) {
         let modifiers: UInt8 = (control ? 4 : 0) | (alt ? 2 : 0)
-        control = false; alt = false
+        clearModifiers()
         enqueue(.text(text, modifiers: modifiers, paste: paste))
     }
 
     func key(_ key: NativeKey) {
         let modifiers: UInt8 = (control ? 4 : 0) | (alt ? 2 : 0)
-        control = false; alt = false
+        clearModifiers()
         enqueue(.key(key, modifiers: modifiers))
     }
 
     @discardableResult
     func hardware(_ event: TerminalHardwareEvent) -> Bool {
         guard event.epoch == frame?.inputEpoch, enqueue(.hardware(event)) else { return false }
-        if event.kind != 3 { control = false; alt = false }
+        if event.kind != 3 { clearModifiers() }
         return true
+    }
+
+    /// @Published republishes even unchanged values; ordinary keystrokes must not refresh the screen.
+    private func clearModifiers() {
+        if control { control = false }
+        if alt { alt = false }
     }
 
     func invalidatePointerGeometry() { pointerGeometry += 1 }

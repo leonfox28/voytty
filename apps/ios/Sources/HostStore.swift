@@ -84,6 +84,8 @@ enum StoreError: LocalizedError {
 /// Identity and address book share one atomic Keychain item. No backup or iCloud sync.
 struct HostStore {
     var service = (Bundle.main.bundleIdentifier ?? "zterm") + ".controller"
+    /// Tests substitute Keychain availability, such as a locked device.
+    var update: (CFDictionary, CFDictionary) -> OSStatus = SecItemUpdate
     private var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: service, kSecAttrAccount as String: "identity-v1",
@@ -121,7 +123,7 @@ struct HostStore {
     func save(_ state: SavedState) throws {
         guard state.seed.count == 32 else { throw StoreError.corrupt }
         let attributes = [kSecValueData as String: try JSONEncoder().encode(state)]
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        let status = update(query as CFDictionary, attributes as CFDictionary)
         guard status == errSecSuccess else { throw StoreError.keychain(status) }
     }
 }

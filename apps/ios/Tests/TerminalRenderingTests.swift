@@ -43,6 +43,61 @@ final class TerminalRenderingTests: XCTestCase {
         }
     }
 
+    func testRepeatedFrameKeepsLayerAndChangedCellsRepaintMatchesFullDraw() throws {
+        func rows(_ middle: [NativeCell]) -> [NativeRow] {
+            [[cell("t"), cell("o"), cell("p")], middle, [cell("e"), cell("n"), cell("d")]].map { NativeRow(cells: $0, wrapped: false) }
+        }
+        let canvas = TerminalCanvas()
+        var frame = TerminalGestureTests.frame(rows: 3, columns: 3)
+        frame.rows = rows([cell("m"), cell("i"), cell("d")]); frame.cursorColumn = 1
+        canvas.frame = CGRect(x: 0, y: 0, width: canvas.cellWidth * 3, height: canvas.cellHeight * 3)
+        canvas.update(frame)
+        canvas.layer.displayIfNeeded()
+        canvas.update(frame)
+        XCTAssertFalse(canvas.layer.needsDisplay(), "a repeated frame must keep the painted grid")
+
+        var marked = cell("w"); marked.background = 0xffff0000
+        var next = frame; next.rows = rows([cell("n"), marked, cell(" ", underline: 1)])
+        next.cursorRow = 2
+        let old = try XCTUnwrap(canvas.cursorRect)
+        canvas.update(next)
+        XCTAssertTrue(canvas.layer.needsDisplay())
+        let moved = try XCTUnwrap(canvas.cursorRect)
+        let full = pixels(canvas)
+        // UIKit keeps unchanged pixels and clips drawing to whole pixels of the dirty
+        // row and cursor cells. Cell edges here fall inside pixels at scale 1.
+        let dirty = [CGRect(x: 0, y: canvas.cellHeight, width: canvas.bounds.width, height: canvas.cellHeight), old, moved].map(\.integral)
+        for union in [false, true] {
+            let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
+            let repainted = UIGraphicsImageRenderer(bounds: canvas.bounds, format: format).image { context in
+                canvas.update(frame); canvas.draw(canvas.bounds)
+                canvas.update(next)
+                if union {
+                    context.cgContext.clip(to: dirty)
+                    canvas.draw(dirty.dropFirst().reduce(dirty[0]) { $0.union($1) })
+                } else {
+                    for rect in dirty {
+                        context.cgContext.saveGState(); context.cgContext.clip(to: rect)
+                        canvas.draw(rect)
+                        context.cgContext.restoreGState()
+                    }
+                }
+            }.pngData()
+            XCTAssertEqual(repainted, full, union ? "bounding dirty rectangle" : "individual dirty rectangles")
+        }
+    }
+
+    func testFontChangeDiscardsShapedGlyphs() throws {
+        let resized = canvas([cell("M"), cell("中", width: 2), cell("", width: 0)])
+        _ = pixels(resized)
+        resized.font = TerminalFont.font(size: 20)
+        let fresh = TerminalCanvas(); fresh.font = TerminalFont.font(size: 20)
+        resized.frame = CGRect(x: 0, y: 0, width: fresh.cellWidth * 3, height: fresh.cellHeight)
+        fresh.frame = resized.frame
+        fresh.update(try XCTUnwrap(resized.nativeFrame))
+        XCTAssertEqual(pixels(resized), pixels(fresh))
+    }
+
     func testCursorCoversWideOwnerForBlockAndUnderlineButBeamStaysNarrow() throws {
         let canvas = canvas([cell("中", width: 2), cell("", width: 0)])
         var frame = try XCTUnwrap(canvas.nativeFrame)

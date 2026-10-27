@@ -1,4 +1,5 @@
 import UIKit
+import CoreText
 
 final class TerminalContainer: UIView {
     let canvas = TerminalCanvas()
@@ -365,9 +366,18 @@ final class TerminalCanvas: UIView {
     private var source: NativeFrameSource?
     private var contentGeneration: UInt64?
     var font = TerminalFont.font(size: 15) {
-        didSet { measuredCellWidth = TerminalFont.advance("M", font: font) }
+        didSet {
+            measuredCellWidth = TerminalFont.advance("M", font: font)
+            faces = Self.faces(size: font.pointSize); glyphs.removeAll()
+        }
     }
     private var measuredCellWidth = TerminalFont.advance("M", font: TerminalFont.font(size: 15))
+    private var faces = TerminalCanvas.faces(size: 15)
+    /// Shaped once per text and face; the cell's color comes from the context fill.
+    private struct GlyphKey: Hashable { let text: String; let face: Int }
+    private struct Glyph { let line: CTLine; let width: CGFloat; let baseline: CGFloat }
+    private var glyphs: [GlyphKey: Glyph] = [:]
+    private struct CursorPaint: Equatable { let box: CGRect; let color: UInt32; let block: Bool }
     var cellWidth: CGFloat { measuredCellWidth }
     var cellHeight: CGFloat { ceil(font.lineHeight + 2) }
     var visibleFirstRow: Int64 {
@@ -394,6 +404,7 @@ final class TerminalCanvas: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func update(_ frame: NativeFrame?) {
+        let previous = nativeFrame, previousRows = visibleRows, previousCursor = cursorPaint
         if let next = frame?.source {
             if source == nil || contentGeneration != frame?.contentGeneration {
                 let oldRows = rows
@@ -416,19 +427,46 @@ final class TerminalCanvas: UIView {
             || nativeFrame?.cursorVisible != frame?.cursorVisible
         nativeFrame = frame
         updateCursorBlink(reset: reset)
-        setNeedsDisplay()
+        invalidate(from: previous, rows: previousRows, cursor: previousCursor)
+    }
+
+    /// Repaint only rows and cursor cells whose pixels can differ. Repeated frames
+    /// and unrelated SwiftUI updates keep the existing layer contents.
+    private func invalidate(from previous: NativeFrame?, rows before: [NativeRow], cursor: CursorPaint?) {
+        guard let frame = nativeFrame, let previous, previous.background == frame.background,
+              previous.viewport == frame.viewport else { setNeedsDisplay(); return }
+        let after = visibleRows
+        for index in 0..<max(before.count, after.count)
+        where !before.indices.contains(index) || !after.indices.contains(index) || before[index] != after[index] {
+            repaint(CGRect(x: 0, y: CGFloat(index) * cellHeight, width: bounds.width, height: cellHeight))
+        }
+        let next = cursorPaint
+        if next != cursor { for box in [cursor?.box, next?.box].compactMap({ $0 }) { repaint(box) } }
+    }
+
+    private func invalidateCursor() { if let box = cursorRect { repaint(box) } }
+
+    /// Cells meet at fractional pixels. Dirty rectangles cover whole device pixels,
+    /// and draw(_:) repaints every cell touching them, so no edge pixel is half stale.
+    private func repaint(_ rect: CGRect) {
+        let scale = max(1, contentScaleFactor)
+        let x = floor(rect.minX * scale) / scale, y = floor(rect.minY * scale) / scale
+        setNeedsDisplay(CGRect(x: x, y: y, width: ceil(rect.maxX * scale) / scale - x, height: ceil(rect.maxY * scale) / scale - y))
     }
 
     private func updateCursorBlink(reset: Bool = false) {
         let enabled = window != nil && applicationActive && !isHidden && !isSelecting && nativeFrame?.state == "active"
             && nativeFrame?.cursorVisible == true && nativeFrame?.cursorBlinking == true && nativeFrame?.historyOffset == 0
-        if reset || !enabled { blink?.invalidate(); blink = nil; cursorPhaseVisible = true }
+        if reset || !enabled {
+            blink?.invalidate(); blink = nil
+            if !cursorPhaseVisible { cursorPhaseVisible = true; invalidateCursor() }
+        }
         if enabled && blink == nil {
             let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] timer in
                 guard self != nil else { timer.invalidate(); return }
                 MainActor.assumeIsolated {
                     self?.cursorPhaseVisible.toggle()
-                    self?.setNeedsDisplay()
+                    self?.invalidateCursor()
                 }
             }
             blink = timer
@@ -458,49 +496,82 @@ final class TerminalCanvas: UIView {
         return box
     }
 
+    private var cursorPaint: CursorPaint? {
+        guard let frame = nativeFrame, frame.cursorVisible, frame.historyOffset == 0, !isSelecting,
+              !frame.cursorBlinking || cursorPhaseVisible, let box = cursorRect else { return nil }
+        return CursorPaint(box: box, color: frame.cursorColor, block: frame.cursorShape == .block)
+    }
+
+    private static func faces(size: CGFloat) -> [UIFont] {
+        (0..<4).map { TerminalFont.font(size: size, bold: $0 & 1 != 0, italic: $0 & 2 != 0) }
+    }
+
+    /// Blank cells have no ink; their background and decorations are still painted.
+    private func glyph(_ text: String, face: Int) -> Glyph? {
+        guard !text.isEmpty, text != " " else { return nil }
+        let key = GlyphKey(text: text, face: face)
+        if let glyph = glyphs[key] { return glyph }
+        let attributes: [NSAttributedString.Key: Any] = [.font: faces[face],
+            NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String): true]
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
+        let glyph = Glyph(line: line, width: CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)), baseline: faces[face].ascender)
+        if glyphs.count >= 4096 { glyphs.removeAll(keepingCapacity: true) }
+        glyphs[key] = glyph
+        return glyph
+    }
+
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
-        color(nativeFrame?.background ?? (traitCollection.userInterfaceStyle == .dark ? 0xff101713 : 0xfff5f8f3)).setFill()
-        context.fill(bounds)
+        let background = nativeFrame?.background ?? (traitCollection.userInterfaceStyle == .dark ? 0xff101713 : 0xfff5f8f3)
+        color(background).setFill()
+        context.fill(rect)
         guard let frame = nativeFrame else { return }
-        let faces = (0..<4).map { TerminalFont.font(size: font.pointSize, bold: $0 & 1 != 0, italic: $0 & 2 != 0) }
         let start = Int(frame.windowOffset >= frame.historyOffset ? frame.windowOffset - frame.historyOffset : 0)
-        for rowIndex in 0..<min(Int(frame.viewport.rows), Int(ceil(bounds.height / cellHeight))) {
+        // UIKit clips to the invalidated rectangle; skip the rows and cells outside it.
+        let limit = min(Int(frame.viewport.rows), Int(ceil(bounds.height / cellHeight)))
+        let first = max(0, Int(rect.minY / cellHeight)), end = min(limit, Int(ceil(rect.maxY / cellHeight)))
+        for rowIndex in first..<max(first, end) {
             guard rows.indices.contains(start + rowIndex) else { continue }
             let row = rows[start + rowIndex]
             // Paint backgrounds first, so a wide cluster cannot be erased by its continuation.
             context.setShouldAntialias(false)
-            for (column, cell) in row.cells.enumerated() where cell.width > 0 {
+            for (column, cell) in row.cells.enumerated() where cell.width > 0 && cell.background != background {
+                let box = CGRect(x: CGFloat(column) * cellWidth, y: CGFloat(rowIndex) * cellHeight,
+                                 width: CGFloat(cell.width) * cellWidth, height: cellHeight)
+                guard box.intersects(rect) else { continue }
                 color(cell.background).setFill()
-                context.fill(CGRect(x: CGFloat(column) * cellWidth, y: CGFloat(rowIndex) * cellHeight,
-                                    width: CGFloat(cell.width) * cellWidth, height: cellHeight))
+                context.fill(box)
             }
             context.setShouldAntialias(true)
             for (column, cell) in row.cells.enumerated() where cell.width > 0 && cell.attributes & 16 == 0 {
                 let box = CGRect(x: CGFloat(column) * cellWidth, y: CGFloat(rowIndex) * cellHeight,
                                  width: CGFloat(cell.width) * cellWidth, height: cellHeight)
-                let face = faces[(cell.attributes & 1 != 0 ? 1 : 0) + (cell.attributes & 4 != 0 ? 2 : 0)]
-                let attributes: [NSAttributedString.Key: Any] = [.font: face,
-                    .foregroundColor: color(cell.foreground).withAlphaComponent(cell.attributes & 2 != 0 ? 0.6 : 1)]
-                let width = TerminalFont.advance(cell.text, font: face)
-                context.saveGState()
-                context.clip(to: box)
-                context.translateBy(x: box.minX, y: box.minY + 1)
-                context.scaleBy(x: width > box.width + 0.01 ? box.width / width : 1, y: 1)
-                (cell.text as NSString).draw(at: .zero, withAttributes: attributes)
-                context.restoreGState()
+                guard box.intersects(rect) else { continue }
+                let index = (cell.attributes & 1 != 0 ? 1 : 0) + (cell.attributes & 4 != 0 ? 2 : 0)
+                if let glyph = glyph(cell.text, face: index) {
+                    context.saveGState()
+                    context.clip(to: box)
+                    context.translateBy(x: box.minX, y: box.minY + 1)
+                    context.scaleBy(x: glyph.width > box.width + 0.01 ? box.width / glyph.width : 1, y: 1)
+                    context.setFillColor(color(cell.foreground).withAlphaComponent(cell.attributes & 2 != 0 ? 0.6 : 1).cgColor)
+                    // Core Text draws upward from the baseline inside UIKit's flipped context.
+                    context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+                    context.textPosition = CGPoint(x: 0, y: glyph.baseline)
+                    CTLineDraw(glyph.line, context)
+                    context.restoreGState()
+                }
                 if cell.attributes & 8 != 0 {
                     color(cell.foreground).setFill()
-                    context.fill(CGRect(x: box.minX, y: box.minY + 1 + face.ascender * 0.65, width: box.width, height: 1))
+                    context.fill(CGRect(x: box.minX, y: box.minY + 1 + faces[index].ascender * 0.65, width: box.width, height: 1))
                 }
                 if cell.underline != 0 {
                     drawUnderline(cell, box: box, context: context)
                 }
             }
         }
-        if frame.cursorVisible && frame.historyOffset == 0 && !isSelecting && (!frame.cursorBlinking || cursorPhaseVisible), let box = cursorRect {
-            color(frame.cursorColor).withAlphaComponent(frame.cursorShape == .block ? 0.45 : 1).setFill()
-            context.fill(box)
+        if let cursor = cursorPaint {
+            color(cursor.color).withAlphaComponent(cursor.block ? 0.45 : 1).setFill()
+            context.fill(cursor.box)
         }
     }
 
