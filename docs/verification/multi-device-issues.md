@@ -23,8 +23,8 @@ P44–P46，由工作分支 `fix/verification-followups` 提交 PR 评审，尚�
 原始证据根目录为 `target/verification/multi-device/`；下文 `checks/...` 和运行编号均相对于此目录。
 2026-10-11 核对时本机该目录已不存在（`target/` 于 2026-10-10 17:08 重建，晚于 P01–P35
 提交），此前各轮引用的原始证据无法在本机复查；文字记录保留，历史结论不因此改写。
-此后实验根目录移到 `${XDG_STATE_HOME:-~/.local/state}/zterm-verification/multi-device/`
-（可用 `ZTERM_MULTI_DEVICE_ROOT` 覆盖），新证据的 `checks/...` 相对该目录，P36 证据已移入；
+此后实验根目录移到 `${XDG_STATE_HOME:-~/.local/state}/voytty-verification/multi-device/`
+（可用 `VOYTTY_MULTI_DEVICE_ROOT` 覆盖），新证据的 `checks/...` 相对该目录，P36 证据已移入；
 重建过程见 [三端测试环境重建记录](multi-device-lab.md)。
 详细时间线见 [验收报告](multi-device.md) 和 [历史过程](multi-device-history.md)，操作入口见
 [运行说明](../../tests/e2e/README.md)。
@@ -55,7 +55,7 @@ P44–P46，由工作分支 `fix/verification-followups` 提交 PR 评审，尚�
 十分钟仍要求两端原会话连续性、唯一执行及零失败，报告明确未完成一小时。原审计不符记录
 保留，修正后按 `--soak-seconds 600` 审计零问题；工具回归在 macOS／Linux 均通过。
 
-原始证据在 `~/.local/state/zterm-verification/checks/sequential-fixes-20261013/`，
+原始证据在 `~/.local/state/voytty-verification/checks/sequential-fixes-20261013/`，
 详细失败对照与中间候选结果见修复方案。以下交接及旧运行结果保留原义。
 
 ### P42 合入时记录
@@ -565,7 +565,7 @@ P25 的上一同源候选 `43826c75` 已完成 75 通过／5 失败，审计无�
 旧代墓碑在完整握手窗口拒绝迟到 Hello，数量有界。daemon 和 Android 都在没有可复用连接时建立新代。
 代码：[connection_broker.rs](../../crates/daemon/src/connection_broker.rs)、
 [iroh_controller.rs](../../crates/client/src/iroh_controller.rs)、
-[transport.proto](../../proto/zterm/v2/transport.proto)。
+[transport.proto](../../proto/voytty/v2/transport.proto)。
 真实 Iroh 回归覆盖旧连接仍存活、新候选排序更大和迟到旧握手；见
 [two_daemon_transport.rs](../../crates/daemon/tests/two_daemon_transport.rs)。字段缺省兼容旧端，完整隔离需要双方升级。
 公网重启超时仍见 R02，不能据此宣称全部解决。
@@ -630,7 +630,7 @@ Linux 快速 unlink / rebind 会复用 inode 和时间戳，单靠这两者识�
 仅把提升移至 `onStartCommand` 的中间方案仍出现 4/20 次崩溃，已保留失败。
 最终实现保留已提交的启动，每次 `onStartCommand` 先提升，再按最新状态自行停止；销毁期间的新前台请求在销毁后重新评估，
 失败或系统停止不触发后台重启。
-代码：[BackgroundConnection.kt](../../apps/android/app/src/main/java/io/github/leonfox28/zterm/BackgroundConnection.kt)。
+代码：[BackgroundConnection.kt](../../apps/android/app/src/main/java/io/github/leonfox28/voytty/BackgroundConnection.kt)。
 同一主线程轮次“启动后立即取消”的最小复现修正前崩溃；通知允许／拒绝共 4 项回归通过。
 真实 `android-takeover-final-02` 的 Linux → Android 10/10 通过、无同类崩溃；另一方向有 1 项初连失败。
 证据 `checks/android-pending-start-before.log`、`checks/android-pending-start-after.json`。
@@ -676,7 +676,7 @@ P13 / P14 的毫秒耗时是本地实验数据，不能作为公网性能结论�
 新增附件级显式启用的 zlib 画面帧编码，旧客户端仍使用原格式；保留 8 MiB 解压上限，拒绝截断、尾随数据和未知编码。
 代码：[compression.rs](../../crates/proto/src/compression.rs)、
 [session_wire.rs](../../crates/daemon/src/session_wire.rs)、
-[wire.proto](../../proto/zterm/v2/wire.proto)。
+[wire.proto](../../proto/voytty/v2/wire.proto)。
 相同实验约 0.342 秒完成，并核对原 Session 和尺寸，证据 `checks/snapshot-size-probe-01/`。
 这不是公共 Relay 的限速测量。
 
@@ -685,7 +685,7 @@ P13 / P14 的毫秒耗时是本地实验数据，不能作为公网性能结论�
 完全停止收包后每 20 秒探测新路径，旧逻辑可在 130 秒后仍保持连接，因为每条新路径的首次发送都重置整连接 idle。
 现在分开整连接和每路径的发送侧续期许可；只有收到并认证对端数据后，整连接才允许一次发送侧重置。
 协商期限、心跳与恢复期限不变。原 30 秒设置下的回归要求不迟于 40 秒关闭，完整库 428 项通过。
-代码与来源：[NOQ 补丁说明](../../vendor/noq-proto/ZTERM.md)。
+代码与来源：[NOQ 补丁说明](../../vendor/noq-proto/VOYTTY.md)。
 证据 `checks/noq-idle-130s-before-2.log`、`checks/noq-idle-130s-after.log`。
 
 ### P17：已放弃的慢路径仍拉长存活连接的 idle
@@ -694,7 +694,7 @@ P13 / P14 的毫秒耗时是本地实验数据，不能作为公网性能结论�
 现在连接 idle 只计算未放弃路径，从原有效收发时点重算，放弃路径本身不重启时钟；
 关闭、密钥丢弃和路径清理仍计算所有保留路径。
 立即放弃／断网 20 秒后放弃均在 30 秒关闭；慢路径未放弃的对照仍为 127.6 秒。完整库 429/429 通过。
-代码：[NOQ 补丁说明](../../vendor/noq-proto/ZTERM.md)；证据 `checks/noq-abandoned-idle-repro/`。
+代码：[NOQ 补丁说明](../../vendor/noq-proto/VOYTTY.md)；证据 `checks/noq-abandoned-idle-repro/`。
 两项库复现不能倒推每次现场失败的实际 RTT 或唯一原因。
 
 ### P18：配对可能已提交，却被外层期限／EOF 改报为普通失败
@@ -740,8 +740,8 @@ P20 / P21 的真实 `attachment-shutdown-regression-01` 为 39/40 通过；另 1
 现在分离 `sessionListError`，以连接 epoch、主机和查询序号限制结果归属；退役的必要查询以取消结束。
 重试只读列表；已确认成功的重命名／删除先更新已知状态，后续读取失败不改报修改失败。
 当前必要查询失败和精确 Session 缺失仍报错，不新建同名替代会话。
-代码：[AppRepository.kt](../../apps/android/app/src/main/java/io/github/leonfox28/zterm/AppRepository.kt)、
-[TerminalScreen.kt](../../apps/android/app/src/main/java/io/github/leonfox28/zterm/TerminalScreen.kt)。
+代码：[AppRepository.kt](../../apps/android/app/src/main/java/io/github/leonfox28/voytty/AppRepository.kt)、
+[TerminalScreen.kt](../../apps/android/app/src/main/java/io/github/leonfox28/voytty/TerminalScreen.kt)。
 最初 3 项中 2 失败，修正后 6 项通过；新增必要查询退役复现从 6 通过／1 失败到 7/7。
 两项 UI 检查通过，证据 `checks/ordered-fixes/session-refresh-before/`、
 `checks/ordered-fixes/retired-initial-before-01.log`、`checks/ordered-fixes/retired-initial-after-01.log`。
@@ -785,7 +785,7 @@ P20 / P21 的真实 `attachment-shutdown-regression-01` 为 39/40 通过；另 1
 迁移及回退同步地址，未启用的候选 CID 不提前生效。令牌比较使用现有常量时间实现。
 没有延长 idle、请求或恢复期限，也没有增加应用操作重发。
 
-代码：[NOQ 补丁说明](../../vendor/noq-proto/ZTERM.md)、
+代码：[NOQ 补丁说明](../../vendor/noq-proto/VOYTTY.md)、
 [stateless_reset.rs](../../vendor/noq-proto/src/tests/stateless_reset.rs)。
 相同七项回归在旧安装源码上 0/7，在修正后 7/7；完整库 436/436。
 覆盖两种端角色、初始路径已删除、轮换、迁移、错误来源／令牌、退役队列、已知 CID 前缀和重复事件。
@@ -825,7 +825,7 @@ P20 / P21 的真实 `attachment-shutdown-regression-01` 为 39/40 通过；另 1
 完整重启时，旧客户端仍认为缓存连接存活，但新 Endpoint 无法返回可识别的重置。
 补齐“仅改 CID”对照后，原配置、仅稳定密钥、仅随机 CID 均首次查询超时，必须同时处理两处。
 
-固定 `iroh` 1.3.0 到 [vendor/iroh](../../vendor/iroh/ZTERM.md)，增加显式启用的
+固定 `iroh` 1.3.0 到 [vendor/iroh](../../vendor/iroh/VOYTTY.md)，增加显式启用的
 `persistent_stateless_reset`；默认行为不变。启用后从秘密身份通过独立 BLAKE3 域派生稳定
 重置密钥，使用 16 字节随机 CID，身份轮换也轮换重置密钥。daemon 的两个基础设施配置和
 移动端配置均启用；前者由 daemon 锁和单 supervisor 持有 Endpoint，后者由 Application／
@@ -960,7 +960,7 @@ TCP 转发 4.1 秒，保持生产默认 RTT 和五秒请求期限，旧代码 5.
 抛出 `EMFILE`，保留的旧状态被运行器继续读取，直到 60 秒恢复超时。这次现场不能
 归类为“快照未送达”：它暴露了产品资源泄漏和 T32 的失效观察问题。
 
-根因在 [AppDiagnostics.kt](../../apps/android/app/src/main/java/io/github/leonfox28/zterm/AppDiagnostics.kt)：
+根因在 [AppDiagnostics.kt](../../apps/android/app/src/main/java/io/github/leonfox28/voytty/AppDiagnostics.kt)：
 通过 `Os.open` 获得的描述符被传给普通 Java 文件流，`.use` 只关闭借用流，没有释放
 原始描述符。Android 的 [输入流说明](https://android.googlesource.com/platform/prebuilts/fullsdk/sources/+/refs/heads/androidx-constraintlayout-release/android-35/java/io/FileInputStream.java)
 和 [输出流说明](https://android.googlesource.com/platform/prebuilts/fullsdk/sources/+/refs/heads/androidx-transition-release/android-34/java/io/FileOutputStream.java)
@@ -971,7 +971,7 @@ TCP 转发 4.1 秒，保持生产默认 RTT 和五秒请求期限，旧代码 5.
 复制后的描述符，并在 `finally` 中关闭原描述符。正常返回、规范化的提前返回、
 导出失败及快照收集失败都释放句柄；存储额度、显式十五分钟窗口和网络期限不变。
 
-三项新增 [Android 回归](../../apps/android/app/src/androidTest/java/io/github/leonfox28/zterm/DiagnosticsTest.kt)
+三项新增 [Android 回归](../../apps/android/app/src/androidTest/java/io/github/leonfox28/voytty/DiagnosticsTest.kt)
 修正前全部失败：128 轮存储操作遗留 **775** 个句柄，导出分支额外遗留 **32** 个，
 收集失败额外遗留 **8** 个；修正后全部通过，完整诊断测试 **7/7**。测试只统计随机
 夹具目录的描述符，避免后台网络活动影响计数；首版夹具未考虑 Android 路径别名，
@@ -1077,7 +1077,7 @@ Iroh 每个对端只有一个选中路径。[remote_state.rs](../../vendor/iroh/
 DeadlineExceeded**，修正后分别约 **0.31 秒**和 **0.33 秒**成功，连跑三次一致；旧连接
 已关闭的对照前后都约 0.33 秒成功。首版夹具在第一次连接的 300 ms 查询结束前就重启主机，
 旧查询仍在进行，按设计不会重复启动，这是夹具时序错误：现场主机重启需要数秒。夹具改为
-先等第一次查询结束，原失败输出不计作产品行为。另有三项 `zterm_` vendor 单元回归：
+先等第一次查询结束，原失败输出不计作产品行为。另有三项 `voytty_` vendor 单元回归：
 新握手不只发选中路径、有选中路径仍启动查询、另一连接的选中路径不终止 Initial 补发；
 修正前三项失败，修正后 `just ci-iroh` **28/28** 通过。
 
@@ -1102,7 +1102,7 @@ QUIC 计时器和产品十五秒／五秒期限均未修改。落败但已完成
 固定的 iroh-relay 1.3.0 服务端保留新连接、降级旧连接，新连接断开时把旧连接恢复为 active，
 客户端只记录健康通知。
 
-五项暂停时钟的 `zterm_relay_dial_` 单元回归覆盖首次尝试停滞、快速尝试不对冲、早期错误不对冲、
+五项暂停时钟的 `voytty_relay_dial_` 单元回归覆盖首次尝试停滞、快速尝试不对冲、早期错误不对冲、
 慢但有进展的首次尝试仍胜出、一次失败等待另一次。真实 TLS Relay 的 socket 回归让代理接受
 首个 TCP 连接但永不转发：单次尝试时首个请求 **10.09 秒**，对冲后四次 **3.15–3.16 秒**。
 `just ci-iroh` 33/33，P30 的 socket 回归仍通过（3.49 秒）。证据在
@@ -1227,7 +1227,7 @@ update outcome.”；daemon、前台进程和 updater 同时写日志时，原�
 日志语义，本轮没有复现。证据在
 `checks/diagnostic-flush-r08/`：`probe-instrumentation.patch`、`fix.diff`、`run-probe.sh`、
 `probe-01`（修正前）、`probe-02`／`probe-03`（修正后）及 `summary.json`。本机无额外负载的
-`just check` 1290 通过（`just-check-01.log`）；Android 不依赖 `zterm-platform`，未运行
+`just check` 1290 通过（`just-check-01.log`）；Android 不依赖 `voytty-platform`，未运行
 `just android-check`。
 
 ### P40：高 RTT 时 P38 的窗口与重新建连串行超出期限
@@ -1383,7 +1383,7 @@ R01 交接留下的已知缺口：P38／P40 判定首个请求在确认窗口内
 Relay 1.01 秒、Direct 新端口 1.01 秒、高 RTT 4.04 秒、旧路由 1.33 秒、晚到确认 3.21 秒、慢主机 2.50 秒）。
 
 **三端验证（2026-10-12 13:02–13:19 UTC）**：脚本 `kept_relay_switch_attached.py` 在 P40 的换 Relay
-检查上加入 B→A 的真实 CLI 附件（`zterm connect`，本地 PTY 经 ssh）。A 只对测试 UID 屏蔽 UDP，
+检查上加入 B→A 的真实 CLI 附件（`voytty connect`，本地 PTY 经 ssh）。A 只对测试 UID 屏蔽 UDP，
 并以白名单只允许 TCP 到一个公共 Relay：先只允许 euc1-1，A 与 B 的连接和附件都经它；再只允许
 usw1-1。`kill` 强杀并重启 A 的 daemon（会结束 Session）；`blip` 让 A 8 秒内到不了任何 Relay 后
 恢复 euc1-1，A 的 daemon 与 Session 不变。修正前为 `3651d86`，修正后为 `e95e550`（构建后预检一次
@@ -1412,7 +1412,7 @@ Relay 用了 52 秒，B 的空闲超时先到，未覆盖本修正，且重连�
 ### P43：daemon 停止时附件写出会话结束前被中止
 
 现场为 PR #77（P42）的 macOS CI：`local_session_ipc::unary_mutations_and_duplex_reconnect_share_one_live_registry`
-在 `zterm daemon stop` 等价的确认停止后读附件事件，得到 `cancelled: local terminal attachment closed`，
+在 `voytty daemon stop` 等价的确认停止后读附件事件，得到 `cancelled: local terminal attachment closed`，
 而不是 `SessionEnded(DaemonStop)`。两个 Linux 任务通过。该测试只走本地 IPC，不经过 P42 修改的
 远程连接退役。
 
@@ -1421,7 +1421,7 @@ Relay 用了 52 秒，B 的空闲超时先到，未覆盖本修正，且重连�
 `SessionEnded` 由它自己的写出任务（[session_wire.rs](../../crates/daemon/src/session_wire.rs)
 `attachment_writer`）发送：先经 `run_effect` 在阻塞线程上取最终画面更新，再写一个小帧。daemon
 使用单线程运行时，写出任务等阻塞线程时，监听循环可能先收到停止信号；P20 之后父任务中止会连带
-中止读写子任务，客户端只读到 EOF。真实使用中，`zterm daemon stop` 时已连接的终端可能显示连接
+中止读写子任务，客户端只读到 EOF。真实使用中，`voytty daemon stop` 时已连接的终端可能显示连接
 关闭而不是“daemon 已停止”。
 
 复现（`stress_ipc.sh`：测试二进制 8 份并行，每轮各跑全部 7 项）：本机串行 60 次 0 失败；
@@ -1430,7 +1430,7 @@ Relay 用了 52 秒，B 的空闲超时先到，未覆盖本修正，且重连�
 修正：每个连接在确认为本地终端附件时置位标记。显式停止后，非附件连接照旧立即中止；本地附件
 最多等 1 秒（`ATTACHMENT_END_DELIVERY`）自行写完结束，到期仍未结束的再中止。它们的会话已经
 结束，只剩最终更新和一次小写入，正常为毫秒级；只有不再读取的客户端会等满。上限取 1 秒，是因为
-`zterm daemon stop` 收到回执后只给其余收尾（含 Endpoint 关闭，见 R05）共 5 秒。致命监听错误时
+`voytty daemon stop` 收到回执后只给其余收尾（含 Endpoint 关闭，见 R05）共 5 秒。致命监听错误时
 会话仍存活，附件不会自行结束，照旧立即全部中止（首版未区分，会让致命退出白等 1 秒才重新绑定）。
 期限、协议和会话关闭顺序均未改。
 
@@ -1503,8 +1503,8 @@ QUIC 对持久重置密钥、CID 不复用及重置 oracle 的约束见
 | --- | --- | --- |
 | D01 | `iroh` / `iroh-relay` 从 1.0.3 固定到 1.3.0，包含上游 Relay 发送队列拥塞时阻塞 remote actor 的修正 | 完成 Rust／Android 检查、60 ms 反向配对 10/10、独立网络门禁；`checks/iroh-1.3-*`。这是已实施升级，不能以相关上游缺陷断言全部现场超时同因；升级后真实 Relay 初连失败仍存在 |
 | D02 | Android DNS 继续使用接受 SocketAddr 的兼容 API，保留 IPv6 接口 scope，避免直接换到只接受 IpAddr 的新构造器 | [dns.rs](../../crates/android/src/dns.rs)；兼容性检查通过。这是迁移约束，没有把未发生的 scope 丢失记作现场故障 |
-| D03 | 将 NOQ 修正固定到 vendor，Cargo patch 和 Android Gradle 构建输入统一引用，保留来源／许可证，加入 `just ci-noq` | [ZTERM.md](../../vendor/noq-proto/ZTERM.md)、[justfile](../../justfile)；两项旧 idle 修正为 429 项通过；本轮加入 P25 重置修正后完整库 436 项通过 |
-| D04 | 将 Iroh 1.3.0 固定到 vendor，增加 P27 重启重置策略、P29 关闭所有权修正及 `just ci-iroh` | [ZTERM.md](../../vendor/iroh/ZTERM.md) 记录来源、身份单实例约束、取消契约和升级边界；五项重启与六项关闭回归通过，三个生产配置使用同一实现；当前 Linux 完整库 138 通过／1 忽略 |
+| D03 | 将 NOQ 修正固定到 vendor，Cargo patch 和 Android Gradle 构建输入统一引用，保留来源／许可证，加入 `just ci-noq` | [VOYTTY.md](../../vendor/noq-proto/VOYTTY.md)、[justfile](../../justfile)；两项旧 idle 修正为 429 项通过；本轮加入 P25 重置修正后完整库 436 项通过 |
+| D04 | 将 Iroh 1.3.0 固定到 vendor，增加 P27 重启重置策略、P29 关闭所有权修正及 `just ci-iroh` | [VOYTTY.md](../../vendor/iroh/VOYTTY.md) 记录来源、身份单实例约束、取消契约和升级边界；五项重启与六项关闭回归通过，三个生产配置使用同一实现；当前 Linux 完整库 138 通过／1 忽略 |
 | D05 | 有限详细窗口内的 Relay 阶段和 QUIC 流进度；daemon 和 Android 使用白名单事件 | [transport_trace.rs](../../crates/diagnostics/src/transport_trace.rs)、[Iroh 适配](../../vendor/iroh/src/transport_trace.rs)、[流进度](../../crates/client/src/iroh_controller.rs)。匿名标签、密文数据报指纹、进程内单调时钟；不转发地址、身份、载荷或任意依赖消息。拨号／断开使用封闭错误类别。R03 追加每流最多 1 Hz 的有序字节／解码／部分帧计数，连接级 STREAM 计数不等于送达或 ACK；真实 QUIC 回归覆盖取消读、分片及 EOF 保持累计计数，嵌套字段拒绝内容注入。这是诊断能力，不计作 R02／R03 传输行为修复 |
 | D06 | 用户授权首次远程请求总预算 15 秒，就绪后普通操作最多 5 秒；补齐 Android 取消及正常建连子阶段的期限传递 | [共享期限](../../crates/client/src/protocol.rs)、[Android 共享连接](../../crates/client/src/iroh_controller.rs)、[daemon 正常连接](../../crates/daemon/src/connection_broker.rs)。第一版五项回归保留；本轮另六项回归全通过，修正前四项失败，消除正常拨号十秒／出站认证五秒的提前截断。配对、入站准入和就绪操作上限保留。当前 804 项 Linux 测试通过，三端矩阵 45/52；容忍慢连接不等于已证明全部公网等待的原因 |
 
@@ -1536,7 +1536,7 @@ QUIC 对持久重置密钥、CID 不复用及重置 oracle 的约束见
 | 编号 | 问题与已实施方案 | 证据／范围 |
 | --- | --- | --- |
 | T01 | PTY 扩展 CSI 解析污染画面、重复关闭描述符、VM 重启后仅凭复用 PID 判进程；分别修正解析、所有权清理与进程身份核对 | 早期 `smoke-01` 至 `smoke-06`；`test_split_extension_queries_do_not_corrupt_terminal_cells`，历史过程保留夹具失败 |
-| T02 | Android mailbox 发布顺序与读取时点竞争；修正阶段信号发布，使用私有目录和明确 serial | [MultiDeviceTest.kt](../../apps/android/app/src/androidTest/java/io/github/leonfox28/zterm/MultiDeviceTest.kt)、历史过程 |
+| T02 | Android mailbox 发布顺序与读取时点竞争；修正阶段信号发布，使用私有目录和明确 serial | [MultiDeviceTest.kt](../../apps/android/app/src/androidTest/java/io/github/leonfox28/voytty/MultiDeviceTest.kt)、历史过程 |
 | T03 | 仅 TIOCSWINSZ 不触发 SSH 远端 resize；底层 Active 也可能早于终端输入栅栏开放 | 显式 SIGWINCH 通知所属 SSH 子进程，并等待真实 PTY 输入呈现；恢复后仍在原绝对期限只发送一次 nonce；`checks/coordinator-19.log` |
 | T04 | 重启夹具混淆正常 guest reboot 与强杀模拟器；命名会话恢复缺少错误回退对照，上传故障时机不准确 | 区分故障类型，加入独立 `main` 对照，修正上传故障阶段；原 `extended-01` 39 通过／41 失败保留 |
 | T05 | Android 打开主机失败后仍继续 select，可能掩盖第一次错误 | 首次失败立即保留并结束该行，不以额外选择请求替代；`checks/android-open-before.log`、`checks/coordinator-13.log` |
@@ -1575,14 +1575,14 @@ QUIC 对持久重置密钥、CID 不复用及重置 oracle 的约束见
 | 编号 | 发现及处理 | 仍需保留的限制 |
 | --- | --- | --- |
 | E01 | 仅 vzNAT 时 A ↔ B 实测不可达；保留 VZ / vzNAT 并添加共享 user-v2 网卡，六向 ping／UDP 预检通过 | 实际网络与最初仅 vzNAT 计划不同，未安装额外特权网络组件 |
-| E02 | 独立网络门禁硬编码 eth0，而 VM 默认出口为 lima0；新增 ZTERM_GATE_EGRESS_INTERFACE，保留 Docker 默认值 | 补充门禁与三设备产品链路分别统计；历史原始 UDP 反射超时及 v18 结束单向 UDP 失败保留，后续六向通过不覆盖它们 |
+| E02 | 独立网络门禁硬编码 eth0，而 VM 默认出口为 lima0；新增 VOYTTY_GATE_EGRESS_INTERFACE，保留 Docker 默认值 | 补充门禁与三设备产品链路分别统计；历史原始 UDP 反射超时及 v18 结束单向 UDP 失败保留，后续六向通过不覆盖它们 |
 | E03 | 临时启动器解析 Python 虚拟环境符号链接后丢失 pyte | 使用虚拟环境入口并重跑；`partial-lookup-smoke-01` 保留为夹具失败／中断，不能算产品通过 |
 | E04 | Linux VM 多次因旧测试可执行文件和增量缓存耗尽磁盘，链接未完成 | 仅清理已识别生成缓存，保留源码、制品及证据后完整重跑。历史 `checks/linux-old-test-cache-prune-02.json`、`checks/linux-cache-cleanup-04.json` 保留；本轮 `endpoint-restart-fix/linux-debug-cleanup-02.json` 核对安装二进制未变，并关闭测试调试符号／增量缓存，Linux 完整 792 项通过 |
 | E05 | Android 本地包缓存引用临时检出；Mac 特征组合引用旧依赖制品，造成编译失败 | 定点清理本仓库本地包缓存并核对来源后重建。Android 对照 v19 的 18 个文件一致；编译错误不算行为复现。`checks/ordered-fixes/progress.json` 的 environment_incidents 与 `mac-cache-before.json` |
 | E06 | Linux 检查忘记既定 umask 077，002 下身份重置夹具触发 PathUnsafe | 002 失败、022／077 通过；恢复 077 后完整重跑，没有放宽产品目录权限检查；`checks/ordered-fixes/linux-lib-01.log` 保留 |
 | E07 | 早期 core-final-03 的协调进程退出，未留完整结束记录，原因不明 | 保存原 568 行，剩余明确跳过：363 通过、205 失败、892 跳过；不能拼接成十轮完成。后续运行使用固定运行器、独立证据、审计及清理记录 |
 | E08 | 本轮 Mac Iroh 全库测试时用户拒绝传入连接，只读核查确认该测试可执行文件被系统防火墙阻止 | 已停止受影响轮次并保留 `endpoint-restart-fix/iroh-full-01.log`、`firewall-incident-01.json`，不修改防火墙。Mac 内存传输回归通过；完整网络库检查转到隔离 Linux VM，不能把受限轮次算作通过 |
-| E09 | 2026-10-11 发现 `target/` 已于 2026-10-10 17:08 重建：运行器的 `environment.json`、venv、日志和全部 `checks/` 证据丢失；C 的 AVD 由 `create` 建在 `environment/avd` 下，也一并删除，仅剩指向不存在路径的 `~/.android/avd/zterm-md-20261003t024103z-c.ini`。A／B 在 `~/.lima`，仍在 | 重新进行三端实验前必须重建 C（含配对）并重建环境清单；不能把旧 VM 当作已核对的环境。实验环境放在 `target/` 下会被清理命令一并删除，后续应考虑移出 |
+| E09 | 2026-10-11 发现 `target/` 已于 2026-10-10 17:08 重建：运行器的 `environment.json`、venv、日志和全部 `checks/` 证据丢失；C 的 AVD 由 `create` 建在 `environment/avd` 下，也一并删除，仅剩指向不存在路径的 `~/.android/avd/voytty-md-20261003t024103z-c.ini`。A／B 在 `~/.lima`，仍在 | 重新进行三端实验前必须重建 C（含配对）并重建环境清单；不能把旧 VM 当作已核对的环境。实验环境放在 `target/` 下会被清理命令一并删除，后续应考虑移出 |
 | E10 | 2026-10-11 C 的 Direct 行在 Relay 走代理与否时都只剩 Relay 路径。原因是 herdr 后台服务丢失 macOS“本地网络”权限：从它派生的会话与模拟器向任何局域网地址发包都返回 `No route to host`。重启 herdr 服务后新标签页恢复，模拟器需从新标签页重启 | 已在运行的进程不会随 herdr 重启恢复；失效原因未确认。之前因此失败的行属于环境问题，不计作产品或代理规则结论；见 [环境重建记录](multi-device-lab.md) 第 11 节 |
 
 ## 续修前的交接点（保留历史）
@@ -1672,7 +1672,7 @@ P25 的七项 NOQ 回归、P26 的三项真实 TLS 失败复现均已修正，�
 1. 当前同源制品 `b91e3cd14c19a8dd`、449 项构建输入匹配；保留 P01–P30。
    本轮只增加 D05 诊断能力，未新增已证明的握手行为修复。有限日志关闭后不计算包指纹，
    不启用无关依赖 trace，不屏蔽原业务事件；匿名关联、白名单、敏感字段拒绝回归通过。
-   固定依赖版本的 TLS 阶段标记及升级约束见 `vendor/iroh/ZTERM.md`。
+   固定依赖版本的 TLS 阶段标记及升级约束见 `vendor/iroh/VOYTTY.md`。
 2. 当前 `relay-trace-cold-02` 为 30/32，Android `0003` 已捕获完整 Relay TLS 等待链，
    Linux `0000` 缺少失败时的详细日志，仍未归因。前一诊断制品的 26/32 独立保留；
    两轮通过率不可当作修复效果。两轮审计均无不一致。
@@ -2142,7 +2142,7 @@ P25 的七项 NOQ 回归、P26 的三项真实 TLS 失败复现均已修正，�
 2. P35 在 [session_wire.rs](../../crates/daemon/src/session_wire.rs) 限制已写未回执的实时
    画面帧，[客户端](../../crates/client/src/session.rs) 与
    [视图驱动](../../crates/client/src/view.rs) 在可取消读取之外发送累计回执；协议见
-   [terminal.proto](../../proto/zterm/v2/terminal.proto) 与
+   [terminal.proto](../../proto/voytty/v2/terminal.proto) 与
    [持久会话说明](../persistent-sessions.md)。显式协商、旧端兼容、回执不重放、本地附件不启用。
 3. 受控复现、三项主机回归和一项客户端驱动回归的前后对照见 P35。首版复现夹具和客户端夹具
    错误的日志保留，不计作产品行为。
@@ -2180,19 +2180,19 @@ P25 的七项 NOQ 回归、P26 的三项真实 TLS 失败复现均已修正，�
    受控复现定位到 P36：同一对端旧连接未关闭时，新连接握手被钉在旧选中路径上。
 3. 改动：[remote_state.rs](../../vendor/iroh/src/socket/remote_map/remote_state.rs)、
    [discovery_tests.rs](../../vendor/iroh/src/socket/remote_map/remote_state/discovery_tests.rs)、
-   [vendor 说明](../../vendor/iroh/ZTERM.md)、客户端
+   [vendor 说明](../../vendor/iroh/VOYTTY.md)、客户端
    [iroh_controller.rs](../../crates/client/src/iroh_controller.rs) 的三项 `moved_host_` 回归。
    原 P31 测试“选中路径后停止补发”的断言与新规则冲突，已改为“另一连接的选中路径不终止补发、
    查询结束才停止”。期限、计时器和产品请求语义未改。
 4. 已通过（Mac）：`moved_host_` 3/3 且连跑三次一致（修正前 1/3）、`just ci-iroh` 28/28（修正前 25/28）、
-   zterm-client／zterm-daemon 429 通过／0 失败／12 忽略、vendor Iroh Clippy 与格式、`just android-check`。
+   voytty-client／voytty-daemon 429 通过／0 失败／12 忽略、vendor Iroh Clippy 与格式、`just android-check`。
    `just check` 全部测试 1280 通过／0 失败／16 忽略，依赖策略通过；末尾 `relay-static` 的
    `verify-upstream.sh` 首次因 curl 连接 github.com 出现 SSL_ERROR_SYSCALL 失败，原日志保留，
    单独重跑该 recipe 及其后的 Compose 静态检查均通过。证据在
    `checks/ordered-fixes/moved-host-handshake/`（`product-before-01.log`、`product-after-0{1,2,3}.log`、
    `vendor-before-01.log`、`vendor-after-01.log`、`just-check-01.log`、`relay-static-02.log` 等）。
 5. 未执行：Linux 完整工作区与 Linux Iroh 全库、A／B／C 同源构建与矩阵。没有提交或发布。
-   本地保留 P36 补丁，同时准备向上游提 issue。不依赖 zterm 代码的纯 Iroh 复现：上游逻辑下
+   本地保留 P36 补丁，同时准备向上游提 issue。不依赖 voytty 代码的纯 Iroh 复现：上游逻辑下
    新 `connect()` 在 10 秒期限内未完成，放宽到 60 秒时约 30 秒自行失败（握手 idle），即旧连接
    存活期间新连接无法成功；补丁后约 5–7 ms 连上。维护者审阅并确认上游 AI 政策要求的声明后，
    已提交为 [n0-computer/iroh#4600](https://github.com/n0-computer/iroh/issues/4600)，
@@ -2200,7 +2200,7 @@ P25 的七项 NOQ 回归、P26 的三项真实 TLS 失败复现均已修正，�
 6. 反向假设已否定：客户端（同一身份）被强杀、主机仍保留旧 Direct 选中路径时，新进程仅经
    Relay 拨号。纯 Iroh 探针在有无 P36 时均约 10 ms 连上，4 秒内 40 次往返最慢约 9 ms，新连接
    打洞到新端口，主机旧选中路径没有影响新连接。因此 `0020` 的主机→客户端缺包不能由该机制
-   解释。探针为临时代码，未保留。PR [#70](https://github.com/leonfox28/zterm/pull/70) 的 CI 全部通过。
+   解释。探针为临时代码，未保留。PR [#70](https://github.com/leonfox28/voytty/pull/70) 的 CI 全部通过。
 7. 下一步：补跑上述检查后，在三端针对 P36 前提设计定向行（主机强杀或重启到另一 Relay／端口时，
    控制端仍持有旧连接再拨号；A／B 互为控制端），并为 R02 冷启动失败继续保留同次 Relay 错误类型、
    实际 Home Relay 与两种地址来源的现场证据。R01 中“主机换 Relay 或端口后旧连接收不到 P27 重置、
@@ -2208,7 +2208,7 @@ P25 的七项 NOQ 回归、P26 的三项真实 TLS 失败复现均已修正，�
 
 ## 2026-10-11 三端重建与 R02 续查交接
 
-1. 实验根目录移出 `target/`，全新重建 A／B／C（环境 `zterm-md-20261011t084006z`），过程见
+1. 实验根目录移出 `target/`，全新重建 A／B／C（环境 `voytty-md-20261011t084006z`），过程见
    [环境重建记录](multi-device-lab.md)。修正测试器 T33（新装应用缺 `files/` 导致 C 配对失败）
    和 T34（桥先写 `ready` 后发布状态导致 `'hosts'` KeyError）。
 2. 首轮 cold 8/8 通过，但两行 Linux 冷启动 12.3／12.6 秒：所需 Relay 的首次 TLS 十秒无进展，

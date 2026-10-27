@@ -12,7 +12,7 @@ import tempfile
 import time
 
 
-REPOSITORY = "leonfox28/zterm"
+REPOSITORY = "leonfox28/voytty"
 REQUIRED_JOBS = {
     "Validate exact immutable release source",
     "Approve and sign exact manifest bytes",
@@ -141,7 +141,10 @@ def verify_files(plan, directory):
             digest = hashlib.file_digest(stream, "sha256").hexdigest()
         require(path.stat().st_size == asset["size"] and f"sha256:{digest}" == asset["digest"],
                 f"asset bytes differ: {asset['name']}")
-    manifest = json.loads((directory / "zterm-release.json").read_text())
+    # Historical immutable drafts keep their original name and frozen verifier.
+    manifests = [path for path in files if path.name in ("voytty-release.json", "zterm-release.json")]
+    require(len(manifests) == 1, "inventory must contain exactly one product manifest")
+    manifest = json.loads(manifests[0].read_text())
     require(manifest["tag"] == plan["tag"] and manifest["source_commit"] == plan["source_commit"],
             "signed inventory belongs to a different tag/source")
     require(manifest["classification"] in ("stable", "prerelease")

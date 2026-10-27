@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 
 use unicode_width::UnicodeWidthChar;
-use zterm_core::ResourceLimits;
-use zterm_core::terminal::{
+use voytty_core::ResourceLimits;
+use voytty_core::terminal::{
     ActiveScreen, TerminalCell, TerminalModes, TerminalScrollMetrics, TerminalSize, TerminalStyle,
     TerminalSurface,
 };
-use zterm_daemon::client::view::TerminalViewTransportState;
+use voytty_daemon::client::view::TerminalViewTransportState;
 
 use super::{CliError, StatusRenderer, ViewportController};
 
@@ -114,7 +114,7 @@ impl ScrollbarGeometry {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ComposedCursor {
-    pub(super) presentation: zterm_core::terminal::TerminalCursorPresentation,
+    pub(super) presentation: voytty_core::terminal::TerminalCursorPresentation,
     pub(super) row: u16,
     pub(super) column: u16,
     pub(super) visible: bool,
@@ -137,7 +137,7 @@ pub(super) struct ComposedFrame {
     pub(super) rows: BTreeMap<u16, Vec<TerminalCell>>,
     pub(super) cursor: ComposedCursor,
     pub(super) modes: TerminalModes,
-    pub(super) colors: zterm_core::terminal::TerminalColorSnapshot,
+    pub(super) colors: voytty_core::terminal::TerminalColorSnapshot,
 }
 
 impl std::fmt::Debug for ComposedFrame {

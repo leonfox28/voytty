@@ -30,18 +30,18 @@ use std::{
 };
 #[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use voytty_client::progress::{LocalProgressDecoder, ProgressObserver};
+#[cfg(unix)]
+use voytty_client::unary::{SessionUnaryClient, SessionUnaryRequest, SessionUnaryTransport};
+#[cfg(unix)]
+use voytty_core::{DEFAULT_PAIR_TTL_SECONDS, EphemeralOperationId, PairFingerprint};
+use voytty_core::{DeviceAlias, DeviceId, DeviceSummary, DomainErrorKind, SessionId, SessionName};
+#[cfg(test)]
+use voytty_core::{OperationId, OperationLease};
+#[cfg(unix)]
+use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
 #[cfg(unix)]
 use zeroize::{Zeroize, Zeroizing};
-use zterm_client::progress::{LocalProgressDecoder, ProgressObserver};
-#[cfg(unix)]
-use zterm_client::unary::{SessionUnaryClient, SessionUnaryRequest, SessionUnaryTransport};
-#[cfg(unix)]
-use zterm_core::{DEFAULT_PAIR_TTL_SECONDS, EphemeralOperationId, PairFingerprint};
-use zterm_core::{DeviceAlias, DeviceId, DeviceSummary, DomainErrorKind, SessionId, SessionName};
-#[cfg(test)]
-use zterm_core::{OperationId, OperationLease};
-#[cfg(unix)]
-use zterm_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
 #[cfg(unix)]
 const PAIRING_DEADLINE: Duration = Duration::from_secs(15);
 
@@ -301,7 +301,7 @@ impl LocalClient {
         &self,
         name: &SessionName,
         working_directory: Option<&Path>,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
     ) -> Result<crate::session::SessionSummary, DaemonError> {
         self.sessions
             .create_session(self, name, working_directory, viewport)
@@ -315,7 +315,7 @@ impl LocalClient {
         target: ResolvedSessionTarget,
         name: &SessionName,
         working_directory: Option<&Path>,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
     ) -> Result<crate::session::SessionSummary, DaemonError> {
         self.sessions
             .create_session_at(self, target, name, working_directory, viewport)
@@ -329,8 +329,8 @@ impl LocalClient {
         target: ResolvedSessionTarget,
         name: &SessionName,
         working_directory: Option<&Path>,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
-        base_colors: zterm_core::terminal::TerminalColorProfile,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
+        base_colors: voytty_core::terminal::TerminalColorProfile,
     ) -> Result<crate::session::SessionSummary, DaemonError> {
         self.sessions
             .create_session_at_with_colors(
@@ -1010,7 +1010,7 @@ impl LocalClient {
         &self,
         _name: &SessionName,
         _working_directory: Option<&Path>,
-        _viewport: Option<zterm_core::terminal::TerminalSize>,
+        _viewport: Option<voytty_core::terminal::TerminalSize>,
     ) -> Result<crate::session::SessionSummary, DaemonError> {
         Err(unsupported())
     }
@@ -1021,7 +1021,7 @@ impl LocalClient {
         _target: ResolvedSessionTarget,
         _name: &SessionName,
         _working_directory: Option<&Path>,
-        _viewport: Option<zterm_core::terminal::TerminalSize>,
+        _viewport: Option<voytty_core::terminal::TerminalSize>,
     ) -> Result<crate::session::SessionSummary, DaemonError> {
         Err(unsupported())
     }
@@ -1064,7 +1064,7 @@ impl LocalClient {
 }
 
 #[cfg(unix)]
-fn local_device_wire_error(error: zterm_proto::WireFieldError) -> DaemonError {
+fn local_device_wire_error(error: voytty_proto::WireFieldError) -> DaemonError {
     malformed(format!("invalid local device response: {error}"))
 }
 
@@ -1081,7 +1081,7 @@ fn protocol_status(protocol: Option<v2::ProtocolVersion>) -> Result<ProtocolStat
 #[cfg(unix)]
 fn network_observation(
     response: &v2::LocalStatusResponse,
-    device_id: zterm_core::DeviceId,
+    device_id: voytty_core::DeviceId,
 ) -> Result<NetworkObservation, DaemonError> {
     let state = match response.network_state.as_str() {
         "" | "disabled" => NetworkState::Disabled,
@@ -1136,9 +1136,9 @@ fn address_service_state(value: &str) -> Result<AddressServiceState, DaemonError
 }
 
 #[cfg(unix)]
-use zterm_client::protocol::resolved_target_from_wire;
+use voytty_client::protocol::resolved_target_from_wire;
 #[cfg(test)]
-use zterm_client::protocol::resolved_target_wire;
+use voytty_client::protocol::resolved_target_wire;
 
 #[cfg(not(unix))]
 fn unsupported() -> DaemonError {
@@ -1197,7 +1197,7 @@ impl SessionUnaryTransport for LocalClient {
     fn request(
         &self,
         request: SessionUnaryRequest,
-    ) -> zterm_client::transport::TransportFuture<'_, Result<DecodedFrame, DaemonError>> {
+    ) -> voytty_client::transport::TransportFuture<'_, Result<DecodedFrame, DaemonError>> {
         Box::pin(async move {
             let SessionUnaryRequest {
                 target,
@@ -1216,7 +1216,7 @@ impl SessionUnaryTransport for LocalClient {
                 .map_err(|_| resource_error("local request ID exhausted"))?;
             let deadline_ms = u32::try_from(deadline.as_millis()).unwrap_or(u32::MAX);
             let bytes = Zeroizing::new(
-                zterm_proto::encode_payload(request_kind, request_id, deadline_ms, payload)
+                voytty_proto::encode_payload(request_kind, request_id, deadline_ms, payload)
                     .map_err(protocol_error)?,
             );
             match target.device_id() {
@@ -1250,7 +1250,7 @@ impl SessionUnaryTransport for LocalClient {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use zterm_core::DaemonIncarnation;
+    use voytty_core::DaemonIncarnation;
 
     #[tokio::test]
     async fn startup_budget_remote_unary_envelope_allows_setup_but_keeps_inner_control_limit() {
@@ -1295,11 +1295,11 @@ mod tests {
                 .is_empty()
         );
         assert!(started.elapsed() >= Duration::from_secs(6));
-        assert!(started.elapsed() < zterm_client::protocol::REMOTE_STARTUP_DEADLINE);
+        assert!(started.elapsed() < voytty_client::protocol::REMOTE_STARTUP_DEADLINE);
     }
     #[tokio::test]
     async fn unary_progress_accepts_fragmented_prefix_but_rejects_stages_after_final_reply() {
-        use zterm_core::connection_progress::ConnectionStage;
+        use voytty_core::connection_progress::ConnectionStage;
         for chunk_size in [1, 4096] {
             for trailing_progress in [false, true] {
                 let (observer, history) = ProgressObserver::channel(|_| {});
@@ -1307,7 +1307,7 @@ mod tests {
                     WireKind::LocalConnectionProgress,
                     501,
                     0,
-                    &zterm_proto::connection_stage_to_message(ConnectionStage::ReusingConnection)
+                    &voytty_proto::connection_stage_to_message(ConnectionStage::ReusingConnection)
                         .expect("unary progress fixture"),
                 )
                 .expect("unary progress fixture");
@@ -1679,7 +1679,7 @@ mod tests {
             request_id,
             1_000,
             &v2::SessionCreateRequest {
-                base_colors: Some(zterm_core::terminal::TerminalColorProfile::default().into()),
+                base_colors: Some(voytty_core::terminal::TerminalColorProfile::default().into()),
 
                 operation_id: Some(
                     OperationId {

@@ -1,0 +1,18 @@
+Required Notice: Copyright 2026 Leon (https://github.com/leonfox28) and voytty contributors.
+
+voytty project-owned code is available under the PolyForm Noncommercial License
+1.0.0: https://polyformproject.org/licenses/noncommercial/1.0.0
+The unmodified license text is included in LICENSE.
+
+Commercial use requires a separate entitlement. The voytty Commercial Use
+License covers an entitled user's official client and companion CLI/daemon,
+including deployment on authorized work computers for that user's internal
+business use. See COMMERCIAL-LICENSE.md or:
+https://github.com/leonfox28/voytty/blob/main/COMMERCIAL-LICENSE.md
+
+Downloading or compiling voytty does not create a subscription or commercial
+entitlement. Source modifications do not have to be published. voytty is
+source-available; its project license is not an OSI-approved open-source license.
+
+Third-party code, fonts, assets, and vendored packages retain their own licenses
+and notices. These project terms do not replace or restrict those permissions.

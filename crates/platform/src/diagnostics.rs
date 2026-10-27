@@ -7,7 +7,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use zterm_diagnostics::{Control, MAX_RECORD_BYTES, Sink, Snapshot};
+use voytty_diagnostics::{Control, MAX_RECORD_BYTES, Sink, Snapshot};
 
 /// Per-file desktop retention limit; each lane has a current file and one archive.
 pub const FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -237,7 +237,7 @@ impl Store {
         output: &Path,
         include_debug: bool,
         pending_lost: u64,
-    ) -> io::Result<zterm_diagnostics::ExportHeader> {
+    ) -> io::Result<voytty_diagnostics::ExportHeader> {
         let parent = output
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -264,7 +264,7 @@ impl Store {
         let mut snapshots = self.snapshots(include_debug)?;
         let mut file = user_state::create_new_file(&target).map_err(io::Error::other)?;
         let result =
-            zterm_diagnostics::export(&mut snapshots, &mut file, include_debug, pending_lost)
+            voytty_diagnostics::export(&mut snapshots, &mut file, include_debug, pending_lost)
                 .and_then(|header| {
                     file.sync_all()?;
                     Ok(header)
@@ -360,7 +360,7 @@ fn exists(path: &Path) -> io::Result<bool> {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use zterm_diagnostics::{Event, Filter, Kind, Recorder};
+    use voytty_diagnostics::{Event, Filter, Kind, Recorder};
 
     fn fixture(limit: u64) -> (tempfile::TempDir, Store) {
         let temp = tempfile::tempdir().expect("private fixture");
@@ -383,7 +383,7 @@ mod tests {
     fn concurrent_rotation_separates_lanes_and_readers_keep_snapshot_handles() {
         let (_temp, store) = fixture(8192);
         store
-            .set_control(Control::enabled(zterm_diagnostics::now_ms()))
+            .set_control(Control::enabled(voytty_diagnostics::now_ms()))
             .expect("enable detail");
         // Independent adapters acquire the same stable inode, as independent processes do.
         let workers: Vec<_> = (0..4)
@@ -402,7 +402,7 @@ mod tests {
             worker.join().expect("writer");
         }
         let mut snapshots = store.snapshots(false).expect("snapshot");
-        let old = zterm_diagnostics::tail(
+        let old = voytty_diagnostics::tail(
             &mut snapshots,
             &Filter {
                 lines: 1000,
@@ -443,7 +443,7 @@ mod tests {
                 assert!(fs::metadata(path).expect("size").len() <= store.limit);
             }
         }
-        let again = zterm_diagnostics::tail(
+        let again = voytty_diagnostics::tail(
             &mut snapshots,
             &Filter {
                 lines: 1000,
@@ -510,7 +510,7 @@ mod tests {
         assert!(current.starts_with("last legacy event\n"));
         assert!(current.len() < 8192);
         let mut snapshots = store.snapshots(false).expect("snapshots");
-        let tail = zterm_diagnostics::tail(
+        let tail = voytty_diagnostics::tail(
             &mut snapshots,
             &Filter {
                 lines: 100,
@@ -528,7 +528,7 @@ mod tests {
 mod process_tests {
     use super::*;
     use std::sync::Arc;
-    use zterm_diagnostics::{Event, Kind, Recorder};
+    use voytty_diagnostics::{Event, Kind, Recorder};
 
     fn paths(root: &Path) -> UserPaths {
         UserPaths::for_test(
@@ -560,7 +560,7 @@ mod process_tests {
                         "diagnostics::process_tests::writer_child",
                         "--ignored",
                     ])
-                    .env("ZTERM_DIAGNOSTICS_TEST_ROOT", temp.path())
+                    .env("VOYTTY_DIAGNOSTICS_TEST_ROOT", temp.path())
                     .stdout(std::process::Stdio::piped())
                     .spawn()
                     .expect("writer child")
@@ -593,7 +593,7 @@ mod process_tests {
                 .read_to_string(&mut text)
                 .expect("bounded read");
             for line in text.lines() {
-                assert!(zterm_diagnostics::Record::decode(line.as_bytes()).is_some());
+                assert!(voytty_diagnostics::Record::decode(line.as_bytes()).is_some());
                 records += 1;
             }
         }
@@ -602,7 +602,7 @@ mod process_tests {
     #[test]
     #[ignore = "isolated writer fixture"]
     fn writer_child() {
-        let root = std::env::var_os("ZTERM_DIAGNOSTICS_TEST_ROOT").expect("test-private root");
+        let root = std::env::var_os("VOYTTY_DIAGNOSTICS_TEST_ROOT").expect("test-private root");
         let store = Store {
             limit: 8192,
             ..Store::new(paths(Path::new(&root)))

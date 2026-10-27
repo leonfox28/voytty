@@ -3,7 +3,7 @@ set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 relay_config="$repo_root/deploy/relay/relay.toml"
-container_name="zterm-relay-smoke-$$"
+container_name="voytty-relay-smoke-$$"
 
 relay_arch=$(docker version --format '{{.Server.Arch}}')
 case "$relay_arch" in
@@ -15,7 +15,7 @@ case "$relay_arch" in
         exit 64
         ;;
 esac
-image="zterm/iroh-relay:test-$relay_arch"
+image="voytty/iroh-relay:test-$relay_arch"
 if ! docker image inspect "$image" >/dev/null 2>&1; then
     echo "missing $image; run tests/relay/build-platforms.sh first" >&2
     exit 1

@@ -1,4 +1,4 @@
-//! Cross-platform operating-system integration for zterm.
+//! Cross-platform operating-system integration for voytty.
 
 pub mod account;
 #[cfg(unix)]
@@ -32,8 +32,8 @@ pub const fn current() -> PlatformFacts {
 
 /// Returns the shared workspace build identity.
 #[must_use]
-pub const fn build_identity() -> zterm_core::BuildIdentity {
-    zterm_core::BuildIdentity::current()
+pub const fn build_identity() -> voytty_core::BuildIdentity {
+    voytty_core::BuildIdentity::current()
 }
 
 #[cfg(test)]

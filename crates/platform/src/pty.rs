@@ -1,4 +1,4 @@
-//! Zterm-owned pseudo-terminal lifecycle boundary.
+//! Voytty-owned pseudo-terminal lifecycle boundary.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -38,22 +38,22 @@ const HOSTED_COLORTERM: &str = "truecolor";
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TerminalIdentity {
-    /// Zterm's native identity.
+    /// Voytty's native identity.
     #[default]
-    Zterm,
+    Voytty,
     /// Compatibility with programs that only recognize Ghostty's OSC 9 support.
     Ghostty,
 }
 
 impl TerminalIdentity {
     /// Accepted configuration and command-line values.
-    pub const VALUES: [&'static str; 2] = ["zterm", "ghostty"];
+    pub const VALUES: [&'static str; 2] = ["voytty", "ghostty"];
 
     /// Value exported as `TERM_PROGRAM` in a new login shell.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Zterm => "zterm",
+            Self::Voytty => "voytty",
             Self::Ghostty => "ghostty",
         }
     }
@@ -64,9 +64,9 @@ impl std::str::FromStr for TerminalIdentity {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "zterm" => Ok(Self::Zterm),
+            "voytty" => Ok(Self::Voytty),
             "ghostty" => Ok(Self::Ghostty),
-            _ => Err("terminal identity must be zterm or ghostty"),
+            _ => Err("terminal identity must be voytty or ghostty"),
         }
     }
 }
@@ -213,7 +213,7 @@ pub enum PtyOperation {
     Close,
 }
 
-/// Typed failure returned by the zterm PTY boundary.
+/// Typed failure returned by the voytty PTY boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PtyError {
     /// Rows and columns must both be non-zero.
@@ -285,7 +285,7 @@ impl fmt::Display for PtyError {
 
 impl std::error::Error for PtyError {}
 
-/// Zterm-owned result of a root child terminating.
+/// Voytty-owned result of a root child terminating.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PtyExitStatus {
     exit_code: u32,
@@ -694,7 +694,7 @@ impl PtySession {
 
     /// Explicitly terminates a running root child through portable-pty, then waits.
     ///
-    /// Zterm adds no signal escalation or process-group policy here.
+    /// Voytty adds no signal escalation or process-group policy here.
     pub fn close_explicitly(&mut self) -> Result<PtyExitStatus, PtyError> {
         self.input_stopped.stop();
         if let PtyChildState::Exited(status) = self.try_wait()? {
@@ -925,7 +925,7 @@ mod tests {
         );
         assert_eq!(
             builder.get_env("TERM_PROGRAM"),
-            Some(std::ffi::OsStr::new("zterm"))
+            Some(std::ffi::OsStr::new("voytty"))
         );
         assert_eq!(
             builder.get_env("TERM_PROGRAM_VERSION"),
@@ -966,7 +966,7 @@ mod tests {
             ("PATH", "/usr/bin:/bin"),
             ("LANG", "zh_CN.UTF-8"),
             ("LC_CTYPE", "UTF-8"),
-            ("TMPDIR", "/tmp/zterm-user/"),
+            ("TMPDIR", "/tmp/voytty-user/"),
             ("XDG_RUNTIME_DIR", "/run/user/501"),
             ("SSH_AUTH_SOCK", "/tmp/agent.sock"),
         ]
@@ -1015,9 +1015,9 @@ mod tests {
                 ("SHELL", shell),
                 ("SSH_AUTH_SOCK", "/tmp/agent.sock"),
                 ("TERM", HOSTED_TERM),
-                ("TERM_PROGRAM", "zterm"),
+                ("TERM_PROGRAM", "voytty"),
                 ("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION")),
-                ("TMPDIR", "/tmp/zterm-user/"),
+                ("TMPDIR", "/tmp/voytty-user/"),
                 ("USER", account.name()),
                 ("XDG_RUNTIME_DIR", "/run/user/501"),
             ])
@@ -1030,7 +1030,7 @@ mod tests {
     fn compatibility_identity_only_changes_the_child_program_name() -> Result<(), PtyError> {
         let account = EffectiveAccount::current().map_err(account_error)?;
         let native =
-            login_shell_builder(&account, None, std::iter::empty(), TerminalIdentity::Zterm)?;
+            login_shell_builder(&account, None, std::iter::empty(), TerminalIdentity::Voytty)?;
         let compatible = login_shell_builder(
             &account,
             None,
@@ -1099,7 +1099,7 @@ mod tests {
     fn login_builder_rejects_invalid_shell_and_cwd_before_open() -> Result<(), PtyError> {
         let account = EffectiveAccount::current().map_err(account_error)?;
         let missing_shell =
-            std::env::temp_dir().join(format!("zterm-missing-login-shell-{}", std::process::id()));
+            std::env::temp_dir().join(format!("voytty-missing-login-shell-{}", std::process::id()));
         let invalid_account = EffectiveAccount::for_test(
             account.uid(),
             account.gid(),
@@ -1123,7 +1123,7 @@ mod tests {
         );
 
         let missing_cwd =
-            std::env::temp_dir().join(format!("zterm-missing-login-cwd-{}", std::process::id()));
+            std::env::temp_dir().join(format!("voytty-missing-login-cwd-{}", std::process::id()));
         assert_eq!(
             login_shell_builder(
                 &account,

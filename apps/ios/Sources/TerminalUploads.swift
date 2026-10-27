@@ -33,7 +33,7 @@ final class TerminalUploads: ObservableObject {
     var inputBoundary: () -> Void = {}
     private var current: Attempt?
     private let background: BackgroundWork
-    private let staging = DispatchQueue(label: "zterm.upload.staging", qos: .userInitiated)
+    private let staging = DispatchQueue(label: "voytty.upload.staging", qos: .userInitiated)
 
     init(background: BackgroundWork? = nil) { self.background = background ?? BackgroundWork() }
 

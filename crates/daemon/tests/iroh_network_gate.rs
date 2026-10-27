@@ -31,7 +31,7 @@ use iroh_relay::{
 };
 use patchbay::{Device, Lab, Nat};
 use tokio::{sync::oneshot, task::JoinHandle, time::timeout};
-use zterm_daemon::transport::{InfrastructureProfile, ZTERM_ALPN, ZTERM_PAIR_ALPN};
+use voytty_daemon::transport::{InfrastructureProfile, VOYTTY_ALPN, VOYTTY_PAIR_ALPN};
 
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -48,8 +48,8 @@ const NET_REPORT_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTROLLED_RELAY_START_TIMEOUT: Duration = Duration::from_secs(15);
 const CONTROLLED_RELAY_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROLLED_RELAY_HOST: &str = "relay.test";
-const RELAY_IPV4_OVERRIDES_ENV: &str = "ZTERM_GATE_RELAY_IPV4_OVERRIDES";
-const EGRESS_INTERFACE_ENV: &str = "ZTERM_GATE_EGRESS_INTERFACE";
+const RELAY_IPV4_OVERRIDES_ENV: &str = "VOYTTY_GATE_RELAY_IPV4_OVERRIDES";
+const EGRESS_INTERFACE_ENV: &str = "VOYTTY_GATE_EGRESS_INTERFACE";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GateCase {
@@ -284,7 +284,7 @@ fn deferred_product_diagnostic(case_a: &CaseOutcome) -> &'static str {
 async fn run_case(case: GateCase, relays: &[ResolvedRelay]) -> Result<CaseOutcome> {
     let lab = Lab::builder()
         .allow_real_root()
-        .label(format!("zterm-foundation-{}", case.label()))
+        .label(format!("voytty-foundation-{}", case.label()))
         .build()
         .await
         .with_context(|| format!("create Patchbay lab for Case {}", case.label()))?;
@@ -556,7 +556,7 @@ fn raw_udp_peer(
         .recv_timeout(RAW_CONTROL_TIMEOUT)
         .context("raw UDP peer address exchange timed out")?;
 
-    let payload = b"zterm-foundation-raw-udp";
+    let payload = b"voytty-foundation-raw-udp";
     let deadline = Instant::now() + RAW_CONTROL_TIMEOUT;
     let mut buffer = [0_u8; 64];
     loop {
@@ -698,7 +698,7 @@ async fn client_task(
         .context("server stopped before advertising its address")?;
     let connection = timeout(
         CONNECT_TIMEOUT,
-        endpoint.connect(advert.dial_addr, ZTERM_ALPN),
+        endpoint.connect(advert.dial_addr, VOYTTY_ALPN),
     )
     .await
     .context("client connect timed out")?
@@ -730,13 +730,13 @@ async fn bind_endpoint(
 ) -> Result<Endpoint> {
     let secret_key = SecretKey::generate();
     let mut builder = match relay_profile {
-        GateRelayProfile::Official => InfrastructureProfile::zterm().endpoint_builder(secret_key),
+        GateRelayProfile::Official => InfrastructureProfile::voytty().endpoint_builder(secret_key),
         GateRelayProfile::Controlled(relay_map) => Endpoint::builder(presets::Minimal)
             .secret_key(secret_key)
             .relay_mode(RelayMode::Custom(relay_map))
             .ca_tls_config(CaTlsConfig::insecure_skip_verify())
             .addr_filter(AddrFilter::relay_only())
-            .alpns(vec![ZTERM_ALPN.to_vec(), ZTERM_PAIR_ALPN.to_vec()]),
+            .alpns(vec![VOYTTY_ALPN.to_vec(), VOYTTY_PAIR_ALPN.to_vec()]),
     };
     if let Some(port) = bind_port {
         builder = builder
@@ -924,7 +924,7 @@ async fn roundtrip_one_stream(
     stream_index: usize,
 ) -> Result<()> {
     timeout(STREAM_TIMEOUT, async {
-        let expected = format!("zterm-gate-{case_label}-{stream_index}").into_bytes();
+        let expected = format!("voytty-gate-{case_label}-{stream_index}").into_bytes();
         let (mut send, mut receive) = connection
             .open_bi()
             .await
@@ -1069,14 +1069,14 @@ fn configure_public_egress(lab: &Lab, index: u8) -> Result<PublicEgress> {
 
 fn block_simulated_direct_udp(device: &Device) -> Result<()> {
     device.run_sync(|| {
-        command("nft", &["add", "table", "inet", "zterm_gate"])?;
+        command("nft", &["add", "table", "inet", "voytty_gate"])?;
         command(
             "nft",
             &[
                 "add",
                 "chain",
                 "inet",
-                "zterm_gate",
+                "voytty_gate",
                 "output",
                 "{ type filter hook output priority filter; policy accept; }",
             ],
@@ -1087,7 +1087,7 @@ fn block_simulated_direct_udp(device: &Device) -> Result<()> {
                 "add",
                 "rule",
                 "inet",
-                "zterm_gate",
+                "voytty_gate",
                 "output",
                 "udp",
                 "dport",
@@ -1101,7 +1101,7 @@ fn block_simulated_direct_udp(device: &Device) -> Result<()> {
                 "add",
                 "rule",
                 "inet",
-                "zterm_gate",
+                "voytty_gate",
                 "output",
                 "meta",
                 "l4proto",
@@ -1114,7 +1114,7 @@ fn block_simulated_direct_udp(device: &Device) -> Result<()> {
 }
 
 fn resolve_production_relays() -> Result<Vec<ResolvedRelay>> {
-    let summary = InfrastructureProfile::zterm().summary();
+    let summary = InfrastructureProfile::voytty().summary();
     let overrides = relay_ipv4_overrides()?;
     ensure!(
         summary.relays.len() == 4,
@@ -1177,7 +1177,7 @@ fn ensure_relay_contract(
     outcome: &CaseOutcome,
     relays: &[ResolvedRelay],
 ) -> Result<()> {
-    let official_urls = InfrastructureProfile::zterm()
+    let official_urls = InfrastructureProfile::voytty()
         .summary()
         .relays
         .into_iter()

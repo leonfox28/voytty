@@ -13,32 +13,32 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use zterm_core::terminal::TerminalColorProfile;
+use voytty_core::terminal::TerminalColorProfile;
 
 use iroh::SecretKey;
 use tokio::sync::watch;
 #[cfg(all(unix, test))]
-use zterm_core::terminal::TerminalHistoryWindowAnchor;
+use voytty_core::terminal::TerminalHistoryWindowAnchor;
 #[cfg(unix)]
-use zterm_core::terminal::TerminalHistoryWindowQuery;
+use voytty_core::terminal::TerminalHistoryWindowQuery;
 #[cfg(unix)]
-use zterm_core::terminal::TerminalHostEffect;
+use voytty_core::terminal::TerminalHostEffect;
 #[cfg(all(unix, test))]
-use zterm_core::terminal::TerminalSurfaceHistoryWindowResult;
-use zterm_core::terminal::{
+use voytty_core::terminal::TerminalSurfaceHistoryWindowResult;
+use voytty_core::terminal::{
     TerminalSize, TerminalSurfaceDelta, TerminalSurfaceDeltaResult, TerminalSurfaceSnapshot,
 };
-use zterm_core::{
+use voytty_core::{
     AttachmentId, AttachmentPrincipal, ControllerLease, DaemonIncarnation, DeviceId,
     DomainErrorKind, OperationId, OperationLease, ResourceLimits, ResumeViewId, Revision,
     SessionEndReason, SessionId, SessionName, SessionSelector,
 };
-use zterm_platform::account::EffectiveAccount;
-use zterm_platform::pty::{
+use voytty_platform::account::EffectiveAccount;
+use voytty_platform::pty::{
     PtyChildState, PtyError, PtyHost, PtyPathKind, PtySession, PtySize, TerminalIdentity,
 };
-use zterm_platform::user_state::UserPaths;
-use zterm_terminal::{TerminalError, TerminalModel};
+use voytty_platform::user_state::UserPaths;
+use voytty_terminal::{TerminalError, TerminalModel};
 
 use crate::error::DaemonError;
 use crate::terminal_driver::{
@@ -65,7 +65,7 @@ type MutationResult = Result<SessionSummary, DaemonError>;
 type FinalAttachmentUpdate = Result<Option<AttachmentUpdate>, DaemonError>;
 type FinalAttachmentUpdateSlot = Arc<Mutex<Option<FinalAttachmentUpdate>>>;
 
-pub use zterm_client::model::SessionSummary;
+pub use voytty_client::model::SessionSummary;
 
 /// Latest state transition of one attachment.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -833,7 +833,7 @@ impl SessionService {
     pub(crate) fn admit_upload_until(
         &self,
         principal: AttachmentPrincipal,
-        binding: zterm_core::upload::UploadBinding,
+        binding: voytty_core::upload::UploadBinding,
         deadline: Instant,
     ) -> Result<UploadAdmission, DaemonError> {
         if !matches!(principal, AttachmentPrincipal::RemoteEndpoint { .. }) {
@@ -2877,7 +2877,7 @@ impl SessionActor {
         let thread_actor = Arc::clone(&actor);
         let dispatch = tracing::dispatcher::get_default(Clone::clone);
         let spawned = thread::Builder::new()
-            .name("zterm-session-actor".into())
+            .name("voytty-session-actor".into())
             .spawn(move || {
                 let _dispatch = tracing::dispatcher::set_default(&dispatch);
                 let mut finalizer = ActorWorkerFinalizer::new(Arc::clone(&thread_actor));
@@ -3071,7 +3071,7 @@ impl SessionActor {
             let actor = Arc::clone(self);
             let interrupt = self.interrupt.clone();
             let spawned = thread::Builder::new()
-                .name("zterm-session-close".into())
+                .name("voytty-session-close".into())
                 .spawn(move || {
                     let result = catch_unwind(AssertUnwindSafe(|| {
                         #[cfg(test)]
@@ -3209,7 +3209,7 @@ impl Drop for SessionActor {
         if let Some(worker) = worker {
             // Taking the handle is exclusive with `join_finished`; handing it
             // off is safe even when Drop runs on the actor worker itself.
-            spawn_background_reaper("zterm-session-reaper", move || {
+            spawn_background_reaper("voytty-session-reaper", move || {
                 let _ = worker.join();
             });
         }
@@ -3426,13 +3426,13 @@ fn dispatch_command(
                 .get(&attachment_id)
                 .is_some_and(|attachment| attachment.ever_active);
             let result = snapshot_applied(runtime, attachment_id, revision);
-            if result.is_ok() && zterm_diagnostics::detail_enabled() {
-                zterm_diagnostics::record(
-                    zterm_diagnostics::Event::new(zterm_diagnostics::Kind::SyncChanged)
-                        .level(zterm_diagnostics::Level::Debug)
+            if result.is_ok() && voytty_diagnostics::detail_enabled() {
+                voytty_diagnostics::record(
+                    voytty_diagnostics::Event::new(voytty_diagnostics::Kind::SyncChanged)
+                        .level(voytty_diagnostics::Level::Debug)
                         .session(actor.id)
                         .attachment(attachment_id)
-                        .stage(zterm_diagnostics::Stage::SnapshotAcknowledged)
+                        .stage(voytty_diagnostics::Stage::SnapshotAcknowledged)
                         .epoch(revision.get()),
                 );
             }
@@ -4073,13 +4073,13 @@ fn resize(
     runtime.viewport = size;
     runtime.last_revision = revision;
     actor.update_cached(runtime, false);
-    if zterm_diagnostics::detail_enabled() {
-        zterm_diagnostics::record(
-            zterm_diagnostics::Event::new(zterm_diagnostics::Kind::ViewportChanged)
-                .level(zterm_diagnostics::Level::Debug)
+    if voytty_diagnostics::detail_enabled() {
+        voytty_diagnostics::record(
+            voytty_diagnostics::Event::new(voytty_diagnostics::Kind::ViewportChanged)
+                .level(voytty_diagnostics::Level::Debug)
                 .session(actor.id)
                 .attachment(attachment_id)
-                .stage(zterm_diagnostics::Stage::Resize)
+                .stage(voytty_diagnostics::Stage::Resize)
                 .epoch(revision.get())
                 .viewport(size.columns, size.rows),
         );
@@ -4600,7 +4600,7 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
-    use zterm_platform::pty::ExplicitPtyCommand;
+    use voytty_platform::pty::ExplicitPtyCommand;
 
     #[test]
     fn invalid_working_directory_error_redacts_the_host_path() {
@@ -4608,7 +4608,7 @@ mod tests {
         let error = map_pty_error(PtyError::InvalidPath {
             kind: PtyPathKind::WorkingDirectory,
             path: secret_path.into(),
-            issue: zterm_platform::pty::PtyPathIssue::NotFound,
+            issue: voytty_platform::pty::PtyPathIssue::NotFound,
         });
 
         assert_eq!(error.kind(), DomainErrorKind::InvalidWorkingDirectory);
@@ -5325,7 +5325,7 @@ mod tests {
             )
             .expect("matching checkpoint resumes into a new attachment lifetime");
         let before_active = TerminalHostEffect::ClipboardWrite(
-            zterm_core::terminal::TerminalClipboardWrite::new("resume before active".to_owned())
+            voytty_core::terminal::TerminalClipboardWrite::new("resume before active".to_owned())
                 .expect("valid clipboard fixture"),
         );
         resumed
@@ -5350,7 +5350,7 @@ mod tests {
                 .is_none()
         );
         let after_active = TerminalHostEffect::ClipboardWrite(
-            zterm_core::terminal::TerminalClipboardWrite::new("resume after active".to_owned())
+            voytty_core::terminal::TerminalClipboardWrite::new("resume after active".to_owned())
                 .expect("valid clipboard fixture"),
         );
         resumed
@@ -5452,7 +5452,7 @@ mod tests {
             .expect("commit takeover while current replacement is awaiting acknowledgement");
 
         let before_active = TerminalHostEffect::ClipboardWrite(
-            zterm_core::terminal::TerminalClipboardWrite::new("takeover before active".to_owned())
+            voytty_core::terminal::TerminalClipboardWrite::new("takeover before active".to_owned())
                 .expect("valid clipboard fixture"),
         );
         replacement
@@ -5477,7 +5477,7 @@ mod tests {
                 .is_none()
         );
         let after_active = TerminalHostEffect::ClipboardWrite(
-            zterm_core::terminal::TerminalClipboardWrite::new("takeover after active".to_owned())
+            voytty_core::terminal::TerminalClipboardWrite::new("takeover after active".to_owned())
                 .expect("valid clipboard fixture"),
         );
         replacement
@@ -6044,15 +6044,15 @@ mod tests {
         let writer = capture
             .try_clone()
             .expect("logging/admission fixture succeeds");
-        let paths = zterm_platform::user_state::UserPaths::for_test(
+        let paths = voytty_platform::user_state::UserPaths::for_test(
             nix::unistd::geteuid().as_raw(),
             temporary.path().into(),
             temporary.path().join("state"),
             temporary.path().join("run"),
         );
         paths.prepare_state_directories().expect("private logs");
-        let recorder = zterm_diagnostics::Recorder::new(Arc::new(
-            zterm_platform::diagnostics::Store::new(paths.clone()),
+        let recorder = voytty_diagnostics::Recorder::new(Arc::new(
+            voytty_platform::diagnostics::Store::new(paths.clone()),
         ))
         .expect("safe recorder");
         let subscriber = tracing_subscriber::fmt()
@@ -6153,43 +6153,43 @@ mod tests {
         let records: Vec<_> = structured
             .lines()
             .map(|line| {
-                zterm_diagnostics::Record::decode(line.as_bytes()).expect("validated record")
+                voytty_diagnostics::Record::decode(line.as_bytes()).expect("validated record")
             })
             .collect();
         assert_eq!(
             records
                 .iter()
-                .filter(|record| record.event == zterm_diagnostics::Kind::SessionCreated)
+                .filter(|record| record.event == voytty_diagnostics::Kind::SessionCreated)
                 .count(),
             1
         );
         assert_eq!(
             records
                 .iter()
-                .filter(|record| record.event == zterm_diagnostics::Kind::ControllerDetached)
+                .filter(|record| record.event == voytty_diagnostics::Kind::ControllerDetached)
                 .count(),
             1
         );
         assert!(records.iter().any(|record| record.event
-            == zterm_diagnostics::Kind::ControllerAttached
+            == voytty_diagnostics::Kind::ControllerAttached
             && record.fields.attachment_id.is_some()));
         assert_eq!(
             records
                 .iter()
-                .filter(|record| record.event == zterm_diagnostics::Kind::NetworkChanged)
+                .filter(|record| record.event == voytty_diagnostics::Kind::NetworkChanged)
                 .count(),
             2
         );
         let degraded = records
             .iter()
             .find(|record| {
-                record.event == zterm_diagnostics::Kind::NetworkChanged
-                    && record.level == zterm_diagnostics::Level::Warn
+                record.event == voytty_diagnostics::Kind::NetworkChanged
+                    && record.level == voytty_diagnostics::Level::Warn
             })
             .expect("network degradation");
         assert_eq!(
             degraded.fields.stage,
-            Some(zterm_diagnostics::Stage::Degraded)
+            Some(voytty_diagnostics::Stage::Degraded)
         );
         assert_eq!(
             degraded.fields.category.as_deref(),

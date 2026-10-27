@@ -5,10 +5,10 @@ FROM alpine:3.23.3@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f
 
 ARG TARGETARCH
 
-COPY artifact.sh /usr/local/share/zterm-relay/artifact.sh
+COPY artifact.sh /usr/local/share/voytty-relay/artifact.sh
 
 RUN set -eu; \
-    . /usr/local/share/zterm-relay/artifact.sh; \
+    . /usr/local/share/voytty-relay/artifact.sh; \
     relay_arch="${TARGETARCH:-}"; \
     if [ -z "$relay_arch" ]; then \
         case "$(uname -m)" in \
@@ -33,7 +33,7 @@ FROM scratch AS runtime
 COPY --from=fetch --chown=0:0 /out/iroh-relay /usr/local/bin/iroh-relay
 COPY --from=fetch --chown=0:0 /rootfs/etc /etc
 
-LABEL org.opencontainers.image.title="zterm iroh relay" \
+LABEL org.opencontainers.image.title="voytty iroh relay" \
       org.opencontainers.image.description="Verified upstream iroh-relay binary in a minimal non-root runtime" \
       org.opencontainers.image.source="https://github.com/n0-computer/iroh"
 

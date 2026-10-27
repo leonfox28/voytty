@@ -71,7 +71,7 @@ grep -Fq "CI_NEEDS: \${{ toJSON(needs) }}" "$ci_workflow" \
     || fail "all job results must participate in the stable CI gate"
 grep -Fq 'run: python3 tools/ci/workflow-policy.py gate' "$ci_workflow" \
     || fail "CI must use the tested fail-closed gate policy"
-for android_asset in SHA256SUMS.sig zterm-android-arm64.apk zterm-android.json; do
+for android_asset in SHA256SUMS.sig voytty-android-arm64.apk voytty-android.json; do
     grep -Fq "release-output/$android_asset" "$workflow" \
         || fail "publication is missing $android_asset"
 done
@@ -124,9 +124,10 @@ if grep -Eq '^[[:space:]]{2}(push|pull_request|release):|secrets\.|environment: 
     fail "draft recovery must not sign, create, replace, or run implicitly"
 fi
 for recovery_boundary in 'find-green-main-ci.sh' 'digest-mismatch: error' \
-    'source/target/release/zterm-release-tool verify roundtrip' \
+    'cargo +1.98.0 run --manifest-path source/tools/release/Cargo.toml' \
+    '--locked --release -- verify roundtrip' \
     'actions/attest-build-provenance@' 'recover-draft.py publish'; do
-    grep -Fq "$recovery_boundary" "$recovery_workflow" \
+    grep -Fq -- "$recovery_boundary" "$recovery_workflow" \
         || fail "draft recovery bypasses a publication boundary: $recovery_boundary"
 done
 unpinned_ci_actions=$(grep -hE '^[[:space:]]*(- )?uses:' "$ci_workflow" \
@@ -150,7 +151,7 @@ secret_references=$(grep -Ec \
 frozen_checkouts=$(grep -Fc "ref: \${{ needs.validate.outputs.commit }}" "$workflow" || true)
 [ "$frozen_checkouts" -eq 3 ] \
     || fail "every downstream release job must check out the validated commit"
-grep -Fq 'target/release/zterm-release-tool sign release-output' "$workflow" \
+grep -Fq 'target/release/voytty-release-tool sign release-output' "$workflow" \
     || fail "the signing step must execute the tool built before secret exposure"
 grep -Fq "git rev-list -n 1 \"\$RELEASE_TAG\"" "$workflow" \
     || fail "publication must recheck the existing tag against the validated commit"
@@ -167,7 +168,7 @@ printf '%s\n' "$assemble_job" \
 printf '%s\n' "$assemble_job" | grep -Fq 'command -v shellcheck' \
     || fail "the generated installer gate must require ShellCheck"
 printf '%s\n' "$assemble_job" \
-    | grep -Fq 'shellcheck -s sh release-output/zterm-install.sh' \
+    | grep -Fq 'shellcheck -s sh release-output/voytty-install.sh' \
     || fail "the generated formal installer must be checked before signing"
 grep -Fq 'shellcheck -s sh install/install.sh tests/release/*.sh' "$justfile" \
     || fail "exact-main CI must ShellCheck the maintained installer sources"
@@ -205,10 +206,10 @@ linux_build_job=$(sed -n '/^  candidates-linux:/,/^  dependencies:/p' "$ci_workf
 for native_job in "$macos_build_job" "$linux_build_job"; do
     printf '%s\n' "$native_job" | grep -Fq 'sh tools/release/build-native.sh release-input' \
         || fail "main candidates bypass the shared shipped-binary owner"
-    printf '%s\n' "$native_job" | grep -Fq "ZTERM_SOURCE_COMMIT=\"\$GITHUB_SHA\"" \
+    printf '%s\n' "$native_job" | grep -Fq "VOYTTY_SOURCE_COMMIT=\"\$GITHUB_SHA\"" \
         || fail "main candidates must embed the exact source commit"
     printf '%s\n' "$native_job" \
-        | grep -Fq "run: release-input/zterm-\${{ matrix.target }}" \
+        | grep -Fq "run: release-input/voytty-\${{ matrix.target }}" \
         || fail "every native candidate must run its CLI without arguments"
     # Source-committed binaries pass the official distribution check; only
     # reviewed main may upload them.
@@ -217,7 +218,7 @@ for native_job in "$macos_build_job" "$linux_build_job"; do
         || fail "only main may upload source-committed native candidates"
     [ "$(printf '%s\n' "$native_job" | grep -Fc 'uses: actions/upload-artifact@')" -eq 1 ] \
         || fail "native candidate jobs must have exactly one gated upload"
-    if printf '%s\n' "$native_job" | grep -Fq 'zterm-release-tool'; then
+    if printf '%s\n' "$native_job" | grep -Fq 'voytty-release-tool'; then
         fail "native jobs must not build the private release tool"
     fi
     printf '%s\n' "$native_job" | grep -Fq "lookup-only: \${{ github.event_name != 'pull_request' }}" \
@@ -243,7 +244,7 @@ fi
 if grep -Eq 'relay-image.yml|packages: write|docker/build-push-action' "$workflow"; then
     fail "native releases must not publish relay images"
 fi
-printf '%s\n' "$assemble_job" | grep -Fq 'zterm-release-tool archive' \
+printf '%s\n' "$assemble_job" | grep -Fq 'voytty-release-tool archive' \
     || fail "Ubuntu assembly must own deterministic archives"
 if printf '%s\n' "$assemble_job" | grep -Fq 'tests/release/static.sh'; then
     fail "tag assembly must not rerun exact-green source policy"
@@ -391,7 +392,7 @@ if grep -Fq 'std::env::var("GITHUB_SHA")' "$build_script"; then
     fail "ambient ordinary-CI SHA must not mark a managed distribution build"
 fi
 
-for forbidden in sudo '.zterm/' '.bashrc' '.zshrc' 'launchctl' 'systemctl'; do
+for forbidden in sudo '.voytty/' '.bashrc' '.zshrc' 'launchctl' 'systemctl'; do
     if grep -Fq "$forbidden" "$bootstrap" "$template"; then
         fail "installer contains forbidden side effect token: $forbidden"
     fi

@@ -10,6 +10,6 @@ RUN apt-get update \
 
 WORKDIR /workspace
 
-ENV CARGO_TARGET_DIR=/tmp/zterm-foundation-target
+ENV CARGO_TARGET_DIR=/tmp/voytty-foundation-target
 
-CMD ["cargo", "test", "-p", "zterm-daemon", "--test", "iroh_network_gate", "--", "--ignored", "--nocapture"]
+CMD ["cargo", "test", "-p", "voytty-daemon", "--test", "iroh_network_gate", "--", "--ignored", "--nocapture"]

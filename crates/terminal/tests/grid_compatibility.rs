@@ -1,7 +1,7 @@
 //! Basic control compatibility without bypassing terminal resource budgets.
-use zterm_core::terminal::{TerminalSize, TerminalSurfaceDeltaResult};
-use zterm_core::terminal_selection::{TerminalTextPoint, TerminalTextRange};
-use zterm_terminal::{MAX_CELL_TEXT_BYTES, MAX_REPEAT_COUNT, TerminalModel};
+use voytty_core::terminal::{TerminalSize, TerminalSurfaceDeltaResult};
+use voytty_core::terminal_selection::{TerminalTextPoint, TerminalTextRange};
+use voytty_terminal::{MAX_CELL_TEXT_BYTES, MAX_REPEAT_COUNT, TerminalModel};
 
 fn model() -> TerminalModel {
     TerminalModel::new(TerminalSize::new(4, 24), 4).expect("model")

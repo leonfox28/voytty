@@ -1,9 +1,9 @@
 //! Notification framing must compose with ordinary output and other OSC owners.
 
-use zterm_core::terminal::{
+use voytty_core::terminal::{
     TerminalHostEffect, TerminalHostEffects, TerminalNotification, TerminalSideEvent, TerminalSize,
 };
-use zterm_terminal::TerminalModel;
+use voytty_terminal::TerminalModel;
 
 fn model() -> TerminalModel {
     TerminalModel::new(TerminalSize::new(3, 32), 10).expect("valid viewport")

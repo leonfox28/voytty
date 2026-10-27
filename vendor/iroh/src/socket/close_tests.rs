@@ -200,12 +200,12 @@ async fn slow_peer_close(block_reply: bool) {
 }
 
 #[tokio::test]
-async fn zterm_close_slow_peer_preserves_close_code_within_deadline() {
+async fn voytty_close_slow_peer_preserves_close_code_within_deadline() {
     slow_peer_close(false).await;
 }
 
 #[tokio::test]
-async fn zterm_close_slow_unresponsive_peer_keeps_deadline_failure() {
+async fn voytty_close_slow_unresponsive_peer_keeps_deadline_failure() {
     slow_peer_close(true).await;
 }
 
@@ -252,7 +252,7 @@ async fn pair() -> (
 }
 
 #[tokio::test]
-async fn zterm_close_cancelled_can_resume() {
+async fn voytty_close_cancelled_can_resume() {
     let (host, client, _incoming, _outgoing, gate) = pair().await;
     gate.block_sends(true);
     {
@@ -273,7 +273,7 @@ async fn zterm_close_cancelled_can_resume() {
 }
 
 #[tokio::test]
-async fn zterm_close_concurrent_call_waits_for_shutdown() {
+async fn voytty_close_concurrent_call_waits_for_shutdown() {
     let (host, client, _incoming, _outgoing, gate) = pair().await;
     gate.block_sends(true);
     let first = host.close();
@@ -296,7 +296,7 @@ async fn zterm_close_concurrent_call_waits_for_shutdown() {
 }
 
 #[tokio::test]
-async fn zterm_close_drop_after_cancel_aborts_remaining_tasks() {
+async fn voytty_close_drop_after_cancel_aborts_remaining_tasks() {
     let (host, client, incoming, _outgoing, gate) = pair().await;
     gate.block_sends(true);
     let sock = host.inner().unwrap().sock.clone();
@@ -336,7 +336,7 @@ async fn zterm_close_drop_after_cancel_aborts_remaining_tasks() {
 }
 
 #[tokio::test]
-async fn zterm_close_cancelled_actor_wait_retains_join_handle() {
+async fn voytty_close_cancelled_actor_wait_retains_join_handle() {
     let network = TestNetwork::new();
     let key = SecretKey::generate();
     let host = Endpoint::builder(presets::Minimal)

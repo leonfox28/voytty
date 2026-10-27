@@ -20,7 +20,7 @@ pub mod view;
 // Compile the exact desktop adapter only for the moved owner tests. This keeps
 // real direct/tunnel fixtures without a duplicate adapter or host dependency.
 #[cfg(all(test, unix))]
-extern crate self as zterm_client;
+extern crate self as voytty_client;
 #[cfg(all(test, unix))]
 #[allow(dead_code)]
 #[path = "../../daemon/src/client/transport.rs"]

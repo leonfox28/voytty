@@ -14,9 +14,9 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
+use voytty_core::{DeviceId, DomainErrorKind, OperationLease};
+use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, v2};
 use zeroize::Zeroize;
-use zterm_core::{DeviceId, DomainErrorKind, OperationLease};
-use zterm_proto::{DecodedFrame, FrameDecoder, WireKind, v2};
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Content-free remote failure text; remote diagnostics never cross this boundary.

@@ -8,13 +8,13 @@ mod state_fixture;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use zterm_cli::{Cli, InteractionMode, execute};
-use zterm_core::{DomainErrorKind, SessionName, SessionSelector};
-use zterm_daemon::bootstrap::bootstrap;
-use zterm_daemon::config::{TerminalIdentity, load_config, validate_setup_profile};
-use zterm_daemon::lifecycle::{DaemonLauncher, run_local_only_daemon_for_test};
-use zterm_daemon::local_ipc::{LocalAttachmentClient, LocalAttachmentEvent, LocalClient};
-use zterm_daemon::operations::LocalRuntime;
+use voytty_cli::{Cli, InteractionMode, execute};
+use voytty_core::{DomainErrorKind, SessionName, SessionSelector};
+use voytty_daemon::bootstrap::bootstrap;
+use voytty_daemon::config::{TerminalIdentity, load_config, validate_setup_profile};
+use voytty_daemon::lifecycle::{DaemonLauncher, run_local_only_daemon_for_test};
+use voytty_daemon::local_ipc::{LocalAttachmentClient, LocalAttachmentEvent, LocalClient};
+use voytty_daemon::operations::LocalRuntime;
 
 use state_fixture::TestState;
 
@@ -28,7 +28,7 @@ fn runtime(state: &TestState) -> LocalRuntime {
 }
 
 async fn command(runtime: &LocalRuntime, value: Option<&str>) -> String {
-    let mut args = vec!["zterm", "config", "terminal-identity"];
+    let mut args = vec!["voytty", "config", "terminal-identity"];
     args.extend(value);
     let cli = Cli::try_parse_from(args).expect("parse config command");
     assert_eq!(cli.records_diagnostics(), value.is_some());
@@ -44,8 +44,8 @@ async fn configuration_is_validated_persisted_and_never_starts_a_daemon() {
     let state = TestState::new();
     let runtime = runtime(&state);
     for args in [
-        vec!["zterm", "config", "terminal-identity"],
-        vec!["zterm", "config", "terminal-identity", "ghostty"],
+        vec!["voytty", "config", "terminal-identity"],
+        vec!["voytty", "config", "terminal-identity", "ghostty"],
     ] {
         let error = execute(
             Cli::try_parse_from(args).expect("parse"),
@@ -54,12 +54,12 @@ async fn configuration_is_validated_persisted_and_never_starts_a_daemon() {
         )
         .await
         .expect_err("requires setup");
-        assert!(error.to_string().contains("run `zterm setup`"));
+        assert!(error.to_string().contains("run `voytty setup`"));
     }
     assert!(!state.paths.state_root().exists());
     assert!(!state.paths.runtime_dir().exists());
     for invalid in ["", "kitty", "Ghostty", "ghostty\n"] {
-        assert!(Cli::try_parse_from(["zterm", "config", "terminal-identity", invalid]).is_err());
+        assert!(Cli::try_parse_from(["voytty", "config", "terminal-identity", invalid]).is_err());
     }
     let requested = validate_setup_profile(
         "identity-host",
@@ -71,7 +71,7 @@ async fn configuration_is_validated_persisted_and_never_starts_a_daemon() {
     let key_before = std::fs::read(state.paths.identity()).expect("identity");
     let database_before = std::fs::read(state.paths.database()).expect("database");
     let config_before = std::fs::read(state.paths.config()).expect("config");
-    assert_eq!(command(&runtime, None).await, "Terminal identity: zterm\n");
+    assert_eq!(command(&runtime, None).await, "Terminal identity: voytty\n");
     assert_eq!(
         std::fs::read(state.paths.config()).expect("config"),
         config_before
@@ -99,7 +99,7 @@ async fn configuration_is_validated_persisted_and_never_starts_a_daemon() {
         command(&runtime, None).await,
         "Terminal identity: ghostty\n"
     );
-    command(&runtime, Some("zterm")).await;
+    command(&runtime, Some("voytty")).await;
     assert_eq!(
         load_config(&state.paths).expect("restored config"),
         requested
@@ -142,19 +142,19 @@ async fn running_host_applies_identity_to_new_shells_and_delivers_their_notifica
             Err(error) => panic!("daemon readiness: {error}"),
         }
     };
-    command(&runtime, Some("zterm")).await;
+    command(&runtime, Some("voytty")).await;
     let mut native = LocalAttachmentClient::connect_main(state.paths.socket(), None)
         .await
         .expect("native session");
     synchronize(&mut native).await;
-    assert_identity_notification(&mut native, "zterm").await;
+    assert_identity_notification(&mut native, "voytty").await;
     command(&runtime, Some("ghostty")).await;
     let repeated = runtime
         .setup(&requested)
         .await
         .expect("live setup preserves preference");
     assert_eq!(repeated.config.terminal_identity, TerminalIdentity::Ghostty);
-    assert_identity_notification(&mut native, "zterm").await;
+    assert_identity_notification(&mut native, "voytty").await;
 
     let created = client
         .create_session(&SessionName::new("compatible").expect("name"), None, None)
@@ -170,7 +170,7 @@ async fn running_host_applies_identity_to_new_shells_and_delivers_their_notifica
     .expect("compatible session");
     synchronize(&mut compatible).await;
     assert_identity_notification(&mut compatible, "ghostty").await;
-    command(&runtime, Some("zterm")).await;
+    command(&runtime, Some("voytty")).await;
     assert_identity_notification(&mut compatible, "ghostty").await;
     let restored = client
         .create_session(&SessionName::new("restored").expect("name"), None, None)
@@ -185,7 +185,7 @@ async fn running_host_applies_identity_to_new_shells_and_delivers_their_notifica
     .await
     .expect("restored attachment");
     synchronize(&mut restored).await;
-    assert_identity_notification(&mut restored, "zterm").await;
+    assert_identity_notification(&mut restored, "voytty").await;
     assert_eq!(client.readiness().await.expect("same daemon"), started);
     assert_eq!(
         client
@@ -205,9 +205,9 @@ async fn running_host_applies_identity_to_new_shells_and_delivers_their_notifica
 
 #[tokio::test]
 async fn legacy_bash_prompt_is_usable_without_bracketed_paste() {
-    use zterm_daemon::lifecycle::run_local_only_daemon_with_sessions_for_test;
-    use zterm_daemon::session::SessionService;
-    use zterm_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
+    use voytty_daemon::lifecycle::run_local_only_daemon_with_sessions_for_test;
+    use voytty_daemon::session::SessionService;
+    use voytty_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
 
     let state = TestState::new();
     let requested = validate_setup_profile("legacy-bash", "official-n0", None).expect("profile");
@@ -215,12 +215,12 @@ async fn legacy_bash_prompt_is_usable_without_bracketed_paste() {
     let cwd = state.paths.state_root().to_path_buf();
     let rc = cwd.join("bash.rc");
     std::fs::write(&rc, format!(
-        "bind 'set enable-bracketed-paste off'\nPS1='fixture$ '\nTERM_PROGRAM=zterm\nTERM=xterm-256color\nCOLORTERM=truecolor\nTERM_PROGRAM_VERSION={}\n",
+        "bind 'set enable-bracketed-paste off'\nPS1='fixture$ '\nTERM_PROGRAM=voytty\nTERM=xterm-256color\nCOLORTERM=truecolor\nTERM_PROGRAM_VERSION={}\n",
         env!("CARGO_PKG_VERSION")
     )).expect("private bash startup");
     let sessions = SessionService::with_spawner(
         setup.device_id,
-        zterm_core::ResourceLimits::default(),
+        voytty_core::ResourceLimits::default(),
         move |size, _| {
             let session = PtyHost::new()
                 .spawn(
@@ -232,7 +232,7 @@ async fn legacy_bash_prompt_is_usable_without_bracketed_paste() {
                     PtySize::new(size.rows, size.columns),
                 )
                 .map_err(|error| {
-                    zterm_daemon::error::DaemonError::new(
+                    voytty_daemon::error::DaemonError::new(
                         DomainErrorKind::StoreUnavailable,
                         error.to_string(),
                     )
@@ -255,7 +255,7 @@ async fn legacy_bash_prompt_is_usable_without_bracketed_paste() {
         .expect("bash attachment");
     let modes = synchronize_prompt(&mut terminal, true).await;
     assert!(!modes.bracketed_paste, "exercise the legacy prompt path");
-    assert_identity_notification(&mut terminal, "zterm").await;
+    assert_identity_notification(&mut terminal, "voytty").await;
     client.stop(true).await.expect("stop fixture");
     drop(terminal);
     daemon
@@ -265,7 +265,7 @@ async fn legacy_bash_prompt_is_usable_without_bracketed_paste() {
 }
 
 async fn synchronize(client: &mut LocalAttachmentClient) {
-    let account = zterm_platform::account::EffectiveAccount::current().expect("account");
+    let account = voytty_platform::account::EffectiveAccount::current().expect("account");
     synchronize_prompt(
         client,
         account
@@ -279,7 +279,7 @@ async fn synchronize(client: &mut LocalAttachmentClient) {
 async fn synchronize_prompt(
     client: &mut LocalAttachmentClient,
     bash: bool,
-) -> zterm_core::terminal::TerminalModes {
+) -> voytty_core::terminal::TerminalModes {
     let mut snapshot = client.take_initial_snapshot().expect("snapshot");
     let deadline = Instant::now() + DEADLINE;
     // A quiet stream or arbitrary startup delta does not prove shell readiness:
@@ -327,7 +327,7 @@ async fn synchronize_prompt(
     }
 }
 
-fn shell_prompt_ready(surface: &zterm_core::terminal::TerminalSurface, bash: bool) -> bool {
+fn shell_prompt_ready(surface: &voytty_core::terminal::TerminalSurface, bash: bool) -> bool {
     if surface.modes.bracketed_paste {
         return true;
     }

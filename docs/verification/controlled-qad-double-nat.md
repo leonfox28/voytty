@@ -69,7 +69,7 @@ varied by destination. Case D has only one controlled QAD destination, so it
 does not measure whether that mapping varies; it proves the narrower fact that
 the inner mappings learned from controlled QAD promoted to Direct. In this
 nested lab, outer Colima/TUN endpoint-dependent mapping or missing hairpin
-behavior remains the lab-specific explanation to test, not a missing zterm QNT
+behavior remains the lab-specific explanation to test, not a missing voytty QNT
 candidate-exchange path.
 
 This does not prove that the user's company/home topology has the same NAT
@@ -89,7 +89,7 @@ acceptance. No production Relay/profile behavior was changed.
   (`None`).
 - Linux unit verdicts: 2 passed, covering the accepted A/B/C/D matrix and hard
   failure of B, C, or D.
-- Linux Clippy for `zterm-daemon --test iroh_network_gate` with `-D warnings`:
+- Linux Clippy for `voytty-daemon --test iroh_network_gate` with `-D warnings`:
   passed.
 - Workspace formatting check: passed after formatting.
 

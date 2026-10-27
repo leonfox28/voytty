@@ -168,8 +168,8 @@ jobs:
         id: trim-noq
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.compiled-noq.outputs.cache-hit != 'true'
         env:
-          ZTERM_CACHE_MANIFEST_PATH: vendor/noq-proto/Cargo.toml
-          ZTERM_CACHE_TARGET_DIR: target/noq-tests
+          VOYTTY_CACHE_MANIFEST_PATH: vendor/noq-proto/Cargo.toml
+          VOYTTY_CACHE_TARGET_DIR: target/noq-tests
         run: sh tools/ci/trim-rust-cache.sh
       - name: Save main noq test dependencies
         if: steps.trim-noq.outputs.cacheable == 'true'
@@ -184,8 +184,8 @@ jobs:
         id: trim-iroh
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.compiled-iroh.outputs.cache-hit != 'true'
         env:
-          ZTERM_CACHE_MANIFEST_PATH: vendor/iroh/Cargo.toml
-          ZTERM_CACHE_TARGET_DIR: target/iroh-tests
+          VOYTTY_CACHE_MANIFEST_PATH: vendor/iroh/Cargo.toml
+          VOYTTY_CACHE_TARGET_DIR: target/iroh-tests
         run: sh tools/ci/trim-rust-cache.sh
       - name: Save main iroh test dependencies
         if: steps.trim-iroh.outputs.cacheable == 'true'
@@ -248,12 +248,12 @@ jobs:
         env:
           RELEASE_TARGET: ${{ matrix.target }}
         run: |
-          export ZTERM_SOURCE_COMMIT="$GITHUB_SHA"
+          export VOYTTY_SOURCE_COMMIT="$GITHUB_SHA"
           SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
           export SOURCE_DATE_EPOCH
           sh tools/release/build-native.sh release-input
       - name: Run the candidate CLI without arguments
-        run: release-input/zterm-${{ matrix.target }}
+        run: release-input/voytty-${{ matrix.target }}
       - name: Upload the main native candidate and identity
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -279,7 +279,7 @@ jobs:
           key: ${{ steps.compiled-native.outputs.cache-primary-key }}
       - name: Explain reproduction on failure
         if: failure()
-        run: echo "Reproduce on the exact native host with RELEASE_TARGET=${{ matrix.target }} sh tools/release/build-native.sh release-input with explicit ZTERM_SOURCE_COMMIT and SOURCE_DATE_EPOCH." >> "$GITHUB_STEP_SUMMARY"
+        run: echo "Reproduce on the exact native host with RELEASE_TARGET=${{ matrix.target }} sh tools/release/build-native.sh release-input with explicit VOYTTY_SOURCE_COMMIT and SOURCE_DATE_EPOCH." >> "$GITHUB_STEP_SUMMARY"
 
   candidates-linux:
     needs: changes
@@ -343,12 +343,12 @@ jobs:
         env:
           RELEASE_TARGET: ${{ matrix.target }}
         run: |
-          export ZTERM_SOURCE_COMMIT="$GITHUB_SHA"
+          export VOYTTY_SOURCE_COMMIT="$GITHUB_SHA"
           SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
           export SOURCE_DATE_EPOCH
           sh tools/release/build-native.sh release-input
       - name: Run the candidate CLI without arguments
-        run: release-input/zterm-${{ matrix.target }}
+        run: release-input/voytty-${{ matrix.target }}
       - name: Upload the main native candidate and identity
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -374,7 +374,7 @@ jobs:
           key: ${{ steps.compiled-native.outputs.cache-primary-key }}
       - name: Explain reproduction on failure
         if: failure()
-        run: echo "Reproduce in the pinned Debian container with RELEASE_TARGET=${{ matrix.target }} sh tools/release/build-native.sh release-input with explicit ZTERM_SOURCE_COMMIT and SOURCE_DATE_EPOCH." >> "$GITHUB_STEP_SUMMARY"
+        run: echo "Reproduce in the pinned Debian container with RELEASE_TARGET=${{ matrix.target }} sh tools/release/build-native.sh release-input with explicit VOYTTY_SOURCE_COMMIT and SOURCE_DATE_EPOCH." >> "$GITHUB_STEP_SUMMARY"
 
   dependencies:
     name: Dependency policy
@@ -517,10 +517,10 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
       - name: Build and check the Android candidate
         env:
-          ZTERM_ANDROID_SOURCE_COMMIT: ${{ github.sha }}
+          VOYTTY_ANDROID_SOURCE_COMMIT: ${{ github.sha }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
-            export ZTERM_SOURCE_COMMIT="$GITHUB_SHA"
+            export VOYTTY_SOURCE_COMMIT="$GITHUB_SHA"
           fi
           sh tools/android/build.sh --build-cache :app:assembleDebug :app:assembleRelease :app:lintDebug :app:lintRelease :app:testDebugUnitTest
       - name: Inspect the unsigned release APK
@@ -666,7 +666,7 @@ jobs:
           path: release-input
 
       - name: Build the single archive and manifest owner
-        run: cargo +1.98.0 build --locked --release --package zterm-release-tool
+        run: cargo +1.98.0 build --locked --release --package voytty-release-tool
 
       - name: Archive the three raw native candidates once
         run: |
@@ -677,10 +677,10 @@ jobs:
             aarch64-apple-darwin \
             aarch64-unknown-linux-gnu \
             x86_64-unknown-linux-gnu; do
-            chmod 700 "release-input/zterm-$target"
-            target/release/zterm-release-tool archive \
-              "release-input/zterm-$target" \
-              "release-input/zterm-$target.tar.gz"
+            chmod 700 "release-input/voytty-$target"
+            target/release/voytty-release-tool archive \
+              "release-input/voytty-$target" \
+              "release-input/voytty-$target.tar.gz"
           done
 
       - name: Assemble and verify the exact unsigned inventory
@@ -689,16 +689,16 @@ jobs:
         run: |
           set -eu
           version=$(cargo +1.98.0 metadata --locked --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "zterm-cli") | .version')
+            | jq -r '.packages[] | select(.name == "voytty-cli") | .version')
           released_at=$(date -u -d "@$(git show -s --format=%ct HEAD)" '+%Y-%m-%dT%H:%M:%SZ')
-          target/release/zterm-release-tool \
+          target/release/voytty-release-tool \
             prepare release-input release-output "v$version" "$SOURCE_COMMIT" "$released_at"
-          target/release/zterm-release-tool verify-unsigned release-output
+          target/release/voytty-release-tool verify-unsigned release-output
 
       - name: Check the generated installer with ShellCheck
         run: |
           command -v shellcheck
-          shellcheck -s sh release-output/zterm-install.sh
+          shellcheck -s sh release-output/voytty-install.sh
 
       - name: Upload the unsigned exact inventory
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

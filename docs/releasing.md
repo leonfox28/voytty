@@ -111,14 +111,14 @@ lookup chooses the newest retained assembly from the **exact successful main
 run**, never a PR run or another commit. Tag validation fixes that artifact ID,
 and the downloader treats digest mismatches as errors.
 
-The tag workflow does not rebuild `zterm` or rerun ordinary CI. It rebuilds the
+The tag workflow does not rebuild `voytty` or rerun ordinary CI. It rebuilds the
 small reviewed signing tool before exposing the key, re-verifies the candidate
 and source SHA, platform-signs the retained APK, signs the exact native manifest and complete
 SHA256SUMS inventory, and tests the final signed installers
 on all three targets. It then creates one late draft, downloads and verifies its
 assets, attests those exact bytes, publishes, and requires `immutable: true`.
-The eleven assets include the existing eight native assets, `zterm-android-arm64.apk`,
-`zterm-android.json`, and `SHA256SUMS.sig`. No relay image is published.
+The eleven assets include the existing eight native assets, `voytty-android-arm64.apk`,
+`voytty-android.json`, and `SHA256SUMS.sig`. No relay image is published.
 The native schema-v1 manifest/installer stays unchanged; the signed checksum
 inventory authenticates all assets, including Android and its build metadata.
 
@@ -130,14 +130,17 @@ approval or extra full test suite is introduced.
 ## Android package and signing
 
 Android is a directly installable APK for API 26+, arm64-v8a, targeting API 36.
-The formal package is `io.github.leonfox28.zterm`; `.dev` remains the separate
+The formal package is `io.github.leonfox28.voytty`; `.dev` remains the separate
 local development package. No store or Android automatic updater is introduced.
 `release/android-certificate.sha256` pins the existing acceptance certificate,
-so public releases install over that package without deleting its data.
+so subsequent voytty releases install over that package without deleting its
+data. The renamed package is a separate installation from zterm.
 
-The protected `release` environment holds `ZTERM_ANDROID_KEYSTORE_BASE64`
-(PKCS12, alias `zterm`) and `ZTERM_ANDROID_KEYSTORE_PASSWORD`, independently of
-`ZTERM_RELEASE_SIGNING_KEY`. Provision them through `gh secret set --env release`
+The protected `release` environment retains `ZTERM_ANDROID_KEYSTORE_BASE64`
+(PKCS12, existing alias `zterm`) and `ZTERM_ANDROID_KEYSTORE_PASSWORD`, independently
+of `ZTERM_RELEASE_SIGNING_KEY`. The workflow maps these stored secret names to
+the corresponding `VOYTTY_*` process variables. The repository rename does not
+rotate signing keys or change the pinned certificate. Provision secrets through `gh secret set --env release`
 using stdin; never commit the keystore/password or expose them in command arguments.
 The signing helper deletes temporary credentials and verifies that signing changed
 no ZIP payload entry. It checks the package, source identity, certificate, ABI,
@@ -148,7 +151,7 @@ SDK floors, and every packaged native library's 16 KB alignment.
 patch at most 999. Stable stage is 99; `alpha.1..29`, `beta.1..29`, and `rc.1..38`
 occupy stages 1..29, 31..59, and 61..98. The result must fit Android's maximum
 2100000000. Thus v0.1.26 is 102699, newer than the prior acceptance build 1016.
-Local `-PztermVersionCode` overrides are for acceptance builds, not formal CI.
+Local `-PvoyttyVersionCode` overrides are for acceptance builds, not formal CI.
 
 ## Failure and recovery
 

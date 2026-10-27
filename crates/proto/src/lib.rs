@@ -1,4 +1,4 @@
-//! Versioned protobuf DTOs and the one bounded zterm frame codec.
+//! Versioned protobuf DTOs and the one bounded voytty frame codec.
 
 use std::fmt;
 
@@ -8,13 +8,12 @@ mod terminal_links;
 pub mod upload;
 use terminal_links::{LinkEncoder, decode_links, decode_row};
 #[cfg(test)]
-use zterm_core::terminal::{TerminalCell, TerminalSurfaceRow};
+use voytty_core::terminal::{TerminalCell, TerminalSurfaceRow};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use prost::Message;
-use zeroize::{Zeroize, Zeroizing};
-use zterm_core::terminal::{
+use voytty_core::terminal::{
     ActiveScreen, TerminalAppearance, TerminalClipboardWrite, TerminalColor, TerminalColorProfile,
     TerminalColorSnapshot, TerminalColorValue, TerminalCursor, TerminalHistoryWindowAnchor,
     TerminalHistoryWindowQuery, TerminalKeyboardFlags, TerminalModes, TerminalMouseEncoding,
@@ -23,7 +22,7 @@ use zterm_core::terminal::{
     TerminalSurfaceHistoryWindowResult, TerminalSurfaceRowPatch, TerminalSurfaceSnapshot,
     TerminalUnderline, TerminalViewportDisposition,
 };
-use zterm_core::{
+use voytty_core::{
     AttachmentId, AuthGeneration, AuthorizationStatus, Capabilities, ConnectionAttemptId,
     ConnectionError, ConnectionHello, ConnectionWelcome, DaemonIncarnation, DeviceAlias,
     DeviceAliasError, DeviceId, DeviceSummary, DeviceSummaryError, EphemeralOperationId,
@@ -32,11 +31,12 @@ use zterm_core::{
     PairSecret, PairSecretError, PairTicketError, PairTicketFields, RelayHint, RelayHintError,
     ResumeViewId, SessionId,
 };
+use zeroize::{Zeroize, Zeroizing};
 
 /// Generated version-two protocol DTOs.
 pub mod v2 {
     #![allow(missing_docs)]
-    include!(concat!(env!("OUT_DIR"), "/zterm.v2.rs"));
+    include!(concat!(env!("OUT_DIR"), "/voytty.v2.rs"));
 }
 
 impl fmt::Debug for v2::WireFrame {
@@ -430,10 +430,10 @@ impl fmt::Debug for v2::TerminalInput {
     }
 }
 
-/// Product wire major shared by local IPC, `zterm/2`, and `zterm-pair/2`.
-pub const WIRE_MAJOR: u32 = zterm_core::WIRE_MAJOR;
+/// Product wire major shared by local IPC, `voytty/2`, and `voytty-pair/2`.
+pub const WIRE_MAJOR: u32 = voytty_core::WIRE_MAJOR;
 /// Current persistent-state schema exposed in readiness/status.
-pub const STATE_SCHEMA_VERSION: u32 = zterm_core::STATE_SCHEMA_VERSION;
+pub const STATE_SCHEMA_VERSION: u32 = voytty_core::STATE_SCHEMA_VERSION;
 /// Maximum encoded `WireFrame` body size.
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 /// Maximum concrete control-message payload size.
@@ -636,7 +636,7 @@ impl WireKind {
             // fail before it can enter the tunnel adapter.
             MAX_LOCAL_SESSION_TUNNEL_DATA_BYTES + 4
         } else if matches!(self, Self::UploadChunk) {
-            zterm_core::upload::UPLOAD_CHUNK_BYTES + 64
+            voytty_core::upload::UPLOAD_CHUNK_BYTES + 64
         } else {
             MAX_CONTROL_PAYLOAD_BYTES
         }
@@ -769,7 +769,7 @@ impl DecodedFrame {
     }
 }
 
-/// Errors returned by the zterm frame/protobuf validation boundary.
+/// Errors returned by the voytty frame/protobuf validation boundary.
 #[derive(Debug)]
 pub enum ProtocolError {
     /// Length prefix exceeded unsigned 64-bit varint syntax.
@@ -802,7 +802,7 @@ pub enum ProtocolError {
     },
     /// Domain ID field had the wrong fixed width.
     InvalidIdentifier(IdLengthError),
-    /// A wire viewport did not fit the zterm-owned non-zero `u16` boundary.
+    /// A wire viewport did not fit the voytty-owned non-zero `u16` boundary.
     InvalidTerminalSize {
         /// Wire row count.
         rows: u32,
@@ -816,7 +816,7 @@ pub enum ProtocolError {
     /// A same-UID connection observation was unspecified or unsupported.
     InvalidLocalConnectionStage,
     /// An upload field violated its shared domain contract.
-    InvalidUpload(zterm_core::DomainErrorKind),
+    InvalidUpload(voytty_core::DomainErrorKind),
 }
 
 impl fmt::Display for ProtocolError {
@@ -1394,7 +1394,7 @@ impl TryFrom<v2::TerminalColorProfile> for TerminalColorProfile {
     fn try_from(profile: v2::TerminalColorProfile) -> Result<Self, Self::Error> {
         use v2::terminal_color_observation::Value;
         let invalid = || ProtocolError::InvalidTerminalSemanticField("color_profile");
-        if profile.values.len() != zterm_core::terminal::TERMINAL_COLOR_SLOTS {
+        if profile.values.len() != voytty_core::terminal::TERMINAL_COLOR_SLOTS {
             return Err(invalid());
         }
         let mut result = Self {
@@ -1440,12 +1440,12 @@ fn required_colors(
 ) -> Result<TerminalColorSnapshot, ProtocolError> {
     let invalid = || ProtocolError::InvalidTerminalSemanticField("colors");
     let c = c.ok_or_else(invalid)?;
-    if c.inherited_sources.len() != zterm_core::terminal::TERMINAL_COLOR_SLOTS {
+    if c.inherited_sources.len() != voytty_core::terminal::TERMINAL_COLOR_SLOTS {
         return Err(invalid());
     }
     Ok(TerminalColorSnapshot {
         profile: c.profile.ok_or_else(invalid)?.try_into()?,
-        changed_at: zterm_core::Revision::new(c.changed_at),
+        changed_at: voytty_core::Revision::new(c.changed_at),
         reverse: c.reverse,
         custom_cursor: c.custom_cursor,
         inherited_sources: c
@@ -1559,9 +1559,9 @@ impl From<TerminalCursor> for v2::TerminalCursor {
         Self {
             presentation: Some(v2::TerminalCursorPresentation {
                 shape: match value.presentation.shape {
-                    zterm_core::terminal::TerminalCursorShape::Block => 1,
-                    zterm_core::terminal::TerminalCursorShape::Beam => 2,
-                    zterm_core::terminal::TerminalCursorShape::Underline => 3,
+                    voytty_core::terminal::TerminalCursorShape::Block => 1,
+                    voytty_core::terminal::TerminalCursorShape::Beam => 2,
+                    voytty_core::terminal::TerminalCursorShape::Underline => 3,
                 },
                 blinking: value.presentation.blinking,
             }),
@@ -1584,11 +1584,11 @@ impl TryFrom<v2::TerminalCursor> for TerminalCursor {
                     "cursor_presentation",
                 ))?;
         Ok(Self {
-            presentation: zterm_core::terminal::TerminalCursorPresentation {
+            presentation: voytty_core::terminal::TerminalCursorPresentation {
                 shape: match presentation.shape {
-                    1 => zterm_core::terminal::TerminalCursorShape::Block,
-                    2 => zterm_core::terminal::TerminalCursorShape::Beam,
-                    3 => zterm_core::terminal::TerminalCursorShape::Underline,
+                    1 => voytty_core::terminal::TerminalCursorShape::Block,
+                    2 => voytty_core::terminal::TerminalCursorShape::Beam,
+                    3 => voytty_core::terminal::TerminalCursorShape::Underline,
                     _ => return Err(ProtocolError::InvalidTerminalSemanticField("cursor_shape")),
                 },
                 blinking: presentation.blinking,
@@ -1644,8 +1644,8 @@ fn terminal_scroll_metrics(
     value: v2::TerminalScrollMetrics,
 ) -> Result<TerminalScrollMetrics, ProtocolError> {
     Ok(TerminalScrollMetrics {
-        epoch: zterm_core::Revision::new(value.epoch),
-        revision: zterm_core::Revision::new(value.revision),
+        epoch: voytty_core::Revision::new(value.epoch),
+        revision: voytty_core::Revision::new(value.revision),
         offset_from_bottom: value.offset_from_bottom,
         max_offset_from_bottom: value.max_offset_from_bottom,
         viewport_rows: u16::try_from(value.viewport_rows).map_err(|_| {
@@ -1672,7 +1672,7 @@ fn terminal_surface_message(surface: TerminalSurface) -> v2::TerminalSurface {
 
 fn terminal_surface_from_message(
     value: v2::TerminalSurface,
-    revision: zterm_core::Revision,
+    revision: voytty_core::Revision,
 ) -> Result<TerminalSurface, ProtocolError> {
     let links = decode_links(value.hyperlinks)?;
     let size = TerminalSize::try_from(v2::TerminalViewport {
@@ -1737,7 +1737,7 @@ pub fn terminal_surface_snapshot_from_message(
         .attachment_id
         .ok_or(ProtocolError::InvalidTerminalSemanticField("attachment_id"))?
         .try_into()?;
-    let revision = zterm_core::Revision::new(value.revision);
+    let revision = voytty_core::Revision::new(value.revision);
     let surface = terminal_surface_from_message(
         value
             .surface
@@ -1796,8 +1796,8 @@ pub fn terminal_surface_delta_from_message(
     let delta = TerminalSurfaceDelta {
         application_title: value.application_title,
         colors: required_colors(value.colors)?,
-        from_revision: zterm_core::Revision::new(value.from_revision),
-        to_revision: zterm_core::Revision::new(value.to_revision),
+        from_revision: voytty_core::Revision::new(value.from_revision),
+        to_revision: voytty_core::Revision::new(value.to_revision),
         size: TerminalSize::try_from(v2::TerminalViewport {
             rows: value.row_count,
             columns: value.column_count,
@@ -1940,8 +1940,8 @@ pub fn terminal_surface_history_window_from_message(
                     "history_window_anchor",
                 ))?;
             let anchor = TerminalHistoryWindowAnchor {
-                epoch: zterm_core::Revision::new(anchor.epoch),
-                revision: zterm_core::Revision::new(anchor.revision),
+                epoch: voytty_core::Revision::new(anchor.epoch),
+                revision: voytty_core::Revision::new(anchor.revision),
                 max_offset_from_bottom: anchor.max_offset_from_bottom,
                 viewport: TerminalSize::try_from(v2::TerminalViewport {
                     rows: anchor.viewport_rows,
@@ -1988,8 +1988,8 @@ pub fn terminal_surface_history_window_from_message(
                 ));
             }
             let fields = {
-                let epoch = zterm_core::Revision::new(value.current_epoch);
-                let revision = zterm_core::Revision::new(value.current_revision);
+                let epoch = voytty_core::Revision::new(value.current_epoch);
+                let revision = voytty_core::Revision::new(value.current_revision);
                 (epoch, revision)
             };
             if outcome == v2::TerminalHistoryWindowOutcome::Changed {
@@ -2014,7 +2014,7 @@ pub fn terminal_surface_history_window_from_message(
 }
 
 /// Fixed text prefix before the base64url-no-pad ticket payload.
-pub const PAIR_TICKET_PREFIX: &str = "zterm-pair-v1:";
+pub const PAIR_TICKET_PREFIX: &str = "voytty-pair-v1:";
 /// Version of the persisted relay route cache.
 pub const RELAY_ROUTE_CACHE_VERSION: u32 = 1;
 /// Maximum bytes in a persisted relay route cache blob before decoding.
@@ -2023,9 +2023,9 @@ pub const RELAY_ROUTE_CACHE_VERSION: u32 = 1;
 /// a generous bound that still rejects a malformed or hostile oversized blob.
 pub const MAX_RELAY_ROUTE_CACHE_BYTES: usize = 16 * 1024;
 /// Maximum hello or pair frame body bytes for kinds 100-105.
-pub const MAX_PAIR_HELLO_FRAME_BYTES: usize = zterm_core::MAX_PAIR_HELLO_FRAME_BYTES;
+pub const MAX_PAIR_HELLO_FRAME_BYTES: usize = voytty_core::MAX_PAIR_HELLO_FRAME_BYTES;
 /// Maximum total bytes exchanged in one pairing handshake.
-pub const MAX_PAIR_HANDSHAKE_BYTES: usize = zterm_core::MAX_PAIR_HANDSHAKE_BYTES;
+pub const MAX_PAIR_HANDSHAKE_BYTES: usize = voytty_core::MAX_PAIR_HANDSHAKE_BYTES;
 
 /// Failure while encoding or decoding a pairing ticket text.
 #[derive(Debug)]
@@ -2164,7 +2164,7 @@ impl TryFrom<v2::PairTicketV1> for (PairTicketFields, PairSecret) {
         let host_device_bytes = host_device_id.unwrap_or_default().value;
         let host_device_id =
             DeviceId::from_bytes(&host_device_bytes).map_err(TicketTextError::InvalidIdentifier)?;
-        let offer_id = zterm_core::PairOfferId::from_bytes(&offer_id)
+        let offer_id = voytty_core::PairOfferId::from_bytes(&offer_id)
             .map_err(TicketTextError::InvalidIdentifier)?;
         let secret =
             PairSecret::from_slice(secret.as_slice()).map_err(TicketTextError::InvalidSecret)?;
@@ -2185,7 +2185,7 @@ impl TryFrom<v2::PairTicketV1> for (PairTicketFields, PairSecret) {
     }
 }
 
-/// Encodes a pairing ticket as `zterm-pair-v1:` + base64url-no-pad text.
+/// Encodes a pairing ticket as `voytty-pair-v1:` + base64url-no-pad text.
 ///
 /// The secret-bearing fields are already validated, so a well-formed ticket
 /// always fits the 16 KiB text bound. Every temporary prost/encoded secret
@@ -2205,7 +2205,7 @@ pub fn encode_pair_ticket(fields: &PairTicketFields, secret: &PairSecret) -> Str
     text
 }
 
-/// Decodes and validates a `zterm-pair-v1:` ticket text.
+/// Decodes and validates a `voytty-pair-v1:` ticket text.
 ///
 /// The 16 KiB bound is enforced before base64 decoding, and every secret or
 /// decoded buffer is zeroized on drop or immediately after extraction.
@@ -2231,7 +2231,7 @@ pub fn encode_relay_route_cache(urls: &[RelayHint]) -> Result<Vec<u8>, RouteCach
     if urls.is_empty() {
         return Err(RouteCacheError::MissingUrl);
     }
-    if urls.len() > zterm_core::MAX_RELAY_HINTS {
+    if urls.len() > voytty_core::MAX_RELAY_HINTS {
         return Err(RouteCacheError::TooManyUrls { actual: urls.len() });
     }
     Ok(v2::RelayRouteCacheV1 {
@@ -2259,7 +2259,7 @@ pub fn decode_relay_route_cache(bytes: &[u8]) -> Result<Vec<RelayHint>, RouteCac
     if cache.relay_urls.is_empty() {
         return Err(RouteCacheError::MissingUrl);
     }
-    if cache.relay_urls.len() > zterm_core::MAX_RELAY_HINTS {
+    if cache.relay_urls.len() > voytty_core::MAX_RELAY_HINTS {
         return Err(RouteCacheError::TooManyUrls {
             actual: cache.relay_urls.len(),
         });
@@ -2494,11 +2494,11 @@ impl From<&ConnectionWelcome> for v2::ConnectionWelcome {
 
 fn decode_connection_incarnation(
     bytes: &[u8],
-) -> Result<Option<zterm_core::ConnectionIncarnation>, WireFieldError> {
+) -> Result<Option<voytty_core::ConnectionIncarnation>, WireFieldError> {
     if bytes.is_empty() {
         Ok(None)
     } else {
-        zterm_core::ConnectionIncarnation::from_bytes(bytes)
+        voytty_core::ConnectionIncarnation::from_bytes(bytes)
             .map(Some)
             .map_err(WireFieldError::InvalidIdentifier)
     }
@@ -2634,7 +2634,7 @@ pub fn validate_pair_operation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zterm_core::terminal::MAX_TERMINAL_CLIPBOARD_BYTES;
+    use voytty_core::terminal::MAX_TERMINAL_CLIPBOARD_BYTES;
 
     fn assert_message_round_trip<M>(kind: WireKind, message: M)
     where
@@ -3352,7 +3352,7 @@ mod tests {
 
     fn semantic_row(columns: u16, contents: &str) -> TerminalSurfaceRow {
         let link = std::sync::Arc::new(
-            zterm_core::terminal::TerminalHyperlink::new(
+            voytty_core::terminal::TerminalHyperlink::new(
                 "doc",
                 "https://example.invalid/semantic-link",
             )
@@ -3385,7 +3385,7 @@ mod tests {
 
     #[test]
     fn cursor_presentation_round_trips_and_rejects_missing_or_unknown_shape() {
-        use zterm_core::terminal::{TerminalCursorPresentation, TerminalCursorShape};
+        use voytty_core::terminal::{TerminalCursorPresentation, TerminalCursorShape};
         for shape in [
             TerminalCursorShape::Block,
             TerminalCursorShape::Beam,
@@ -3417,7 +3417,7 @@ mod tests {
         const SENTINEL: &str = "SEMANTIC_57c1";
         let session_id = SessionId::from_array([3; 16]);
         let attachment_id = AttachmentId::from_array([4; 16]);
-        let revision = zterm_core::Revision::new(7);
+        let revision = voytty_core::Revision::new(7);
         let snapshot = TerminalSurfaceSnapshot {
             revision,
             surface: TerminalSurface {
@@ -3436,7 +3436,7 @@ mod tests {
                 },
                 modes: TerminalModes::default(),
                 scroll_metrics: Some(TerminalScrollMetrics {
-                    epoch: zterm_core::Revision::new(1),
+                    epoch: voytty_core::Revision::new(1),
                     revision,
                     offset_from_bottom: 0,
                     max_offset_from_bottom: 5,
@@ -3460,7 +3460,7 @@ mod tests {
             colors: Default::default(),
 
             from_revision: revision,
-            to_revision: zterm_core::Revision::new(8),
+            to_revision: voytty_core::Revision::new(8),
             size: snapshot.surface.size,
             active_screen: ActiveScreen::Main,
             row_patches: vec![TerminalSurfaceRowPatch {
@@ -3470,7 +3470,7 @@ mod tests {
             cursor: snapshot.surface.cursor,
             modes: snapshot.surface.modes,
             scroll_metrics: Some(TerminalScrollMetrics {
-                revision: zterm_core::Revision::new(8),
+                revision: voytty_core::Revision::new(8),
                 ..snapshot.surface.scroll_metrics.expect("metrics")
             }),
         };
@@ -3642,7 +3642,7 @@ mod tests {
     fn maximum_semantic_frames_fit_the_existing_eight_mib_bound() {
         let attachment_id = AttachmentId::from_array([9; 16]);
         let session_id = SessionId::from_array([8; 16]);
-        let revision = zterm_core::Revision::new(11);
+        let revision = voytty_core::Revision::new(11);
         let size = TerminalSize::new(80, 240);
         let row = semantic_row(size.columns, "abcdefghijklmnopqrstuv");
         let surface = TerminalSurface {
@@ -3661,7 +3661,7 @@ mod tests {
             },
             modes: TerminalModes::default(),
             scroll_metrics: Some(TerminalScrollMetrics {
-                epoch: zterm_core::Revision::new(1),
+                epoch: voytty_core::Revision::new(1),
                 revision,
                 offset_from_bottom: 0,
                 max_offset_from_bottom: 240,
@@ -3679,7 +3679,7 @@ mod tests {
 
         let query = TerminalHistoryWindowQuery {
             anchor: TerminalHistoryWindowAnchor {
-                epoch: zterm_core::Revision::new(1),
+                epoch: voytty_core::Revision::new(1),
                 revision,
                 max_offset_from_bottom: 240,
                 viewport: size,
@@ -3695,7 +3695,7 @@ mod tests {
             anchor: query.anchor,
             target_offset_from_bottom: 160,
             first_row_from_live_top: -240,
-            rows: vec![row; zterm_core::terminal::MAX_HISTORY_WINDOW_ROWS],
+            rows: vec![row; voytty_core::terminal::MAX_HISTORY_WINDOW_ROWS],
         };
         frame.validate_for(query).expect("maximum window shape");
         let message = terminal_surface_history_window_frame_message(
@@ -3758,8 +3758,8 @@ mod tests {
         const SENTINEL: &str = "SECRET742f";
         let query = TerminalHistoryWindowQuery {
             anchor: TerminalHistoryWindowAnchor {
-                epoch: zterm_core::Revision::new(1),
-                revision: zterm_core::Revision::new(2),
+                epoch: voytty_core::Revision::new(1),
+                revision: voytty_core::Revision::new(2),
                 max_offset_from_bottom: 1,
                 viewport: TerminalSize::new(1, 8),
             },

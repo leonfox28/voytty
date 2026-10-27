@@ -4,12 +4,12 @@ use crate::{
     dns::{AndroidDns, NativeDnsServer},
 };
 use std::sync::{Arc, Mutex};
-use zeroize::Zeroizing;
-use zterm_client::{
+use voytty_client::{
     iroh_controller::{IrohController, PairedHost, endpoint_builder},
     model::{ResolvedSessionTarget, SessionSummary},
 };
-use zterm_core::{DeviceId, RelayHint};
+use voytty_core::{DeviceId, RelayHint};
+use zeroize::Zeroizing;
 
 /// Persisted local host projection; routes must originate from confirmed pairing.
 #[derive(Clone, Debug, uniffi::Record)]
@@ -84,12 +84,12 @@ pub(crate) struct Network {
 impl NativeRuntime {
     /// Shared protocol text limit for camera, gallery and manual admission.
     pub fn ticket_text_limit(&self) -> u32 {
-        zterm_core::MAX_TICKET_TEXT_BYTES as u32
+        voytty_core::MAX_TICKET_TEXT_BYTES as u32
     }
     /// Parses QR candidates locally. These labels are unauthenticated until pairing.
     pub fn inspect_ticket(&self, ticket: String) -> Result<NativeHost, NativeError> {
         let ticket = Zeroizing::new(ticket);
-        let (fields, _secret) = zterm_proto::decode_pair_ticket(ticket.trim())
+        let (fields, _secret) = voytty_proto::decode_pair_ticket(ticket.trim())
             .map_err(|_| crate::terminal::failure("invalid_ticket"))?;
         Ok(NativeHost {
             device_id: fields.host_device_id().to_string(),
@@ -264,7 +264,7 @@ impl NativeRuntime {
         dark: bool,
     ) -> Result<NativeSession, NativeError> {
         let target = ResolvedSessionTarget::device(parse_device(&host)?);
-        let name = zterm_core::SessionName::new(name)
+        let name = voytty_core::SessionName::new(name)
             .map_err(|_| crate::terminal::failure("invalid_session_name"))?;
         let size = viewport.size()?;
         let network = Arc::clone(&self.network);
@@ -296,7 +296,7 @@ impl NativeRuntime {
     ) -> Result<NativeSession, NativeError> {
         let target = ResolvedSessionTarget::device(parse_device(&host)?);
         let id = crate::terminal::parse_session(&session)?;
-        let name = zterm_core::SessionName::new(name)
+        let name = voytty_core::SessionName::new(name)
             .map_err(|_| crate::terminal::failure("invalid_session_name"))?;
         let network = Arc::clone(&self.network);
         let sessions = Arc::clone(&self.sessions);
@@ -329,9 +329,9 @@ impl NativeRuntime {
 }
 fn controller_name() -> &'static str {
     if cfg!(target_os = "ios") {
-        "Zterm iOS"
+        "Voytty iOS"
     } else {
-        "Zterm Android"
+        "Voytty Android"
     }
 }
 pub(crate) fn parse_device(value: &str) -> Result<DeviceId, NativeError> {

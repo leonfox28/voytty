@@ -8,15 +8,15 @@ test_mode='@TEST_MODE@'
 install_dir=""
 
 fail() {
-    echo "zterm installer failed: $*" >&2
+    echo "voytty installer failed: $*" >&2
     exit 1
 }
 
 usage() {
     cat <<EOF
-Usage: zterm-install.sh [--install-dir <directory>]
+Usage: voytty-install.sh [--install-dir <directory>]
 
-Installs immutable zterm Release $release_tag without running setup or starting
+Installs immutable voytty Release $release_tag without running setup or starting
 a daemon. The destination defaults to \$HOME/.local/bin.
 EOF
 }
@@ -99,9 +99,9 @@ mkdir -p "$install_dir" || fail "unable to create install directory"
 if [ ! -d "$install_dir" ] || [ ! -w "$install_dir" ]; then
     fail "install directory must be a writable directory"
 fi
-destination="$install_dir/zterm"
+destination="$install_dir/voytty"
 if [ -e "$destination" ] || [ -L "$destination" ]; then
-    fail "destination already exists; use the installed binary's explicit 'zterm update' command"
+    fail "destination already exists; use the installed binary's explicit 'voytty update' command"
 fi
 
 for tool in tar wc tr chmod mktemp awk; do
@@ -138,28 +138,28 @@ else
     fail "curl or wget is required"
 fi
 
-if [ "$test_mode" = 1 ] && [ -n "${ZTERM_INSTALL_TEST_BASE_URL:-}" ]; then
-    case "$ZTERM_INSTALL_TEST_BASE_URL" in
-        https://*) release_base=$ZTERM_INSTALL_TEST_BASE_URL ;;
+if [ "$test_mode" = 1 ] && [ -n "${VOYTTY_INSTALL_TEST_BASE_URL:-}" ]; then
+    case "$VOYTTY_INSTALL_TEST_BASE_URL" in
+        https://*) release_base=$VOYTTY_INSTALL_TEST_BASE_URL ;;
         *) fail "test fixture URL must use HTTPS" ;;
     esac
 fi
 
-temporary=$(mktemp -d "${TMPDIR:-/tmp}/zterm-install.XXXXXX") \
+temporary=$(mktemp -d "${TMPDIR:-/tmp}/voytty-install.XXXXXX") \
     || fail "unable to create a private temporary directory"
 chmod 700 "$temporary" || fail "unable to secure the temporary directory"
 cleanup() {
-    rm -f "$temporary/$archive_name" "$temporary/zterm-release.json" \
-        "$temporary/zterm-release.json.sig" "$temporary/zterm"
+    rm -f "$temporary/$archive_name" "$temporary/voytty-release.json" \
+        "$temporary/voytty-release.json.sig" "$temporary/voytty"
     rmdir "$temporary" 2>/dev/null || true
 }
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
 
-manifest="$temporary/zterm-release.json"
-signature="$temporary/zterm-release.json.sig"
+manifest="$temporary/voytty-release.json"
+signature="$temporary/voytty-release.json.sig"
 archive="$temporary/$archive_name"
-download "$release_base/zterm-release.json" "$manifest" 65536 \
+download "$release_base/voytty-release.json" "$manifest" 65536 \
     || fail "unable to download signed release manifest"
 manifest_length=$(wc -c < "$manifest" | tr -d '[:space:]')
 if ! [ "$manifest_length" -gt 0 ] 2>/dev/null \
@@ -169,7 +169,7 @@ fi
 [ "$(sha256_file "$manifest")" = "$manifest_sha256" ] \
     || fail "release manifest digest does not match this immutable installer"
 
-download "$release_base/zterm-release.json.sig" "$signature" 64 \
+download "$release_base/voytty-release.json.sig" "$signature" 64 \
     || fail "unable to download release signature"
 [ "$(wc -c < "$signature" | tr -d '[:space:]')" -eq 64 ] 2>/dev/null \
     || fail "release signature size is invalid"
@@ -180,10 +180,10 @@ download "$release_base/$archive_name" "$archive" "$archive_length" \
     || fail "release archive length does not match signed metadata"
 [ "$(sha256_file "$archive")" = "$archive_sha256" ] \
     || fail "release archive digest does not match signed metadata"
-[ "$(tar -tzf "$archive")" = "zterm" ] \
+[ "$(tar -tzf "$archive")" = "voytty" ] \
     || fail "release archive inventory is invalid"
 tar -xzf "$archive" -C "$temporary" || fail "unable to extract release candidate"
-candidate="$temporary/zterm"
+candidate="$temporary/voytty"
 if [ -L "$candidate" ] || [ ! -f "$candidate" ]; then
     fail "release candidate is not a direct regular file"
 fi
@@ -195,8 +195,8 @@ chmod 700 "$candidate" || fail "unable to secure release candidate"
 "$candidate" --internal-release-install "$destination" \
     || fail "atomic no-clobber installation failed"
 
-echo "Installed zterm $release_tag at $destination"
+echo "Installed voytty $release_tag at $destination"
 case ":${PATH:-}:" in
     *:"$install_dir":*) ;;
-    *) echo "Add $install_dir to PATH, then run 'zterm setup'." ;;
+    *) echo "Add $install_dir to PATH, then run 'voytty setup'." ;;
 esac

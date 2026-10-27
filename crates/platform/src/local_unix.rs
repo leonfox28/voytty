@@ -444,7 +444,7 @@ mod tests {
         let paths = UserPaths::for_test(
             Uid::effective().as_raw(),
             home.clone(),
-            home.join(".zterm"),
+            home.join(".voytty"),
             temporary.path().join("run"),
         );
         paths.prepare_state_directories().expect("state dirs");

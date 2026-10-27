@@ -1,2 +1,2 @@
 //! Shared typed terminal view facade.
-pub use zterm_client::view::*;
+pub use voytty_client::view::*;

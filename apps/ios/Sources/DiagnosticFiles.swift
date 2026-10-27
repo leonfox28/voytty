@@ -198,15 +198,15 @@ final class DiagnosticFiles: DiagnosticSink, @unchecked Sendable {
         let bytes = try export(includeDebug: includeDebug, lost: lost)
         try locked {
             guard let root = try root(create: true) else { throw Failure.storage }; defer { close(root) }
-            try atomic("zterm-logs.jsonl", bytes, root)
+            try atomic("voytty-logs.jsonl", bytes, root)
         }
-        return directory.appendingPathComponent("zterm-logs.jsonl")
+        return directory.appendingPathComponent("voytty-logs.jsonl")
     }
     func removeExport() {
         try? locked {
             guard let root = try root(create: false) else { return }; defer { close(root) }
-            if try info("zterm-logs.jsonl", root) != nil { _ = unlinkat(root, "zterm-logs.jsonl", 0) }
-            if try info(".write-zterm-logs.jsonl", root) != nil { _ = unlinkat(root, ".write-zterm-logs.jsonl", 0) }
+            if try info("voytty-logs.jsonl", root) != nil { _ = unlinkat(root, "voytty-logs.jsonl", 0) }
+            if try info(".write-voytty-logs.jsonl", root) != nil { _ = unlinkat(root, ".write-voytty-logs.jsonl", 0) }
         }
     }
 }

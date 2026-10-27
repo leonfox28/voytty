@@ -2,7 +2,7 @@
 
 use crate::{DecodedFrame, ProtocolError, WireKind, encode_message, v2};
 use std::fmt;
-use zterm_core::{
+use voytty_core::{
     DomainErrorKind,
     upload::{
         MAX_UPLOAD_BYTES, TransferId, UPLOAD_CHUNK_BYTES, UploadBinding, UploadMetadata,
@@ -275,7 +275,7 @@ fn size(value: u64) -> Result<u64, ProtocolError> {
 mod tests {
     use super::*;
     use crate::FrameDecoder;
-    use zterm_core::{AttachmentId, SessionId};
+    use voytty_core::{AttachmentId, SessionId};
 
     fn frame(bytes: &[u8]) -> DecodedFrame {
         FrameDecoder::new()
@@ -308,7 +308,7 @@ mod tests {
             UploadMessage::Finish { id, size: 0 },
             UploadMessage::Completed {
                 id,
-                file: UploadedFile::new("/tmp/zterm-1/session/transfer/file.pdf".into(), 0)
+                file: UploadedFile::new("/tmp/voytty-1/session/transfer/file.pdf".into(), 0)
                     .expect("upload fixture"),
             },
             UploadMessage::Cancel { id },
@@ -372,7 +372,7 @@ mod tests {
         let result = v2::UploadCompleted {
             transfer_id: vec![1; 16],
             size: 1,
-            path: "/tmp/zterm-1/file\ncommand".into(),
+            path: "/tmp/voytty-1/file\ncommand".into(),
         };
         assert!(
             UploadMessage::decode(&frame(

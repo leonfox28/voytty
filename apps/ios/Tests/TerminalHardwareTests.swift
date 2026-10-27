@@ -1,6 +1,6 @@
 import XCTest
 import UIKit
-@testable import Zterm
+@testable import Voytty
 
 @MainActor
 final class TerminalHardwareTests: XCTestCase {

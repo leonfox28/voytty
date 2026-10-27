@@ -42,7 +42,7 @@ def run_ui(args: list[str], simulator: str, fixture: dict, keyboard: bool) -> No
             for line in process.stdout:
                 print(line, end="", flush=True)
                 host.message(line.strip())
-                if line.strip() == "ZTERM_UI_KEYBOARD_NAVIGATION":
+                if line.strip() == "VOYTTY_UI_KEYBOARD_NAVIGATION":
                     if sent:
                         raise RuntimeError("UI test requested duplicate keyboard injection")
                     sent = True
@@ -68,11 +68,11 @@ def run_ui(args: list[str], simulator: str, fixture: dict, keyboard: bool) -> No
 def prepare(ticket_file: Path | None = None, ui_fixture: Path | None = None) -> None:
     import tomllib
     run("cargo", "+1.98.0", "build", "--locked", "--target-dir", str(TARGET),
-        "-p", "zterm-android", "-p", "zterm-uniffi-bindgen")
+        "-p", "voytty-android", "-p", "voytty-uniffi-bindgen")
     generated = APP / "Generated"
     generated.mkdir(parents=True, exist_ok=True)
-    run(str(TARGET / "debug/zterm-uniffi-bindgen"), "generate",
-        str(TARGET / "debug/libzterm_android.dylib"), "--language", "swift",
+    run(str(TARGET / "debug/voytty-uniffi-bindgen"), "generate",
+        str(TARGET / "debug/libvoytty_android.dylib"), "--language", "swift",
         "--config", str(APP / "uniffi.toml"), "--out-dir", str(generated), "--no-format")
     with (ROOT / "Cargo.toml").open("rb") as source:
         version = tomllib.load(source)["workspace"]["package"]["version"]
@@ -101,12 +101,12 @@ def native() -> None:
     # Xcode's SDKROOT must not leak into host build scripts/proc macros.
     env.pop("SDKROOT", None)
     env["IPHONEOS_DEPLOYMENT_TARGET"] = "17.0"
-    run("cargo", "+1.98.0", "rustc", "--locked", "--release", "-p", "zterm-android",
+    run("cargo", "+1.98.0", "rustc", "--locked", "--release", "-p", "voytty-android",
         "--lib", "--target", target, "--target-dir", str(TARGET), "--crate-type", "staticlib", env=env)
     import shutil
     output = Path(os.environ["BUILT_PRODUCTS_DIR"])
     output.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(TARGET / target / "release/libzterm_android.a", output / "libzterm_android.a")
+    shutil.copy2(TARGET / target / "release/libvoytty_android.a", output / "libvoytty_android.a")
 
 
 def main() -> None:
@@ -164,8 +164,8 @@ def main() -> None:
                   "navigation": "testNativeNavigationBackAndEdgeSwipe", "deletion": "testSessionDeletionUsesNativeAlert",
                   "sessions": "testNativeSessionSheetAndEditorTransitions", "settings": "testNativeSettingsAndHostRemovalCancellation"}
         if args.command == "ui-check" and args.ui_scope in scopes:
-            testing += ["-only-testing:ZtermUITests/KeyboardUITests/" + scopes[args.ui_scope]]
-        command = ["xcodebuild", "-project", str(APP / "Zterm.xcodeproj"), "-scheme", "ZtermUI" if args.command == "ui-check" else "Zterm",
+            testing += ["-only-testing:VoyttyUITests/KeyboardUITests/" + scopes[args.ui_scope]]
+        command = ["xcodebuild", "-project", str(APP / "Voytty.xcodeproj"), "-scheme", "VoyttyUI" if args.command == "ui-check" else "Voytty",
             "-configuration", "Debug", "-destination", destination,
             "-derivedDataPath", str(BUILD_ROOT / "ios"), *signing, *testing,
             "test" if args.command in ("check", "ui-check") else "build"]
@@ -179,9 +179,9 @@ def main() -> None:
                     (APP / "Generated/UIAcceptance.json").write_text(json.dumps(fixture), encoding="utf-8")
                 if args.ui_scope in ("all", "photos"):
                     run(*command[:-1], "build-for-testing")
-                    runner = BUILD_ROOT / "ios/Build/Products/Debug-iphonesimulator/ZtermUITests-Runner.app"
+                    runner = BUILD_ROOT / "ios/Build/Products/Debug-iphonesimulator/VoyttyUITests-Runner.app"
                     run("xcrun", "simctl", "install", args.simulator, str(runner))
-                    run("xcrun", "simctl", "privacy", args.simulator, "grant", "photos", "io.github.leonfox28.zterm.uitests.xctrunner")
+                    run("xcrun", "simctl", "privacy", args.simulator, "grant", "photos", "io.github.leonfox28.voytty.uitests.xctrunner")
                     command[-1] = "test-without-building"
                 run_ui(command, args.simulator, fixture, keyboard=args.ui_scope == "all")
         else:

@@ -8,16 +8,16 @@ use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use zterm_core::{
+use voytty_core::{
     AuthGeneration, AuthorizationSnapshot, AuthorizationStatus, DeviceAlias, DeviceDisplayName,
     DeviceId, DomainErrorKind, RelayHint,
 };
-use zterm_daemon::device_directory::DeviceDirectory;
-use zterm_daemon::store::{
+use voytty_daemon::device_directory::DeviceDirectory;
+use voytty_daemon::store::{
     DeviceMetadata, RelayRouteCache, RouteCacheDiagnostic, STORE_COMMAND_CAPACITY, StateStore,
     StoreActor, set_test_schema_version,
 };
-use zterm_platform::user_state::open_append;
+use voytty_platform::user_state::open_append;
 
 use state_fixture::TestState;
 

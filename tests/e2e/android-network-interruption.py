@@ -18,7 +18,7 @@ def main():
     if not args.serial.startswith("emulator-") or not args.host_name.startswith("presentation-"):
         parser.error("use an explicit emulator and a disposable presentation host")
     adb = [args.adb, "-s", args.serial]
-    package = "io.github.leonfox28.zterm.dev"
+    package = "io.github.leonfox28.voytty.dev"
 
     def call(*command, check=True):
         return subprocess.run(adb + list(command), capture_output=True, text=True,
@@ -31,14 +31,14 @@ def main():
         parser.error("unexpected test app UID")
     call("shell", "run-as", package, "rm", "-f", "cache/network-ready", "cache/network-interrupted")
     rule = ["-m", "owner", "--uid-owner", uid, "-m", "comment", "--comment",
-            "zterm-fixture-" + uuid.uuid4().hex, "-j", "DROP"]
+            "voytty-fixture-" + uuid.uuid4().hex, "-j", "DROP"]
     installed = []
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w") as log:
         test = subprocess.Popen(adb + [
             "shell", "am", "instrument", "-w", "-r",
             "-e", "networkInterruption", "1", "-e", "hostName", args.host_name,
-            "-e", "class", "io.github.leonfox28.zterm.NetworkInterruptionTest",
+            "-e", "class", "io.github.leonfox28.voytty.NetworkInterruptionTest",
             package + ".test/androidx.test.runner.AndroidJUnitRunner",
         ], stdout=log, stderr=subprocess.STDOUT)
 

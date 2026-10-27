@@ -98,7 +98,7 @@ pub(crate) struct Blake3HmacKey([u8; 32]);
 impl Blake3HmacKey {
     pub(crate) fn for_stateless_reset(secret: &iroh_base::SecretKey) -> Self {
         Self(blake3::derive_key(
-            "iroh zterm persistent stateless reset v1",
+            "iroh voytty persistent stateless reset v1",
             &secret.to_bytes(),
         ))
     }
@@ -137,7 +137,7 @@ mod reset_tests {
     use crypto::HmacKey;
 
     #[test]
-    fn zterm_reset_key_is_stable_identity_scoped_and_domain_separated() {
+    fn voytty_reset_key_is_stable_identity_scoped_and_domain_separated() {
         let identity = iroh_base::SecretKey::generate();
         let first = Blake3HmacKey::for_stateless_reset(&identity);
         let restarted = Blake3HmacKey::for_stateless_reset(&identity);
@@ -158,7 +158,7 @@ mod reset_tests {
     }
 
     #[test]
-    fn zterm_ephemeral_reset_keys_remain_independent() {
+    fn voytty_ephemeral_reset_keys_remain_independent() {
         let first = Blake3HmacKey::new(&mut rand::rng());
         let next = Blake3HmacKey::new(&mut rand::rng());
         let mut proof = [0; blake3::OUT_LEN];

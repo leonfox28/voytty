@@ -17,7 +17,7 @@ for tool in curl openssl python3 sed wc; do
     command -v "$tool" >/dev/null 2>&1 || fail "$tool is required"
 done
 
-temporary=$(mktemp -d "${TMPDIR:-/tmp}/zterm-installer-fixture.XXXXXX") \
+temporary=$(mktemp -d "${TMPDIR:-/tmp}/voytty-installer-fixture.XXXXXX") \
     || fail "unable to create fixture directory"
 server_pid=
 cleanup() {
@@ -75,20 +75,20 @@ case "$(LC_ALL=C ls -ld "$install_directory")" in
 esac
 
 HOME=$fixture_home CURL_CA_BUNDLE=$temporary/server.crt \
-    ZTERM_INSTALL_TEST_BASE_URL=$fixture_base \
+    VOYTTY_INSTALL_TEST_BASE_URL=$fixture_base \
     sh "$test_installer" \
     > "$temporary/happy.output" 2>&1 \
     || fail "authenticated installer happy path failed"
-[ -x "$install_directory/zterm" ] || fail "installed executable is missing"
-[ ! -e "$fixture_home/.zterm" ] || fail "installer created managed user state"
-"$install_directory/zterm" --internal-release-self-check >/dev/null \
+[ -x "$install_directory/voytty" ] || fail "installed executable is missing"
+[ ! -e "$fixture_home/.voytty" ] || fail "installer created managed user state"
+"$install_directory/voytty" --internal-release-self-check >/dev/null \
     || fail "installed executable self-check failed"
 grep -Fq "Add $install_directory to PATH" "$temporary/happy.output" \
     || fail "installer omitted PATH guidance"
 
 requests_before=$(wc -l < "$temporary/requests.log" | tr -d '[:space:]')
 if HOME=$fixture_home CURL_CA_BUNDLE=$temporary/server.crt \
-    ZTERM_INSTALL_TEST_BASE_URL=$fixture_base \
+    VOYTTY_INSTALL_TEST_BASE_URL=$fixture_base \
     sh "$test_installer" \
     > "$temporary/existing.output" 2>&1; then
     fail "installer overwrote an existing destination"
@@ -101,7 +101,7 @@ zero_digest=0000000000000000000000000000000000000000000000000000000000000000
 sed "s/^manifest_sha256='[0-9a-f]*'/manifest_sha256='$zero_digest'/" \
     "$test_installer" > "$temporary/bad-digest-installer.sh"
 if HOME=$fixture_home CURL_CA_BUNDLE=$temporary/server.crt \
-    ZTERM_INSTALL_TEST_BASE_URL=$fixture_base \
+    VOYTTY_INSTALL_TEST_BASE_URL=$fixture_base \
     sh "$temporary/bad-digest-installer.sh" \
     --install-dir "$fixture_home/bad-digest-bin" \
     > "$temporary/bad-digest.output" 2>&1; then

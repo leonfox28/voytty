@@ -1,6 +1,6 @@
 import XCTest
 import UniformTypeIdentifiers
-@testable import Zterm
+@testable import Voytty
 
 private final class UploadDouble: NativeUploadProtocol, @unchecked Sendable {
     struct Start { let path: String; let size: UInt64; let ext: String }
@@ -102,7 +102,7 @@ final class TerminalUploadTests: XCTestCase {
         while !condition() {
             guard clock.now < deadline else {
                 XCTFail("upload condition timed out", line: line)
-                throw NSError(domain: "zterm.upload.test.timeout", code: 1)
+                throw NSError(domain: "voytty.upload.test.timeout", code: 1)
             }
             try await Task.sleep(for: .milliseconds(10))
         }

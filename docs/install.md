@@ -1,11 +1,31 @@
 # Install, update, and uninstall
 
-zterm's official native channel is one signed GitHub Release per lockstep Cargo
+voytty's official native channel is one signed GitHub Release per lockstep Cargo
 version. It supports Apple Silicon macOS 13 or newer, plus arm64 and
 x86_64 GNU/Linux with glibc 2.28 or newer. Windows, Alpine/musl, and NixOS are
 not supported by this installer. Intel macOS is no longer published; its
 historical Releases remain available. Package-manager channels and background
 updates are intentionally absent.
+
+## Transition from zterm
+
+voytty is a fresh installation, not an in-place update of zterm. The CLI is
+`voytty`, native state lives in `~/.voytty`, and Android/iOS application IDs
+start with `io.github.leonfox28.voytty`. Pairing tickets use `voytty-pair-v1:`;
+both ends must run voytty and be paired again. Existing zterm identities,
+configuration, Sessions and mobile data are not imported or deleted.
+
+Before switching, finish any old Sessions and use the old executable to run
+`zterm daemon autostart disable` and `zterm daemon stop`. Install voytty, run
+`voytty setup`, and pair each client again. Enable `voytty daemon autostart`
+separately if desired. The two applications have separate service identities.
+
+Previously published zterm Releases retain their original asset names and
+signatures after the GitHub repository rename. The new installer and updater
+require a voytty Release; they cannot install or update from those historical
+assets. Until the first voytty Release is published, build from this source
+tree. Historical version examples elsewhere in these docs describe the old
+release process, not renamed copies of those immutable assets.
 
 ## Install
 
@@ -13,36 +33,36 @@ The normal path installs the latest stable native Release through one fixed
 bootstrap URL:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/leonfox28/zterm/main/install/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/leonfox28/voytty/main/install/install.sh | sh
 ```
 
 To inspect the bootstrap before running it, use the optional review-first path:
 
 ```bash
 curl -fsSL \
-  --output /tmp/zterm-install.sh \
-  https://raw.githubusercontent.com/leonfox28/zterm/main/install/install.sh
-less /tmp/zterm-install.sh
-sh /tmp/zterm-install.sh
+  --output /tmp/voytty-install.sh \
+  https://raw.githubusercontent.com/leonfox28/voytty/main/install/install.sh
+less /tmp/voytty-install.sh
+sh /tmp/voytty-install.sh
 ```
 
 Select one exact stable or prerelease tag, or another user-owned destination:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/leonfox28/zterm/main/install/install.sh \
+curl -fsSL https://raw.githubusercontent.com/leonfox28/voytty/main/install/install.sh \
   | sh -s -- --version vX.Y.Z
-curl -fsSL https://raw.githubusercontent.com/leonfox28/zterm/main/install/install.sh \
+curl -fsSL https://raw.githubusercontent.com/leonfox28/voytty/main/install/install.sh \
   | sh -s -- --install-dir "$HOME/bin"
 ```
 
 The downloaded review-first script accepts the same options:
 
 ```bash
-sh /tmp/zterm-install.sh --version vX.Y.Z
-sh /tmp/zterm-install.sh --install-dir "$HOME/bin"
+sh /tmp/voytty-install.sh --version vX.Y.Z
+sh /tmp/voytty-install.sh --install-dir "$HOME/bin"
 ```
 
-The default destination is `~/.local/bin/zterm`. If that directory is not on
+The default destination is `~/.local/bin/voytty`. If that directory is not on
 `PATH`, the installer prints the required guidance; it does not edit shell
 startup files. An existing writable `~/.local/bin`, including the ordinary
 `0775` user-private-group directory produced by `umask 0002`, is accepted
@@ -51,18 +71,18 @@ relative, symlinked, non-directory, or unwritable install path, an unsupported
 target, NixOS, musl, an old OS or glibc, and any incomplete or mismatched
 Release asset.
 
-Installation does not run `setup`, create `~/.zterm`, generate an identity,
+Installation does not run `setup`, create `~/.voytty`, generate an identity,
 start a daemon, register a service, invoke `sudo`, or change shell files. Run
 this separately when ready:
 
 ```bash
-zterm setup
+voytty setup
 ```
 
 ## What is authenticated
 
 The small mutable repository bootstrap selects latest stable or an exact tag,
-then downloads that Release's immutable `zterm-install.sh`. This first HTTPS
+then downloads that Release's immutable `voytty-install.sh`. This first HTTPS
 hop cannot defend against simultaneous compromise of the reviewed bootstrap
 source and GitHub. The versioned script embeds its exact tag, manifest digest,
 and that release's authenticated artifact table.
@@ -77,15 +97,15 @@ release-key ID before an fsynced, atomic no-clobber install. GitHub immutable
 Releases and provenance attestations additionally bind the tag and assets
 inside GitHub's supply-chain audit layer.
 
-For a manual audit, download `SHA256SUMS`, `zterm-release.json`, its `.sig`, the
-target archive, and `zterm-install.sh` from one exact Release. Verify the listed
+For a manual audit, download `SHA256SUMS`, `voytty-release.json`, its `.sig`, the
+target archive, and `voytty-install.sh` from one exact Release. Verify the listed
 SHA-256 values (`shasum -a 256` on macOS or `sha256sum` on Linux) and the GitHub
 attestation, inspect the versioned script, then run it. The authenticated
 candidate's internal verifier can be exercised explicitly after the archive
 digest is checked:
 
 ```bash
-./zterm --internal-release-verify zterm-release.json zterm-release.json.sig
+./voytty --internal-release-verify voytty-release.json voytty-release.json.sig
 ```
 
 That command succeeds only when the candidate itself is the target/build
@@ -97,14 +117,14 @@ hidden from ordinary public help.
 Updates occur only when requested:
 
 ```bash
-zterm update
-zterm update --version vX.Y.Z
+voytty update
+voytty update --version vX.Y.Z
 ```
 
 The first command selects the latest stable Release; the second may select an
 exact stable or prerelease tag. Same-version installs and managed downgrades
 are rejected. Manifest signature, target, version monotonicity, archive
-length/hash, and candidate self-check all finish before zterm contacts or
+length/hash, and candidate self-check all finish before voytty contacts or
 stops the daemon.
 
 The updater requires only its own target's package. Other platforms may be
@@ -126,14 +146,14 @@ Enter `y` or `yes` to continue in the same invocation; `-y`/`--yes` confirms
 directly. Empty input, EOF, or another answer cancels. Noninteractive use with
 live Sessions requires `-y`/`--yes`; public `--force` has been removed.
 
-After approval, zterm stops the daemon, atomically activates the candidate,
+After approval, voytty stops the daemon, atomically activates the candidate,
 and rechecks it. Activation/post-check failure restores the preceding binary.
 A successful update starts the new daemon on configured installations, even
 if it was previously stopped. The CLI shows actual update phases and reports
 success after local readiness, without waiting for Internet connectivity.
 PTYs ended for the update are not restored.
 
-You can run the same command inside a remote zterm Session or a local zterm
+You can run the same command inside a remote voytty Session or a local voytty
 self-attachment. A one-shot updater runs independently of that terminal. After
 you confirm and the updater accepts the operation, closing the Session or
 losing the connection does not cancel installation. Reconnect manually after
@@ -141,17 +161,17 @@ the new daemon starts; the old Session's shell and programs have ended.
 
 An ordinary external terminal waits for the actual update result. On a
 configured server, update stages and the final outcome are also recorded in
-the existing daemon log. After reconnecting, check `zterm --version`,
-`zterm status`, and `zterm logs`. If the daemon cannot start, use SSH or
+the existing daemon log. After reconnecting, check `voytty --version`,
+`voytty status`, and `voytty logs`. If the daemon cannot start, use SSH or
 another independent terminal to inspect the same information and follow the
 restart guidance. Acceptance is not a claim that installation has succeeded.
 
 The first upgrade from an older updater that terminates with its own Session
 must still be run from an independent terminal, such as SSH. Downloading the
 fixed candidate cannot change the old updater process already executing.
-Subsequent upgrades can use the independent updater from within zterm.
+Subsequent upgrades can use the independent updater from within voytty.
 
-Before setup, update installs the binary and prints `Run zterm setup to
+Before setup, update installs the binary and prints `Run voytty setup to
 configure and start the daemon.` It never creates an identity implicitly. If
 activation committed but startup fails, the new binary stays installed and
 the command returns an explicit partial-completion error with restart guidance.
@@ -164,6 +184,9 @@ contract before publication.
 
 ## One-time migration from the four-target updater
 
+This historical procedure applies only between zterm releases. To move to
+voytty, use the [fresh-install transition](#transition-from-zterm) instead.
+
 Versions through **0.1.17** require exactly four manifest targets. They reject a
 new three-target manifest before downloading an update, even on supported
 Apple Silicon/Linux hosts. A future binary cannot change that already installed
@@ -173,7 +196,8 @@ a missing current target returns `unsupported_platform` to the CLI.
 
 For the first migration, use the existing authenticated installer/recovery path:
 
-1. Download and review the bootstrap above, select the exact new release, and
+1. Download and review the bootstrap from the selected historical zterm source
+   tag, select that exact zterm release, and
    install it into an empty temporary directory with `--install-dir`. This
    authenticates the candidate before touching the current executable or daemon.
 2. Stop the existing daemon with the old binary's `daemon stop`. If Sessions are
@@ -199,8 +223,8 @@ installations stay on their last published compatible release.
 Review impact interactively, or confirm noninteractively:
 
 ```bash
-zterm uninstall
-zterm uninstall -y
+voytty uninstall
+voytty uninstall -y
 ```
 
 Uninstall asks once to confirm the executable/identity deletion and any running
@@ -217,7 +241,7 @@ automatic rollback binary restored. If a published binary cannot run its own
 updater, quarantine the exact executable, review/download a known-good
 versioned installer, and install into the now-empty destination. Do this only
 when that release supports the current state schema; otherwise preserve
-`~/.zterm` and request a release-specific recovery procedure. Never replace an
+`~/.voytty` and request a release-specific recovery procedure. Never replace an
 unknown file or bypass signature/hash verification merely to force a rollback.
 
 ## Release-operator checkpoint
@@ -229,11 +253,12 @@ operator commands.
 Before any formal tag is pushed, a repository administrator must have:
 
 1. enabled immutable Releases and confirmed it with
-   `gh api repos/leonfox28/zterm/immutable-releases`;
+   `gh api repos/leonfox28/voytty/immutable-releases`;
 2. created a protected `release` Environment with the required reviewer;
 3. generated the long-lived Ed25519 seed outside logs/artifacts, committed only
    its reviewed public key, and stored the lowercase seed as the Environment
-   secret `ZTERM_RELEASE_SIGNING_KEY`;
+   secret `ZTERM_RELEASE_SIGNING_KEY` (mapped to `VOYTTY_RELEASE_SIGNING_KEY`
+   by the workflow; see [signing configuration](releasing.md#android-package-and-signing));
 4. reviewed a successful `ci.yml` push run on `main` for the exact commit,
    including the three native candidate builds and verified unsigned assembly.
 
@@ -259,10 +284,10 @@ immutable assets.
 
 ## Android APK
 
-Download `zterm-android-arm64.apk` from the selected GitHub Release and allow your
+Download `voytty-android-arm64.apk` from the selected GitHub Release and allow your
 browser/file manager to install it. Android 8.0+ and arm64 are required. The
-package is `io.github.leonfox28.zterm`; updates preserve its pairing/settings data
-using the existing certificate. `zterm-android.json` records source, versionCode,
+package is `io.github.leonfox28.voytty`; updates preserve its pairing/settings data
+using the existing certificate. `voytty-android.json` records source, versionCode,
 certificate and digest. The detached `SHA256SUMS.sig` authenticates the complete
 Release inventory with the same reviewed Ed25519 key as the native manifest.
-The shell installer and `zterm update` remain native CLI commands.
+The shell installer and `voytty update` remain native CLI commands.

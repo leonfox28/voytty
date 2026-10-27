@@ -2,7 +2,7 @@
 use crate::{ProtocolError, v2};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use zterm_core::terminal::{
+use voytty_core::terminal::{
     MAX_TERMINAL_HYPERLINK_BYTES, MAX_TERMINAL_HYPERLINKS, TerminalCell, TerminalHyperlink,
     TerminalSurfaceRow,
 };

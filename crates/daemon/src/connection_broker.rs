@@ -11,10 +11,10 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use zterm_client::progress::{ProgressEvent, ProgressHistory, ProgressObserver};
-use zterm_client::remote_unary::ReplacementTransport;
-use zterm_client::route::{combined_relay_address, selected_relay};
-use zterm_core::connection_progress::ConnectionStage;
+use voytty_client::progress::{ProgressEvent, ProgressHistory, ProgressObserver};
+use voytty_client::remote_unary::ReplacementTransport;
+use voytty_client::route::{combined_relay_address, selected_relay};
+use voytty_core::connection_progress::ConnectionStage;
 
 use futures_util::StreamExt;
 use iroh::endpoint::{Connection, PathEvent, RecvStream, SendStream, VarInt};
@@ -23,12 +23,12 @@ use ring::rand::{SecureRandom, SystemRandom};
 
 use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedSemaphorePermit, Semaphore, watch};
 use tokio::task::{JoinHandle, JoinSet};
-use zterm_core::{
+use voytty_core::{
     AuthGeneration, AuthorizationSnapshot, AuthorizationStatus, ConnectionAttemptId,
     ConnectionCandidateKey, ConnectionHello, ConnectionIncarnation, ConnectionWelcome, DeviceId,
     DomainErrorKind, RelayHint, TransportLimits, designated_primary,
 };
-use zterm_proto::{DecodedFrame, WireKind, encode_message, v2};
+use voytty_proto::{DecodedFrame, WireKind, encode_message, v2};
 
 use crate::authorization::AuthorizationRegistry;
 use crate::error::DaemonError;
@@ -38,7 +38,7 @@ use crate::network::{
 };
 use crate::route::{RouteResolver, device_from_endpoint_id, endpoint_id_from_device};
 use crate::store::{RelayRouteCache, StoreHandle};
-use crate::transport::{ZTERM_ALPN, ZTERM_PAIR_ALPN};
+use crate::transport::{VOYTTY_ALPN, VOYTTY_PAIR_ALPN};
 
 const CLOSE_INCOMPATIBLE: u32 = 0x101;
 const CLOSE_DUPLICATE: u32 = 0x102;
@@ -49,8 +49,8 @@ const STREAM_REJECTED: u32 = 0x200;
 const RETRY_BASE: Duration = Duration::from_millis(250);
 const RETRY_CAP: Duration = Duration::from_secs(10);
 
-pub use zterm_client::handshake::ConnectionIdentity;
-use zterm_client::handshake::{
+pub use voytty_client::handshake::ConnectionIdentity;
+use voytty_client::handshake::{
     CLOSE_UNAUTHORIZED, connect_transport, controller_handshake, read_one_frame,
     write_handshake_message,
 };
@@ -428,8 +428,8 @@ enum CandidateSide {
 }
 
 struct Candidate {
-    diagnostic: zterm_diagnostics::Operation,
-    remote_capabilities: OnceLock<zterm_core::Capabilities>,
+    diagnostic: voytty_diagnostics::Operation,
+    remote_capabilities: OnceLock<voytty_core::Capabilities>,
     remote_incarnation: OnceLock<Option<ConnectionIncarnation>>,
     key: ConnectionCandidateKey,
     remote: DeviceId,
@@ -551,7 +551,7 @@ impl AuthorizationConfirmation {
     }
 }
 
-/// Short-lived, fully TLS-authenticated `zterm-pair/2` connection.
+/// Short-lived, fully TLS-authenticated `voytty-pair/2` connection.
 ///
 /// This owner intentionally exposes stream operations rather than the raw
 /// Endpoint or normal peer registry. Its admission permit remains held until
@@ -719,7 +719,7 @@ impl fmt::Debug for AuthenticatedBiStream {
 impl AuthenticatedBiStream {
     /// Handshake capabilities of the exact candidate selected for this stream.
     #[cfg(unix)]
-    pub fn remote_capabilities(&self) -> zterm_core::Capabilities {
+    pub fn remote_capabilities(&self) -> voytty_core::Capabilities {
         self.candidate_observer
             .candidate
             .remote_capabilities
@@ -1311,7 +1311,7 @@ impl ConnectionBroker {
             let result = timeout_or_pair_shutdown(
                 attempt_deadline,
                 self.inner.pairing.subscribe(),
-                connect_transport(&endpoint, route.address, ZTERM_PAIR_ALPN, attempt_deadline),
+                connect_transport(&endpoint, route.address, VOYTTY_PAIR_ALPN, attempt_deadline),
             )
             .await;
             let connection = match result {
@@ -1445,7 +1445,7 @@ impl ConnectionBroker {
     /// Authorization is checked before this function accepts or reads the
     /// unique Hello stream.
     pub async fn accept_normal(&self, connection: Connection) -> Result<(), DaemonError> {
-        if connection.alpn() != ZTERM_ALPN {
+        if connection.alpn() != VOYTTY_ALPN {
             close_connection(&connection, CLOSE_INCOMPATIBLE, b"incompatible protocol");
             return Err(DaemonError::new(
                 DomainErrorKind::WireMajorMismatch,
@@ -1588,7 +1588,7 @@ impl ConnectionDemand {
                 .await?;
             let mut last_error = None;
             for route in routes {
-                match connect_transport(&endpoint, route.address, ZTERM_ALPN, until).await {
+                match connect_transport(&endpoint, route.address, VOYTTY_ALPN, until).await {
                     Ok(connection) => return Ok(connection),
                     Err(error) => last_error = Some(error),
                 }
@@ -1708,10 +1708,10 @@ impl ConnectionDemand {
             if let Some(selection) = selection {
                 if reusing {
                     progress.report(ConnectionStage::ReusingConnection);
-                    zterm_client::handshake::record_transport_observation(
+                    voytty_client::handshake::record_transport_observation(
                         &selection.0.diagnostic,
                         &selection.0.connection,
-                        zterm_diagnostics::Stage::ReusingTransport,
+                        voytty_diagnostics::Stage::ReusingTransport,
                         Some(self.slot.active_streams.load(Ordering::Acquire) as u64),
                     );
                 }
@@ -1960,7 +1960,7 @@ impl ConnectionBroker {
         // A normal attempt shares one setup window across address lookup,
         // transport authentication and Hello/Welcome. Each demand still has
         // its own absolute request deadline and can stop waiting earlier.
-        let deadline = Instant::now() + zterm_client::protocol::REMOTE_STARTUP_DEADLINE;
+        let deadline = Instant::now() + voytty_client::protocol::REMOTE_STARTUP_DEADLINE;
         let replacement = slot.state.lock().await.replacement.take();
         let fresh = async {
             slot.report_progress(ConnectionStage::LookingUpAddress)
@@ -1978,7 +1978,7 @@ impl ConnectionBroker {
                 }
                 slot.report_progress(ConnectionStage::ConnectingSecurely)
                     .await;
-                match connect_transport(&endpoint, route.address, ZTERM_ALPN, deadline).await {
+                match connect_transport(&endpoint, route.address, VOYTTY_ALPN, deadline).await {
                     Ok(connection) => return Ok(connection),
                     Err(error) => last_error = Some(error),
                 }
@@ -2158,8 +2158,8 @@ impl ConnectionBroker {
                 format!("invalid ConnectionHello: {error}"),
             )
         })?;
-        if hello.min_wire_major() > zterm_proto::WIRE_MAJOR
-            || hello.max_wire_major() < zterm_proto::WIRE_MAJOR
+        if hello.min_wire_major() > voytty_proto::WIRE_MAJOR
+            || hello.max_wire_major() < voytty_proto::WIRE_MAJOR
         {
             close_connection(&connection, CLOSE_INCOMPATIBLE, b"incompatible protocol");
             return Err(DaemonError::new(
@@ -2213,7 +2213,7 @@ impl ConnectionBroker {
 
         let identity = self.connection_identity(&slot).await;
         let welcome = ConnectionWelcome::new(
-            zterm_proto::WIRE_MAJOR,
+            voytty_proto::WIRE_MAJOR,
             self.inner.identity.capabilities(),
             self.inner.identity.display_name(),
             self.inner.identity.build().to_owned(),
@@ -2562,15 +2562,15 @@ impl ConnectionBroker {
                 remote_device_id: remote,
                 accepted_generation,
             };
-            let operation = zterm_diagnostics::Operation::default();
+            let operation = voytty_diagnostics::Operation::default();
             if let Err(error) = handler.handle_service_stream(stream, deadline).await {
-                zterm_diagnostics::record(
-                    zterm_diagnostics::Event::new(zterm_diagnostics::Kind::RequestFailed)
+                voytty_diagnostics::record(
+                    voytty_diagnostics::Event::new(voytty_diagnostics::Kind::RequestFailed)
                         .operation(&operation)
                         .level(if error.kind() == DomainErrorKind::Cancelled {
-                            zterm_diagnostics::Level::Info
+                            voytty_diagnostics::Level::Info
                         } else {
-                            zterm_diagnostics::Level::Warn
+                            voytty_diagnostics::Level::Warn
                         })
                         .error(error.kind()),
                 );
@@ -2742,7 +2742,7 @@ impl Candidate {
         let metric = ConnectionMetricGuard::new(Arc::clone(&metrics))?;
         let (cancel, _) = watch::channel(false);
         Ok(Arc::new(Self {
-            diagnostic: zterm_diagnostics::Operation::default(),
+            diagnostic: voytty_diagnostics::Operation::default(),
             remote_capabilities: OnceLock::new(),
             remote_incarnation: OnceLock::new(),
             key,
@@ -2775,10 +2775,10 @@ impl Candidate {
         } else {
             decrement_atomic(&self.metrics.primary);
             self.metrics.remove_path(self.remote);
-            zterm_client::handshake::record_transport_observation(
+            voytty_client::handshake::record_transport_observation(
                 &self.diagnostic,
                 &self.connection,
-                zterm_diagnostics::Stage::RetiringTransport,
+                voytty_diagnostics::Stage::RetiringTransport,
                 None,
             );
         }
@@ -2914,7 +2914,7 @@ async fn read_service_frame(
     recv: &mut RecvStream,
     deadline: Instant,
 ) -> Result<DecodedFrame, DaemonError> {
-    read_one_frame(recv, zterm_proto::MAX_FRAME_BYTES, deadline).await
+    read_one_frame(recv, voytty_proto::MAX_FRAME_BYTES, deadline).await
 }
 
 fn reject_stream(send: &mut SendStream, recv: &mut RecvStream, _reason: &'static [u8]) {
@@ -2937,7 +2937,7 @@ fn admit_inbound_before_payload(
 fn recheck_inbound_admission(
     authorization: &AuthorizationRegistry,
     remote: DeviceId,
-    accepted: zterm_core::AuthorizationSnapshot,
+    accepted: voytty_core::AuthorizationSnapshot,
 ) -> Result<crate::authorization::Admission, DaemonError> {
     let current = authorization.admit(remote)?;
     if current.snapshot != accepted {
@@ -2966,8 +2966,8 @@ fn receiver_generation_for_stream(
 
 async fn wait_for_authorization_change(
     admission: &mut Option<(
-        zterm_core::AuthorizationSnapshot,
-        watch::Receiver<zterm_core::AuthorizationSnapshot>,
+        voytty_core::AuthorizationSnapshot,
+        watch::Receiver<voytty_core::AuthorizationSnapshot>,
     )>,
 ) -> bool {
     let Some((accepted, changes)) = admission else {
@@ -3018,7 +3018,7 @@ fn validate_pair_tls_metadata(
     authenticated_remote: DeviceId,
     alpn: &[u8],
 ) -> Result<(), DaemonError> {
-    if alpn != ZTERM_PAIR_ALPN {
+    if alpn != VOYTTY_PAIR_ALPN {
         return Err(DaemonError::new(
             DomainErrorKind::WireMajorMismatch,
             "pairing connection negotiated an unexpected ALPN",
@@ -3384,8 +3384,8 @@ fn configure_normal_connection_limits(connection: &Connection, limits: Transport
     connection.set_max_concurrent_uni_streams(VarInt::from_u32(0));
 }
 
-fn protocol_error(error: zterm_proto::ProtocolError) -> DaemonError {
-    use zterm_proto::ProtocolError;
+fn protocol_error(error: voytty_proto::ProtocolError) -> DaemonError {
+    use voytty_proto::ProtocolError;
     let kind = match error {
         ProtocolError::WireMajorMismatch { .. } => DomainErrorKind::WireMajorMismatch,
         ProtocolError::UnknownKind(_) => DomainErrorKind::UnknownKind,
@@ -3548,7 +3548,7 @@ mod tests {
 
     use iroh::{RelayUrl, TransportAddr};
     use tokio::sync::oneshot;
-    use zterm_core::{
+    use voytty_core::{
         AuthorizationSnapshot, ConnectionAttemptId, DeviceDisplayName, TransportLimits,
     };
 
@@ -3943,7 +3943,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(1);
         let mut malformed = &[0x80, 0x00][..];
         let malformed_error =
-            read_one_frame(&mut malformed, zterm_proto::MAX_FRAME_BYTES, deadline)
+            read_one_frame(&mut malformed, voytty_proto::MAX_FRAME_BYTES, deadline)
                 .await
                 .expect_err("non-canonical frame prefix is malformed");
         assert_eq!(malformed_error.kind(), DomainErrorKind::MalformedFrame);
@@ -3962,7 +3962,7 @@ mod tests {
         assert_eq!(oversized_error.kind(), DomainErrorKind::FrameTooLarge);
 
         let mut healthy_peer = valid_bytes.as_slice();
-        let frame = read_one_frame(&mut healthy_peer, zterm_proto::MAX_FRAME_BYTES, deadline)
+        let frame = read_one_frame(&mut healthy_peer, voytty_proto::MAX_FRAME_BYTES, deadline)
             .await
             .expect("another peer's frame remains readable");
         assert_eq!(frame.kind, WireKind::SessionListRequest);
@@ -3973,7 +3973,7 @@ mod tests {
     async fn stalled_first_frame_deadline_is_stream_local() {
         let (_sender, mut stalled) = tokio::io::duplex(64);
         let stalled_error =
-            read_one_frame(&mut stalled, zterm_proto::MAX_FRAME_BYTES, Instant::now())
+            read_one_frame(&mut stalled, voytty_proto::MAX_FRAME_BYTES, Instant::now())
                 .await
                 .expect_err("elapsed first-frame deadline cannot wait for input");
         assert_eq!(stalled_error.kind(), DomainErrorKind::DeadlineExceeded);
@@ -3988,7 +3988,7 @@ mod tests {
         let mut healthy_peer = healthy_bytes.as_slice();
         let frame = read_one_frame(
             &mut healthy_peer,
-            zterm_proto::MAX_FRAME_BYTES,
+            voytty_proto::MAX_FRAME_BYTES,
             Instant::now() + Duration::from_secs(1),
         )
         .await
@@ -4022,10 +4022,10 @@ mod tests {
     #[test]
     fn pair_tls_identity_mismatch_is_terminal_while_route_failure_can_fall_back() {
         let expected = device(0x51);
-        validate_pair_tls_metadata(expected, expected, ZTERM_PAIR_ALPN)
+        validate_pair_tls_metadata(expected, expected, VOYTTY_PAIR_ALPN)
             .expect("exact pair TLS metadata");
 
-        let wrong_id = validate_pair_tls_metadata(expected, device(0x52), ZTERM_PAIR_ALPN)
+        let wrong_id = validate_pair_tls_metadata(expected, device(0x52), VOYTTY_PAIR_ALPN)
             .expect_err("ticket host must equal the TLS identity");
         assert_eq!(wrong_id.kind(), DomainErrorKind::Unauthorized);
         assert!(!should_try_next_pair_route(
@@ -4033,7 +4033,7 @@ mod tests {
             Instant::now() + Duration::from_secs(1)
         ));
 
-        let wrong_alpn = validate_pair_tls_metadata(expected, expected, ZTERM_ALPN)
+        let wrong_alpn = validate_pair_tls_metadata(expected, expected, VOYTTY_ALPN)
             .expect_err("normal ALPN is never a pair connection");
         assert_eq!(wrong_alpn.kind(), DomainErrorKind::WireMajorMismatch);
         assert!(!should_try_next_pair_route(
@@ -4059,7 +4059,7 @@ mod tests {
             .map(|offset| pair_start + offset)
             .expect("pair dial method end");
         let pair_body = &source[pair_start..pair_end];
-        assert!(pair_body.contains("ZTERM_PAIR_ALPN"));
+        assert!(pair_body.contains("VOYTTY_PAIR_ALPN"));
         assert!(pair_body.contains("connect_transport("));
         for forbidden in [
             "peer_slot(",

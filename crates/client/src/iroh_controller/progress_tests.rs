@@ -40,7 +40,7 @@ async fn stream_progress_distinguishes_partial_prefix_body_and_complete_frame() 
     let outgoing = outgoing.expect("in-memory QUIC fixture");
     let (send, recv) = outgoing.open_bi().await.expect("in-memory QUIC fixture");
     let mut stream = IrohSessionIo {
-        diagnostic: zterm_diagnostics::Operation::default(),
+        diagnostic: voytty_diagnostics::Operation::default(),
         connection: outgoing,
         last_stream_sample: None,
         read_bytes: 0,
@@ -65,7 +65,7 @@ async fn stream_progress_distinguishes_partial_prefix_body_and_complete_frame() 
         code: "unavailable".into(),
         message: "PRIVATE_FRAME_TEXT".repeat(2048),
     };
-    let bytes = zterm_proto::encode_message(WireKind::ServiceErrorResponse, 7, 0, &message)
+    let bytes = voytty_proto::encode_message(WireKind::ServiceErrorResponse, 7, 0, &message)
         .expect("in-memory QUIC fixture");
     assert!(bytes[0] & 0x80 != 0 && bytes[1] & 0x80 != 0);
     let total = bytes.len() as u64;

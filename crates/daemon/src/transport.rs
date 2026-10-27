@@ -1,4 +1,4 @@
-//! Iroh infrastructure selection for zterm endpoints.
+//! Iroh infrastructure selection for voytty endpoints.
 
 use std::fmt;
 
@@ -14,10 +14,10 @@ use iroh::{
 use crate::config::ValidatedInfrastructure;
 
 /// Product protocol identifier for wire major two.
-pub const ZTERM_ALPN: &[u8] = b"zterm/2";
+pub const VOYTTY_ALPN: &[u8] = b"voytty/2";
 
 /// Short-lived pairing protocol identifier for format/protocol major two.
-pub const ZTERM_PAIR_ALPN: &[u8] = b"zterm-pair/2";
+pub const VOYTTY_PAIR_ALPN: &[u8] = b"voytty-pair/2";
 
 /// Effective configuration of one Relay entry.
 #[derive(Clone, Eq, PartialEq)]
@@ -141,11 +141,11 @@ impl InfrastructureProfile {
     /// Creates the official n0 production infrastructure profile.
     ///
     /// The Relay map is intentionally obtained from Iroh's pinned production
-    /// default rather than copied into zterm. Address lookup uses Iroh's public
+    /// default rather than copied into voytty. Address lookup uses Iroh's public
     /// production constants explicitly so ambient staging configuration cannot
     /// change this product profile.
     #[must_use]
-    pub const fn zterm() -> Self {
+    pub const fn voytty() -> Self {
         Self::OfficialN0
     }
 
@@ -182,7 +182,7 @@ impl InfrastructureProfile {
             dns_lookup_origin: lookups.dns_origin,
             publishes_direct_addresses: false,
             portmapper_enabled: true,
-            alpns: vec![ZTERM_ALPN.to_vec(), ZTERM_PAIR_ALPN.to_vec()],
+            alpns: vec![VOYTTY_ALPN.to_vec(), VOYTTY_PAIR_ALPN.to_vec()],
         }
     }
 
@@ -211,7 +211,7 @@ impl InfrastructureProfile {
             .persistent_stateless_reset(true)
             .relay_mode(self.relay_mode())
             .addr_filter(AddrFilter::relay_only())
-            .alpns(vec![ZTERM_ALPN.to_vec(), ZTERM_PAIR_ALPN.to_vec()])
+            .alpns(vec![VOYTTY_ALPN.to_vec(), VOYTTY_PAIR_ALPN.to_vec()])
     }
 
     fn relay_mode(&self) -> RelayMode {

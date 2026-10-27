@@ -13,19 +13,19 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use tar::Archive;
 use tempfile::TempDir;
-use zterm_core::release::{
+use voytty_core::release::{
     MAX_RELEASE_MANIFEST_BYTES, RELEASE_ORIGIN, RELEASE_SIGNATURE_BYTES, ReleaseArtifact,
     ReleaseClassification, ReleaseError, ReleaseManifest, ReleaseSelfCheck,
     official_release_public_key, require_official_distribution_build, sha256_hex,
     verify_release_manifest,
 };
-use zterm_core::{BuildIdentity, DomainErrorKind};
-use zterm_platform::user_state::{UserPaths, atomic_write};
+use voytty_core::{BuildIdentity, DomainErrorKind};
+use voytty_platform::user_state::{UserPaths, atomic_write};
 
 use crate::error::DaemonError;
 
-const MANIFEST_ASSET: &str = "zterm-release.json";
-const SIGNATURE_ASSET: &str = "zterm-release.json.sig";
+const MANIFEST_ASSET: &str = "voytty-release.json";
+const SIGNATURE_ASSET: &str = "voytty-release.json.sig";
 const MAX_CANDIDATE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_SELF_CHECK_BYTES: u64 = 16 * 1024;
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -154,7 +154,7 @@ impl fmt::Display for DistributionError {
             Self::Artifact => "release archive does not match authenticated metadata",
             Self::Archive => "release archive inventory is invalid",
             Self::Candidate => "release candidate self-check failed",
-            Self::NotNewer => "release candidate is not newer than this zterm binary",
+            Self::NotNewer => "release candidate is not newer than this voytty binary",
             Self::UnsupportedTarget => {
                 "this release has no supported update package for this platform"
             }
@@ -201,7 +201,7 @@ impl HttpReleaseFetcher {
             .timeout(HTTP_TOTAL_TIMEOUT)
             .https_only(true)
             .redirect(reqwest::redirect::Policy::limited(5))
-            .user_agent(concat!("zterm/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("voytty/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|_| DistributionError::Fetch)?;
         Ok(Self { client })
@@ -265,7 +265,7 @@ pub fn verify_candidate_files(manifest: &Path, signature: &Path) -> Result<(), D
         signature,
         u64::try_from(RELEASE_SIGNATURE_BYTES).unwrap_or(u64::MAX),
     )?;
-    let verified = zterm_core::release::verify_official_release_manifest(&manifest, &signature)
+    let verified = voytty_core::release::verify_official_release_manifest(&manifest, &signature)
         .map_err(map_release_error)
         .map_err(DaemonError::from)?;
     verified
@@ -280,7 +280,7 @@ pub fn install_current_executable(destination: &Path) -> Result<(), DaemonError>
     require_official_distribution_build(&BuildIdentity::current()).map_err(|_| {
         DaemonError::new(
             DomainErrorKind::PathUnsafe,
-            "installation requires an official managed zterm Release build",
+            "installation requires an official managed voytty Release build",
         )
     })?;
     let source = std::env::current_exe().map_err(|_| {
@@ -290,18 +290,18 @@ pub fn install_current_executable(destination: &Path) -> Result<(), DaemonError>
         )
     })?;
     let paths = crate::lifecycle::production_user_paths()?;
-    zterm_platform::user_state::install_executable(&source, destination, paths.uid())
+    voytty_platform::user_state::install_executable(&source, destination, paths.uid())
         .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))
 }
 
 /// Proves the exact executable is both locally safe and an official managed build.
 pub(crate) fn validate_managed_executable(path: &Path, uid: u32) -> Result<(), DaemonError> {
-    zterm_platform::user_state::validate_owned_executable(path, uid)
+    voytty_platform::user_state::validate_owned_executable(path, uid)
         .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?;
     require_official_distribution_build(&BuildIdentity::current()).map_err(|_| {
         DaemonError::new(
             DomainErrorKind::PathUnsafe,
-            "destructive distribution operations require an official managed zterm Release build",
+            "destructive distribution operations require an official managed voytty Release build",
         )
     })
 }
@@ -468,7 +468,7 @@ fn extract_candidate(archive: &[u8], directory: &Path) -> Result<PathBuf, Distri
     let decoder = GzDecoder::new(Cursor::new(archive));
     let mut archive = Archive::new(decoder);
     let entries = archive.entries().map_err(|_| DistributionError::Archive)?;
-    let candidate = directory.join("zterm");
+    let candidate = directory.join("voytty");
     let mut found = false;
     for entry in entries {
         let mut entry = entry.map_err(|_| DistributionError::Archive)?;
@@ -477,7 +477,7 @@ fn extract_candidate(archive: &[u8], directory: &Path) -> Result<PathBuf, Distri
                 .path()
                 .map_err(|_| DistributionError::Archive)?
                 .as_ref()
-                != Path::new("zterm")
+                != Path::new("voytty")
             || !entry.header().entry_type().is_file()
         {
             return Err(DistributionError::Archive);
@@ -639,7 +639,7 @@ pub(crate) mod tests {
     use std::collections::BTreeMap;
 
     use ring::signature::{Ed25519KeyPair, KeyPair};
-    use zterm_core::release::{
+    use voytty_core::release::{
         MINIMUM_GLIBC, MINIMUM_MACOS, RELEASE_BOOTSTRAP_SCHEMA, RELEASE_KEY_ID,
         RELEASE_MANIFEST_SCHEMA, ReleaseBuildIdentity, artifact_filename, immutable_asset_url,
     };
@@ -663,8 +663,8 @@ pub(crate) mod tests {
             version: version.to_owned(),
             target: target.to_owned(),
             source_commit: source_commit.to_owned(),
-            wire_major: zterm_core::WIRE_MAJOR,
-            state_schema: zterm_core::STATE_SCHEMA_VERSION,
+            wire_major: voytty_core::WIRE_MAJOR,
+            state_schema: voytty_core::STATE_SCHEMA_VERSION,
             release_key_id: RELEASE_KEY_ID.to_owned(),
             classification: ReleaseClassification::Stable,
         }
@@ -687,7 +687,7 @@ pub(crate) mod tests {
             header.set_mtime(0);
             header.set_cksum();
             archive
-                .append_data(&mut header, "zterm", script.as_bytes())
+                .append_data(&mut header, "voytty", script.as_bytes())
                 .expect("candidate archive");
             archive
                 .into_inner()
@@ -713,7 +713,7 @@ pub(crate) mod tests {
         let selected_build = build_identity(version, target, source_commit);
         let self_check = ReleaseSelfCheck {
             schema: RELEASE_MANIFEST_SCHEMA,
-            product: "zterm".to_owned(),
+            product: "voytty".to_owned(),
             build: selected_build.clone(),
         };
         let archive = archive_for(&self_check, &temporary.path().join("candidate-ran"));
@@ -734,14 +734,14 @@ pub(crate) mod tests {
         }];
         let manifest = ReleaseManifest {
             schema: RELEASE_MANIFEST_SCHEMA,
-            product: "zterm".to_owned(),
+            product: "voytty".to_owned(),
             version: version.to_owned(),
             tag: tag.to_owned(),
             classification: ReleaseClassification::Stable,
             source_commit: source_commit.to_owned(),
             released_at: "2026-08-24T12:00:00Z".to_owned(),
-            wire_major: zterm_core::WIRE_MAJOR,
-            state_schema: zterm_core::STATE_SCHEMA_VERSION,
+            wire_major: voytty_core::WIRE_MAJOR,
+            state_schema: voytty_core::STATE_SCHEMA_VERSION,
             bootstrap_schema: RELEASE_BOOTSTRAP_SCHEMA,
             public_key_id: RELEASE_KEY_ID.to_owned(),
             artifacts,
@@ -771,8 +771,8 @@ pub(crate) mod tests {
             phase: "test",
             target,
             source_commit: "development",
-            wire_major: zterm_core::WIRE_MAJOR,
-            state_schema: zterm_core::STATE_SCHEMA_VERSION,
+            wire_major: voytty_core::WIRE_MAJOR,
+            state_schema: voytty_core::STATE_SCHEMA_VERSION,
             release_key_id: RELEASE_KEY_ID,
             release_classification: "stable",
         };
@@ -798,7 +798,7 @@ pub(crate) mod tests {
             header.set_mode(0o700);
             header.set_cksum();
             archive
-                .append_data(&mut header, "zterm", script.as_bytes())
+                .append_data(&mut header, "voytty", script.as_bytes())
                 .expect("fixture archive");
             archive.finish().expect("archive finish");
         }
@@ -820,7 +820,7 @@ pub(crate) mod tests {
     pub(crate) fn update_fixture_self_check() -> ReleaseSelfCheck {
         ReleaseSelfCheck {
             schema: RELEASE_MANIFEST_SCHEMA,
-            product: "zterm".into(),
+            product: "voytty".into(),
             build: build_identity(
                 "9.1.0",
                 BuildIdentity::current().target,

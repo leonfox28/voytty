@@ -16,9 +16,9 @@ def main() -> None:
     args = parser.parse_args()
     readelf = next((args.sdk / "ndk" / args.ndk_version / "toolchains/llvm/prebuilt").glob("*/bin/llvm-readelf"))
     subprocess.run([str(args.sdk / "build-tools/36.0.0/zipalign"), "-c", "-P", "16", "4", str(args.apk)], check=True)
-    with zipfile.ZipFile(args.apk) as archive, tempfile.TemporaryDirectory(prefix="zterm-elf-") as temporary:
+    with zipfile.ZipFile(args.apk) as archive, tempfile.TemporaryDirectory(prefix="voytty-elf-") as temporary:
         libraries = [name for name in archive.namelist() if name.startswith("lib/") and name.endswith(".so")]
-        if "lib/arm64-v8a/libzterm_android.so" not in libraries or "lib/arm64-v8a/libjnidispatch.so" not in libraries:
+        if "lib/arm64-v8a/libvoytty_android.so" not in libraries or "lib/arm64-v8a/libjnidispatch.so" not in libraries:
             raise SystemExit("APK is missing the Rust library or Android JNA")
         for name in libraries:
             if not name.startswith("lib/arm64-v8a/"):

@@ -2,9 +2,9 @@
 use crate::{error::ClientError, protocol::protocol_error};
 use std::collections::VecDeque;
 use tokio::io::{AsyncRead, AsyncReadExt};
+use voytty_core::DomainErrorKind;
+use voytty_proto::{DecodedFrame, FrameDecoder};
 use zeroize::Zeroizing;
-use zterm_core::DomainErrorKind;
-use zterm_proto::{DecodedFrame, FrameDecoder};
 
 /// One decoded first frame plus the single decoder's retained leftovers.
 pub struct FirstFrame {

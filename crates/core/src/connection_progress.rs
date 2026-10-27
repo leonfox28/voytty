@@ -74,7 +74,7 @@ impl ConnectionStage {
     #[must_use]
     pub const fn description(self) -> (&'static str, &'static str) {
         match self {
-            Self::Starting => ("starting", "Starting ZTerm"),
+            Self::Starting => ("starting", "Starting Voytty"),
             Self::InitializingTerminal => ("initializing_terminal", "Initializing terminal"),
             Self::TerminalInitialized => ("terminal_initialized", "Terminal initialized"),
             Self::CheckingLocalService => ("checking_local_service", "Checking local service"),

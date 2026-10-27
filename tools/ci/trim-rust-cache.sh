@@ -10,8 +10,8 @@ set -eu
 # Arguments name cached layouts under target/: a profile directory such as
 # debug or release, or TRIPLE/release for a cross-compiled release.
 [ "$#" -gt 0 ] || set -- debug
-manifest=${ZTERM_CACHE_MANIFEST_PATH:-Cargo.toml}
-target_dir=$(CDPATH='' cd -- "${ZTERM_CACHE_TARGET_DIR:-target}" && pwd)
+manifest=${VOYTTY_CACHE_MANIFEST_PATH:-Cargo.toml}
+target_dir=$(CDPATH='' cd -- "${VOYTTY_CACHE_TARGET_DIR:-target}" && pwd)
 packages=$(cargo +1.98.0 metadata --locked --manifest-path "$manifest" --format-version 1 \
     | jq -r '.packages[] | select(.source == null) | "\(.name)@\(.version)"')
 maximum_kib=2621440

@@ -5,7 +5,7 @@ repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 relay_context="$repo_root/deploy/relay"
 
 for relay_arch in amd64 arm64; do
-    image="zterm/iroh-relay:test-$relay_arch"
+    image="voytty/iroh-relay:test-$relay_arch"
     docker buildx build --load --provenance=false --platform "linux/$relay_arch" \
         --build-arg "TARGETARCH=$relay_arch" --tag "$image" "$relay_context"
 

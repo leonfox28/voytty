@@ -49,17 +49,17 @@ use tokio::{
     sync::{Mutex, OwnedSemaphorePermit, Semaphore},
 };
 use tokio_util::sync::CancellationToken;
-use zeroize::Zeroizing;
-use zterm_core::{
+use voytty_core::{
     AuthGeneration, Capabilities, ConnectionAttemptId, ConnectionIncarnation, DeviceId,
     DomainErrorKind, PairNonce, RelayHint, TransportLimits, connection_progress::ConnectionStage,
 };
-use zterm_proto::{DecodedFrame, FrameDecoder, WireKind, v2};
+use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, v2};
+use zeroize::Zeroizing;
 
 /// Existing normal service protocol; incoming host services are not exposed.
-pub const ZTERM_ALPN: &[u8] = b"zterm/2";
+pub const VOYTTY_ALPN: &[u8] = b"voytty/2";
 /// Existing one-time pairing protocol.
-pub const ZTERM_PAIR_ALPN: &[u8] = b"zterm-pair/2";
+pub const VOYTTY_PAIR_ALPN: &[u8] = b"voytty-pair/2";
 
 #[cfg(test)]
 mod cache_tests;
@@ -95,8 +95,8 @@ pub fn endpoint_builder(secret: SecretKey, dns: iroh::dns::DnsResolver) -> iroh:
 
 #[derive(Clone)]
 struct NormalConnection {
-    diagnostic: zterm_diagnostics::Operation,
-    capabilities: zterm_core::Capabilities,
+    diagnostic: voytty_diagnostics::Operation,
+    capabilities: voytty_core::Capabilities,
     connection: Connection,
     generation: AuthGeneration,
     verified_relay: Option<RelayHint>,
@@ -391,7 +391,7 @@ impl IrohController {
         alpn: &[u8],
         deadline: Instant,
     ) -> Result<(Connection, Option<RelayHint>), ClientError> {
-        let operation = zterm_diagnostics::Operation::default();
+        let operation = voytty_diagnostics::Operation::default();
         let _permit = timeout_until(deadline, self.inner.dials.acquire())
             .await?
             .map_err(|_| attachment_cancelled())?;
@@ -410,7 +410,7 @@ impl IrohController {
         // Normal startup already has one caller-owned deadline spanning route
         // lookup, transport and Hello/Welcome. A shorter pairing-attempt cap
         // must not discard a slow normal connection before that deadline.
-        let until = if alpn == ZTERM_ALPN {
+        let until = if alpn == VOYTTY_ALPN {
             deadline
         } else {
             deadline.min(Instant::now() + self.inner.limits.connect_attempt_budget)
@@ -443,16 +443,16 @@ impl IrohController {
                 let mut slot = peer.normal.lock().await;
                 if let Some(normal) = slot.as_ref().filter(|normal| normal.connection.close_reason().is_none()) {
                     record_transport_observation(&normal.diagnostic, &normal.connection,
-                        zterm_diagnostics::Stage::ReusingTransport, None);
+                        voytty_diagnostics::Stage::ReusingTransport, None);
                     return Ok(normal.clone());
                 }
                 if let Some(normal) = slot.take() {
                     record_transport_observation(&normal.diagnostic, &normal.connection,
-                        zterm_diagnostics::Stage::RetiringTransport, None);
+                        voytty_diagnostics::Stage::RetiringTransport, None);
                 }
                 let routes = peer.routes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
                 let replacement = peer.replacement.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-                let dial = async { Ok(self.dial(remote, routes, Vec::new(), ZTERM_ALPN, deadline).await?.0) };
+                let dial = async { Ok(self.dial(remote, routes, Vec::new(), VOYTTY_ALPN, deadline).await?.0) };
                 let connection = match replacement {
                     Some(replacement) => replacement.race(dial).await?,
                     None => dial.await?,
@@ -460,7 +460,7 @@ impl IrohController {
                 let relay = selected_relay(&connection);
                 let mut guard = UnconfirmedConnection(Some(connection));
                 let connection = guard.0.as_ref().expect("connection guard is populated");
-                let operation = zterm_diagnostics::Operation::default();
+                let operation = voytty_diagnostics::Operation::default();
                 record_connection_stage(&operation, ConnectionStage::CheckingProtocolAndAccess);
                 // This outbound-only owner retains no usable connection here.
                 // Fence any still-live receiver-side primary from the previous
@@ -514,7 +514,7 @@ impl IrohController {
             .clone();
         ReplacementTransport::dial(until, async move {
             let (connection, _) = controller
-                .dial(remote, routes, Vec::new(), ZTERM_ALPN, until)
+                .dial(remote, routes, Vec::new(), VOYTTY_ALPN, until)
                 .await?;
             Ok(connection)
         })
@@ -553,7 +553,7 @@ impl IrohController {
             record_transport_observation(
                 &normal.diagnostic,
                 &normal.connection,
-                zterm_diagnostics::Stage::RetiringTransport,
+                voytty_diagnostics::Stage::RetiringTransport,
                 idle.is_ok().then_some(0),
             );
             normal
@@ -606,7 +606,7 @@ impl IrohController {
     /// Pairs a validated one-time ticket and resolves ambiguity on the normal ALPN.
     /// The caller must persist the returned host before reporting success to the UI.
     pub async fn pair_ticket(&self, text: &str) -> Result<PairedHost, ClientError> {
-        let (fields, secret) = zterm_proto::decode_pair_ticket(text).map_err(|_| {
+        let (fields, secret) = voytty_proto::decode_pair_ticket(text).map_err(|_| {
             ClientError::new(DomainErrorKind::PairTicketInvalid, "invalid pairing ticket")
         })?;
         let now = SystemTime::now()
@@ -649,7 +649,7 @@ impl IrohController {
         };
         let peer = Arc::new(Peer::new(routes.clone(), self.inner.limits));
         let attempt = match self
-            .dial(remote, Vec::new(), routes, ZTERM_PAIR_ALPN, deadline)
+            .dial(remote, Vec::new(), routes, VOYTTY_PAIR_ALPN, deadline)
             .await
         {
             Err(error) => ControllerPairAttempt::failed(error, false),
@@ -746,7 +746,7 @@ impl SessionUnaryTransport for IrohController {
                 })
                 .map_err(|_| resource_error("request ID exhausted"))?;
             let bytes = Zeroizing::new(
-                zterm_proto::encode_payload(
+                voytty_proto::encode_payload(
                     request.request_kind,
                     request_id,
                     u32::try_from(request.deadline.as_millis()).unwrap_or(u32::MAX),
@@ -867,7 +867,7 @@ impl RemoteUnaryDemand for IrohDemand {
     }
 }
 struct IrohSessionIo {
-    diagnostic: zterm_diagnostics::Operation,
+    diagnostic: voytty_diagnostics::Operation,
     connection: Connection,
     last_stream_sample: Option<Instant>,
     read_bytes: u64,
@@ -880,8 +880,8 @@ struct IrohSessionIo {
     _permit: OwnedSemaphorePermit,
 }
 impl IrohSessionIo {
-    fn stream_progress(&self) -> zterm_diagnostics::StreamProgress {
-        zterm_diagnostics::StreamProgress {
+    fn stream_progress(&self) -> voytty_diagnostics::StreamProgress {
+        voytty_diagnostics::StreamProgress {
             stream_id: self.recv.id().into(),
             // QUIC may reclaim receive state at EOF/reset. Preserve the bytes
             // actually consumed by this adapter instead of reporting zero.
@@ -894,7 +894,7 @@ impl IrohSessionIo {
     }
 
     fn record_stream_progress(&mut self) {
-        if !zterm_diagnostics::detail_enabled() {
+        if !voytty_diagnostics::detail_enabled() {
             self.last_stream_sample = None;
             return;
         }
@@ -907,9 +907,9 @@ impl IrohSessionIo {
         self.last_stream_sample = Some(now);
         // Sample only while the existing reader is polled. Its one-second quiet
         // read wakeup also samples a stall; no task, probe or deadline is added.
-        zterm_diagnostics::record(crate::handshake::with_transport_state(
-            zterm_diagnostics::Event::new(zterm_diagnostics::Kind::StreamObserved)
-                .level(zterm_diagnostics::Level::Debug)
+        voytty_diagnostics::record(crate::handshake::with_transport_state(
+            voytty_diagnostics::Event::new(voytty_diagnostics::Kind::StreamObserved)
+                .level(voytty_diagnostics::Level::Debug)
                 .connection(self.diagnostic.id())
                 .operation(&self.diagnostic)
                 .stream_progress(self.stream_progress()),
@@ -1120,11 +1120,11 @@ fn random_bytes<const N: usize>() -> Result<[u8; N], ClientError> {
         .map_err(|_| unavailable("operating-system randomness unavailable"))?;
     Ok(bytes)
 }
-fn record_connection_stage(operation: &zterm_diagnostics::Operation, stage: ConnectionStage) {
-    zterm_diagnostics::record(
-        zterm_diagnostics::Event::new(zterm_diagnostics::Kind::ConnectionStartup)
+fn record_connection_stage(operation: &voytty_diagnostics::Operation, stage: ConnectionStage) {
+    voytty_diagnostics::record(
+        voytty_diagnostics::Event::new(voytty_diagnostics::Kind::ConnectionStartup)
             .operation(operation)
-            .level(zterm_diagnostics::Level::Debug)
+            .level(voytty_diagnostics::Level::Debug)
             .startup(stage),
     );
 }
@@ -1137,7 +1137,7 @@ fn unavailable(detail: &'static str) -> ClientError {
 mod tests {
     use super::*;
     use crate::unary::SessionUnaryClient;
-    use zterm_core::{DaemonIncarnation, OperationLease, SessionId};
+    use voytty_core::{DaemonIncarnation, OperationLease, SessionId};
 
     #[derive(Debug)]
     struct FixtureLookup {
@@ -1218,9 +1218,9 @@ mod tests {
         use iroh::tls::CaTlsConfig;
         use std::time::Duration;
         let alpn = if verified_cache {
-            ZTERM_ALPN
+            VOYTTY_ALPN
         } else {
-            ZTERM_PAIR_ALPN
+            VOYTTY_PAIR_ALPN
         };
         let mut relay_config = iroh_relay::server::ServerConfig::default();
         relay_config.relay = Some(iroh_relay::server::testing::relay_config());
@@ -1383,7 +1383,7 @@ mod tests {
                 iroh::RelayConfig::new(relay, None).into(),
             ))
             .clear_ip_transports()
-            .alpns(vec![ZTERM_ALPN.to_vec()])
+            .alpns(vec![VOYTTY_ALPN.to_vec()])
             .bind()
             .await
             .expect("relay-only host");
@@ -1490,7 +1490,7 @@ mod tests {
                 remote,
                 vec![verified.clone()],
                 Vec::new(),
-                ZTERM_ALPN,
+                VOYTTY_ALPN,
                 Instant::now() + crate::protocol::REMOTE_STARTUP_DEADLINE,
             )
             .await
@@ -1519,7 +1519,7 @@ mod tests {
                 remote,
                 vec![verified],
                 Vec::new(),
-                ZTERM_ALPN,
+                VOYTTY_ALPN,
                 started + crate::protocol::REMOTE_STARTUP_DEADLINE,
             )
             .await;
@@ -1582,7 +1582,7 @@ mod tests {
             connection
         };
         let outgoing = async {
-            let connection = connect_transport(client, address, ZTERM_ALPN, deadline).await?;
+            let connection = connect_transport(client, address, VOYTTY_ALPN, deadline).await?;
             let (mut send, mut receive) = connection.open_bi().await.expect("outgoing greeting");
             send.write_all(b"x").await.expect("send greeting");
             send.finish().expect("finish greeting");
@@ -1611,7 +1611,7 @@ mod tests {
                 .clear_ip_transports()
                 .bind_addr((Ipv4Addr::LOCALHOST, 0))
                 .expect("loopback socket")
-                .alpns(vec![ZTERM_ALPN.to_vec()])
+                .alpns(vec![VOYTTY_ALPN.to_vec()])
                 .bind()
                 .await
                 .expect("isolated endpoint")
@@ -1661,7 +1661,7 @@ mod tests {
                     iroh::RelayConfig::new(relay.clone(), None).into(),
                 ))
                 .clear_ip_transports()
-                .alpns(vec![ZTERM_ALPN.to_vec()])
+                .alpns(vec![VOYTTY_ALPN.to_vec()])
         };
         let host = builder(SecretKey::generate())
             .bind_addr((Ipv4Addr::LOCALHOST, 0))
@@ -1749,7 +1749,7 @@ mod tests {
     }
     fn frame(kind: WireKind, message: &impl prost::Message) -> DecodedFrame {
         let bytes =
-            zterm_proto::encode_message(kind, 1, 0, message).expect("encode fixture response");
+            voytty_proto::encode_message(kind, 1, 0, message).expect("encode fixture response");
         FrameDecoder::new()
             .feed(&bytes)
             .expect("decode fixture response")

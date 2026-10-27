@@ -18,10 +18,10 @@ where
     // diagnostics. Dynamic interest still reaches our finite-window gate.
     TransportTraceLayer(recorder).with_filter(
         tracing_subscriber::filter::dynamic_filter_fn(|metadata, _| {
-            metadata.target() == "iroh::zterm_transport" || relay_dial_target(metadata.target())
+            metadata.target() == "iroh::voytty_transport" || relay_dial_target(metadata.target())
         })
         .with_callsite_filter(|metadata| {
-            if metadata.target() == "iroh::zterm_transport" || relay_dial_target(metadata.target())
+            if metadata.target() == "iroh::voytty_transport" || relay_dial_target(metadata.target())
             {
                 tracing::subscriber::Interest::sometimes()
             } else {
@@ -52,7 +52,7 @@ impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<
         &self,
         metadata: &'static tracing::Metadata<'static>,
     ) -> tracing::subscriber::Interest {
-        if metadata.target() == "iroh::zterm_transport" || relay_dial_target(metadata.target()) {
+        if metadata.target() == "iroh::voytty_transport" || relay_dial_target(metadata.target()) {
             tracing::subscriber::Interest::sometimes()
         } else {
             tracing::subscriber::Interest::always()
@@ -63,7 +63,7 @@ impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<
         metadata: &tracing::Metadata<'_>,
         _: tracing_subscriber::layer::Context<'_, S>,
     ) -> bool {
-        !(metadata.target() == "iroh::zterm_transport" || relay_dial_target(metadata.target()))
+        !(metadata.target() == "iroh::voytty_transport" || relay_dial_target(metadata.target()))
             || self.0.detail_enabled()
     }
     fn on_new_span(
@@ -72,7 +72,7 @@ impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<
         id: &tracing::Id,
         context: tracing_subscriber::layer::Context<'_, S>,
     ) {
-        if attributes.metadata().target() != "iroh::zterm_transport"
+        if attributes.metadata().target() != "iroh::voytty_transport"
             || attributes.metadata().name() != "relay_dial"
             || !self.0.detail_enabled()
         {
@@ -187,7 +187,7 @@ impl DialMessage {
 /// Admit only the dedicated metadata event, and only in a finite detail window.
 /// Ordinary dependency events, messages, addresses and Debug values are ignored.
 pub fn record_transport_trace(event: &tracing::Event<'_>, recorder: &Recorder) {
-    if event.metadata().target() != "iroh::zterm_transport" || !recorder.detail_enabled() {
+    if event.metadata().target() != "iroh::voytty_transport" || !recorder.detail_enabled() {
         return;
     }
     let mut fields = TraceFields::default();

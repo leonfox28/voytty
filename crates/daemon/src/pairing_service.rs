@@ -20,19 +20,19 @@ use iroh::endpoint::{RecvStream, SendStream};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
-use zeroize::{Zeroize, Zeroizing};
-use zterm_core::{
+use voytty_core::{
     AuthGeneration, AuthorizationSnapshot, AuthorizationStatus, DEFAULT_PAIR_TTL_SECONDS,
     DeviceAlias, DeviceDisplayName, DeviceId, DomainErrorKind, EphemeralOperationId,
     MAX_TICKET_TEXT_BYTES, PairBegin, PairFingerprint, PairProof, PairSecret, PairTicketFields,
     RelayHint, TransportLimits,
 };
-use zterm_proto::{WireKind, v2};
+use voytty_proto::{WireKind, v2};
+use zeroize::{Zeroize, Zeroizing};
 
 #[cfg(test)]
 use crate::pairing::controller_transcript;
 #[cfg(test)]
-use zterm_core::{PAIR_PROTOCOL_VERSION, PairChallenge, PairNonce};
+use voytty_core::{PAIR_PROTOCOL_VERSION, PairChallenge, PairNonce};
 
 use crate::authorization::AuthorizationRegistry;
 use crate::connection_broker::{ConnectionBroker, ConnectionIdentity, PairConnection};
@@ -47,7 +47,7 @@ use crate::pairing::{
     PairConsumption, PairOfferCreated, PairOfferRequest, PairingError, PairingManager,
 };
 use crate::store::{RelayRouteCache, StoreHandle};
-use zterm_client::pairing::{
+use voytty_client::pairing::{
     ConfirmedAuthorization, ControllerPairAttempt, PairProtocolIo, resolve_normal_confirmation,
 };
 
@@ -416,7 +416,7 @@ impl PairingServiceInner {
             };
         }
 
-        let (fields, secret) = zterm_proto::decode_pair_ticket(input.ticket.as_str())
+        let (fields, secret) = voytty_proto::decode_pair_ticket(input.ticket.as_str())
             .map_err(|_| invalid_pair_ticket("pairing ticket text is invalid"))?;
         let now_unix = unix_now_u64()?;
         if fields.is_expired(now_unix) {
@@ -700,11 +700,11 @@ impl PairingServiceInner {
             Ok(io) => io,
             Err(error) => return ControllerPairAttempt::failed(error, false),
         };
-        zterm_client::pairing::run_controller_pair(
+        voytty_client::pairing::run_controller_pair(
             io,
             fields,
             secret,
-            zterm_client::pairing::ControllerPairIdentity {
+            voytty_client::pairing::ControllerPairIdentity {
                 device_id: self.identity.device_id(),
                 display_name: self.identity.display_name(),
             },
@@ -1275,8 +1275,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use zterm_core::{Capabilities, PAIR_TICKET_FORMAT_VERSION, PairOfferId};
-    use zterm_platform::user_state::UserPaths;
+    use voytty_core::{Capabilities, PAIR_TICKET_FORMAT_VERSION, PairOfferId};
+    use voytty_platform::user_state::UserPaths;
 
     use super::*;
     use crate::pairing::{
@@ -1542,7 +1542,7 @@ mod tests {
         let paths = UserPaths::for_test(
             nix::unistd::Uid::effective().as_raw(),
             home.clone(),
-            home.join(".zterm"),
+            home.join(".voytty"),
             temporary.path().join("run"),
         );
         paths
@@ -1610,7 +1610,7 @@ mod tests {
         )
         .expect("ticket fields");
         let secret = PairSecret::from_bytes([0x44; 32]);
-        let text = Zeroizing::new(zterm_proto::encode_pair_ticket(&fields, &secret));
+        let text = Zeroizing::new(voytty_proto::encode_pair_ticket(&fields, &secret));
         TicketFixture { text, fields }
     }
 
@@ -1620,7 +1620,7 @@ mod tests {
     }
 
     fn encoded<Message: prost::Message>(kind: WireKind, message: &Message) -> Vec<u8> {
-        zterm_proto::encode_message(kind, 0, 0, message).expect("bounded pair frame")
+        voytty_proto::encode_message(kind, 0, 0, message).expect("bounded pair frame")
     }
 
     fn valid_challenge(ticket: &TicketFixture) -> Vec<u8> {
@@ -1674,7 +1674,7 @@ mod tests {
             .expect("host offer");
         let offer_id = created.fields().offer_id();
         let (fields, secret) =
-            zterm_proto::decode_pair_ticket(created.ticket().expose()).expect("host ticket");
+            voytty_proto::decode_pair_ticket(created.ticket().expose()).expect("host ticket");
         let begin = PairBegin::new(
             offer_id,
             "remote-controller",
@@ -1823,7 +1823,7 @@ mod tests {
             .expect_err("unresolved proof cannot imply pairing did not commit");
         assert_eq!(transport.connect_calls.load(Ordering::SeqCst), 1);
         assert_eq!(transport.confirmation_calls.load(Ordering::SeqCst), 1);
-        let frames = zterm_proto::FrameDecoder::new()
+        let frames = voytty_proto::FrameDecoder::new()
             .feed(&mutex_lock(&output))
             .expect("controller pair frames");
         assert_eq!(
@@ -2187,7 +2187,7 @@ mod tests {
         // Other parallel tests install/drop tracing dispatchers. Keep the
         // exactly-once log/redaction assertion in its own process so global
         // callsite interest updates cannot suppress this thread's event.
-        const CHILD: &str = "ZTERM_PAIR_LOG_TEST_CHILD";
+        const CHILD: &str = "VOYTTY_PAIR_LOG_TEST_CHILD";
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
                 .args([

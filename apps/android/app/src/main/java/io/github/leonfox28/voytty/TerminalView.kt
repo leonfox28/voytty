@@ -1,0 +1,825 @@
+package io.github.leonfox28.voytty
+
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Matrix
+import android.graphics.Rect
+import android.graphics.Path
+import android.graphics.Typeface
+import android.view.ActionMode
+import android.view.Menu
+import android.view.MenuItem
+import android.widget.OverScroller
+import android.text.Editable
+import android.text.Selection
+import android.text.SpannableStringBuilder
+import android.text.InputType
+import android.view.GestureDetector
+import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.View
+import android.view.inputmethod.BaseInputConnection
+import android.view.inputmethod.CursorAnchorInfo
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputMethodManager
+import androidx.core.view.OneShotPreDrawListener
+import io.github.leonfox28.voytty.nativebridge.*
+import kotlin.math.floor
+
+/** Pure semantic Canvas renderer and native IME endpoint. There is no ANSI parser here. */
+internal class TerminalView(context: Context) : View(context) {
+    var repository: AppRepository? = null
+        set(value) {
+            if (field === value) return
+            unobserve?.invoke(); unobserve = null; field = value
+            observeFrames()
+        }
+    private var unobserve: (() -> Unit)? = null
+    private var drawnFrame: NativeFrame? = null
+    private var selectionLinkAvailable = false
+    private var cursorPhaseVisible = true
+    private var cursorBlinkScheduled = false
+    private val cursorBlink = object : Runnable {
+        override fun run() {
+            cursorBlinkScheduled = false
+            if (!shouldBlinkCursor()) { cursorPhaseVisible = true; return }
+            cursorPhaseVisible = !cursorPhaseVisible
+            invalidate()
+            updateCursorBlink()
+        }
+    }
+    private fun shouldBlinkCursor() = isAttachedToWindow && isShown && windowVisibility == VISIBLE &&
+        current?.cursorVisible == true && current?.cursorBlinking == true && scrollPixels == 0f
+    private fun updateCursorBlink(reset: Boolean = false) {
+        if (reset || !shouldBlinkCursor()) {
+            removeCallbacks(cursorBlink); cursorBlinkScheduled = false; cursorPhaseVisible = true
+        }
+        if (shouldBlinkCursor() && !cursorBlinkScheduled) {
+            cursorBlinkScheduled = true; postDelayed(cursorBlink, 500)
+        }
+    }
+    private var drawnGeometry: DrawnTerminalGeometry? = null
+    private var geometryVersion = 0L
+    var onCellHeightChanged: (Int) -> Unit = {}
+    var onViewportChanged: (Int, Int) -> Unit = { rows, columns -> repository?.measure(rows, columns) }
+    val gridCellHeight: Int get() = cellHeight.toInt()
+    private var drawnSource: NativeFrameSource? = null
+    private var pendingSource: NativeFrameSource? = null
+    private var disposing = false
+    var pendingModifiers: () -> Int = { 0 }
+    var consumedModifiers: () -> Unit = {}
+    private var current: NativeFrame? = null
+    private val terminalTypefaces = Array(4) { TerminalFont.typeface(context, it) }
+    private val paint = Paint(TerminalFont.paintFlags).apply { typeface = terminalTypefaces[Typeface.NORMAL] }
+    private val rowRenderer = TerminalRowRenderer()
+    internal val rowRecordingCount: Long get() = rowRenderer.recordingCount
+    private val underlinePath = Path()
+    private val dotted = android.graphics.DashPathEffect(floatArrayOf(resources.displayMetrics.density,resources.displayMetrics.density*2),0f)
+    private val dashed = android.graphics.DashPathEffect(floatArrayOf(resources.displayMetrics.density*3,resources.displayMetrics.density*2),0f)
+    private var font = defaultTerminalFontSize
+    private var cellWidth = 1f
+    private var cellHeight = 1f
+    private var baseline = 1f
+    private val composing = SpannableStringBuilder().apply { Selection.setSelection(this, 0) }
+    private var ime: TerminalInputConnection? = null
+    private val manager = context.getSystemService(InputMethodManager::class.java)
+    private var lastSize: Pair<Int,Int>? = null
+    var imeAnimating: () -> Boolean = { false }
+    private var animatedInsets = false
+    private var imeMeasurePending = false
+    var imeLayoutSettled = true
+        set(value) {
+            if (field == value) return
+            field = value
+            if (value) measureAfterLayout()
+        }
+    fun updateImeAnimation(running: Boolean) {
+        if (animatedInsets == running) return
+        animatedInsets = running
+        // The last animated layout can already have the final height. Native
+        // requestLayout alone need not yield another AndroidView layout in
+        // Compose, so commit explicitly after the final layout, before drawing.
+        if (!running) measureAfterLayout()
+    }
+    private fun measureAfterLayout() {
+        imeMeasurePending = true
+        OneShotPreDrawListener.add(this) {
+            imeMeasurePending = false
+            measureGrid()
+            updateAnchor()
+        }
+        invalidate()
+    }
+    private val scroller = OverScroller(context)
+    private var scrollPixels = 0f
+    private var lastScrollTarget: Long? = null
+    private var scrollRequestGeneration = 0L
+    private var waitingEdge = 0
+    private var actionMode: ActionMode? = null
+    private var draggingHandle: Boolean? = null
+    private var touchX = 0f
+    private var touchY = 0f
+    private var childGesture = false
+    private var gestureSource: NativeFrameSource? = null
+    private var gestureMode = NativePointerMode.NONE
+    private var gestureRow = 0
+    private var gestureColumn = 0
+    private var wheelPixels = 0f
+    private fun releaseGestureSource() { gestureSource?.close(); gestureSource = null }
+    private val handleRadius get() = 10f * resources.displayMetrics.density
+    private val handles = context.obtainStyledAttributes(R.styleable.TerminalSelection).let { values ->
+        try { listOf(values.getDrawable(R.styleable.TerminalSelection_android_textSelectHandleLeft), values.getDrawable(R.styleable.TerminalSelection_android_textSelectHandleRight)).map { it?.mutate()?.apply { setTint(0xFF7CA66A.toInt()) } } }
+        finally { values.recycle() }
+    }
+    private val autoScroll = object : Runnable {
+        override fun run() {
+            if (draggingHandle == null || !isShown) return
+            val edge = 32f * resources.displayMetrics.density
+            val direction = when { touchY < edge -> 1f; touchY > height-edge -> -1f; else -> 0f }
+            if (direction != 0f) { moveScroll(scrollPixels + direction * cellHeight * .45f); extendHandle() }
+            postOnAnimation(this)
+        }
+    }
+    private val gesture = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onDown(event: MotionEvent): Boolean {
+            scroller.forceFinished(true); releaseGestureSource(); wheelPixels = 0f
+            gestureMode = if (scrollPixels == 0f) drawnFrame?.pointerMode ?: NativePointerMode.NONE else NativePointerMode.NONE
+            childGesture = gestureMode != NativePointerMode.NONE && !imeAnimating()
+            if (childGesture) {
+                gestureSource = drawnSource?.retained()
+                val point = hit(event.x,event.y); gestureRow = point.first; gestureColumn = point.second
+            }
+            return true
+        }
+        override fun onScroll(first: MotionEvent?, current: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
+            if (childGesture) {
+                wheelPixels -= distanceY
+                val steps = (wheelPixels / cellHeight).toInt().coerceIn(-32,32)
+                if (steps != 0) {
+                    gestureSource?.let { repository?.pointer(it,gestureRow,gestureColumn,steps) }
+                    wheelPixels -= steps * cellHeight
+                }
+                return true
+            }
+            moveScroll(scrollPixels-distanceY); return true
+        }
+        override fun onFling(first: MotionEvent?, second: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
+            if (childGesture) return true
+            val maximum = ((current?.historyMaximum?.toLong() ?: 0) * cellHeight).toInt()
+            scroller.fling(0,scrollPixels.toInt(),0,velocityY.toInt(),0,0,0,maximum)
+            postInvalidateOnAnimation(); return true
+        }
+        override fun onLongPress(event: MotionEvent) {
+            releaseGestureSource(); childGesture = false
+            val frame = drawnFrame ?: return
+            val source = drawnSource ?: return
+            if (frame.state != "active") return
+            val (row,column) = hit(event.x,event.y)
+            repository?.select(source,row,column)
+            performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+        }
+        override fun onSingleTapUp(event: MotionEvent): Boolean {
+            performClick()
+            requestFocus()
+            if (current?.selection != null) { repository?.clearSelection(); return true }
+            if (childGesture && gestureMode == NativePointerMode.MOUSE) {
+                gestureSource?.let { repository?.pointer(it,gestureRow,gestureColumn) }
+            }
+            return true
+        }
+    }).apply {
+        // Every completed tap belongs to the child, including rapid taps.
+        // The default double-tap listener would swallow the second tap.
+        setOnDoubleTapListener(null)
+    }
+    init {
+        isFocusable = true; isFocusableInTouchMode = true
+        isVerticalScrollBarEnabled = true; isScrollbarFadingEnabled = true
+        scrollBarStyle = SCROLLBARS_INSIDE_OVERLAY
+        importantForAutofill = IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+        contentDescription = context.getString(R.string.app_name)
+        updateMetrics()
+    }
+    fun update(frame: NativeFrame?, size: Int) {
+        if (font != size) { font = size; updateMetrics(); requestLayout(); invalidate() }
+        observeFrames()
+        if (unobserve == null) acceptFrame(frame)
+    }
+    private fun observeFrames() {
+        if (unobserve == null) unobserve = repository?.observeTerminalFrames(::acceptFrame)
+    }
+    private fun acceptFrame(frame: NativeFrame?) {
+        if (current === frame) return
+        val previous = current
+        val epochChanged = previous?.inputEpoch != frame?.inputEpoch
+        val geometryChanged = previous?.geometryGeneration != frame?.geometryGeneration
+        val growth = if (previous != null && frame != null) frame.historyMaximum.toLong() - previous.historyMaximum.toLong() else 0L
+        val returningLive = repository?.scrollIntent == 0L && frame?.historyOffset == 0uL && frame.cursorVisible && frame.selection == null &&
+            (waitingEdge == 0 || repository?.scrollRequestGeneration != scrollRequestGeneration)
+        if (epochChanged || geometryChanged) {
+            scroller.forceFinished(true)
+            scrollPixels = (frame?.historyOffset?.toLong() ?: 0) * cellHeight
+            lastScrollTarget = null; waitingEdge = 0
+            invalidateCoordinates()
+            if (epochChanged) rowRenderer.clear()
+        } else if ((scrollPixels > 0f || waitingEdge > 0) && growth > 0) {
+            // Preserve the logical reading position as live output appends.
+            scrollPixels += growth * cellHeight
+            scroller.forceFinished(true)
+            lastScrollTarget = null
+        }
+        if (returningLive) { scrollPixels = 0f; scroller.forceFinished(true) }
+        if (epochChanged) {
+            resetComposing(); consumedModifiers(); manager.restartInput(this)
+        }
+        repository?.let { owner ->
+            val intent = owner.scrollIntent
+            if (owner.scrollRequestGeneration != scrollRequestGeneration && intent != null &&
+                frame?.historyOffset?.toLong() == intent) {
+                scrollPixels = intent * cellHeight
+                scrollRequestGeneration = owner.scrollRequestGeneration
+                scroller.forceFinished(true); waitingEdge = 0; lastScrollTarget = null
+            }
+        }
+        // A delayed response after reversal may no longer cover the View. Keep
+        // its still-valid rows/source until a response covers the actual position.
+        val retainedWindow = if (!epochChanged && !geometryChanged && !returningLive &&
+            frame?.state == "active" && previous?.state == "active") {
+            previous.copy(windowOffset = (previous.windowOffset.toLong() + growth.coerceAtLeast(0)).toULong())
+                .takeIf { scrollPixels !in scrollBounds(frame) && scrollPixels in scrollBounds(it) }
+        } else null
+        if (retainedWindow != null) {
+            if (pendingSource == null) pendingSource = drawnSource?.retained()
+            current = frame!!.copy(rows = retainedWindow.rows, firstRow = retainedWindow.firstRow,
+                windowOffset = retainedWindow.windowOffset, contentGeneration = retainedWindow.contentGeneration,
+                background = retainedWindow.background, cursorVisible = false, source = null)
+        } else {
+            pendingSource?.close(); pendingSource = frame?.source?.retained()
+            current = frame
+        }
+        if (frame == null) {
+            drawnSource?.close(); drawnSource = null; drawnFrame = null; drawnGeometry = null
+            rowRenderer.clear()
+        }
+        current?.let { shown ->
+            scrollPixels = scrollPixels.coerceIn(scrollBounds(shown))
+            if (waitingEdge != 0 && previous != null && frame != null) {
+                val before = scrollBounds(previous)
+                val after = scrollBounds(frame)
+                if (waitingEdge > 0 && after.endInclusive > before.endInclusive + growth.coerceAtLeast(0) * cellHeight ||
+                    waitingEdge < 0 && after.start < before.start + growth.coerceAtLeast(0) * cellHeight) {
+                    val older = waitingEdge > 0
+                    waitingEdge = 0
+                    submitScroll(kotlin.math.ceil(scrollPixels / cellHeight).toLong(), older)
+                }
+            }
+        }
+        if (gestureMode != frame?.pointerMode && childGesture) invalidateCoordinates()
+        if (frame?.selection != null && actionMode == null) showSelectionActions()
+        if (frame?.selection == null) { val old = actionMode; actionMode = null; old?.finish() }
+        if (previous?.selection != frame?.selection || epochChanged || geometryChanged) {
+            selectionLinkAvailable = false
+            actionMode?.invalidate()
+            if (frame?.selection != null) repository?.selectionHyperlink { uri ->
+                selectionLinkAvailable = uri != null
+                actionMode?.invalidate()
+            }
+        }
+        actionMode?.invalidateContentRect()
+        updateAnchor()
+        updateCursorBlink(previous?.cursorRow != frame?.cursorRow || previous?.cursorColumn != frame?.cursorColumn ||
+            previous?.cursorShape != frame?.cursorShape || previous?.cursorBlinking != frame?.cursorBlinking ||
+            previous?.cursorVisible != frame?.cursorVisible)
+        postInvalidateOnAnimation()
+    }
+    private fun updateMetrics() {
+        val rows = scrollPixels / cellHeight
+        rowRenderer.clear()
+        paint.textSize = android.util.TypedValue.applyDimension(android.util.TypedValue.COMPLEX_UNIT_SP, font.toFloat(), resources.displayMetrics)
+        cellWidth = paint.terminalAdvance("M").coerceAtLeast(1f)
+        val metrics = paint.fontMetrics
+        cellHeight = kotlin.math.ceil((metrics.descent - metrics.ascent).toDouble()).toFloat().coerceAtLeast(1f)
+        baseline = -metrics.ascent
+        scrollPixels = rows * cellHeight
+        invalidateCoordinates()
+        onCellHeightChanged(gridCellHeight)
+    }
+    private fun invalidateCoordinates() {
+        ++geometryVersion
+        repository?.retireGeometry()
+        releaseGestureSource(); childGesture = false; draggingHandle = null
+        removeCallbacks(autoScroll)
+    }
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        if (w != oldw) rowRenderer.clear()
+        invalidateCoordinates()
+        measureGrid()
+    }
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) { measureGrid() }
+    private fun measureGrid() {
+        if (width <= 0 || height <= 0 || animatedInsets || imeMeasurePending || !imeLayoutSettled || imeAnimating()) return
+        submitGrid(width, height)
+    }
+    private fun submitGrid(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+        val size = floor(height / cellHeight).toInt().coerceIn(1, 80) to floor(width / cellWidth).toInt().coerceIn(1, 240)
+        if (size == lastSize) return
+        lastSize = size
+        onViewportChanged(size.first, size.second)
+    }
+    private fun frameForDraw(): NativeFrame? {
+        val candidate = current ?: return null
+        val displayed = drawnFrame ?: return candidate
+        val waitingForSize = lastSize?.let {
+            candidate.viewport.rows.toInt() != it.first || candidate.viewport.columns.toInt() != it.second
+        } == true
+        if (!(animatedInsets || imeMeasurePending || !imeLayoutSettled || imeAnimating() || waitingForSize) ||
+            candidate.viewport == displayed.viewport || candidate.inputEpoch != displayed.inputEpoch ||
+            !candidate.inputReady || !displayed.inputReady ||
+            candidate.activeScreen != displayed.activeScreen ||
+            candidate.viewport.columns != displayed.viewport.columns || drawnGeometry?.width != width ||
+            drawnGeometry?.cellWidth != cellWidth || drawnGeometry?.cellHeight != cellHeight ||
+            candidate.selection != null || displayed.selection != null || candidate.historyOffset != 0uL ||
+            displayed.historyOffset != 0uL || scrollPixels != 0f) return candidate
+        // A late response to an earlier size must not replace the visible grid
+        // during animation or after reversal. Matching geometry is accepted
+        // immediately; it does not imply that the child has finished repainting.
+        return displayed
+    }
+    override fun onDraw(canvas: Canvas) {
+        val frame = frameForDraw() ?: return
+        canvas.clipRect(0, 0, width, height)
+        val offset = kotlin.math.ceil(scrollPixels / cellHeight).toLong()
+        val firstRow = frame.firstRow + frame.windowOffset.toLong() - offset
+        // The viewport always starts at the top of the View. A local height
+        // change clips/exposes rows; only explicit history scrolling translates
+        // them. Remote row counts must never add a second keyboard translation.
+        val shift = scrollPixels - offset * cellHeight
+        val location = IntArray(2); getLocationOnScreen(location)
+        val geometry = DrawnTerminalGeometry(cellWidth, cellHeight, baseline, shift, width, height,
+            location[0], location[1], geometryVersion, firstRow)
+        canvas.drawColor(frame.background.toInt())
+        canvas.save(); canvas.translate(0f, shift)
+        frame.rows.forEachIndexed { row, line ->
+            val logical = frame.firstRow + row
+            val top = (logical - geometry.firstRow) * cellHeight
+            if (top + shift >= height || top + cellHeight + shift <= 0) return@forEachIndexed
+            canvas.save(); canvas.translate(0f, top)
+            rowRenderer.draw(canvas, logical, line, width, cellHeight.toInt(), frame.viewport.rows.toInt() * 3 + 1) {
+                drawRow(it, line)
+            }
+            canvas.restore()
+        }
+        drawSelection(canvas, frame, geometry)
+        val cursorCells = frame.rows.getOrNull((frame.windowOffset + frame.cursorRow.toULong()).toInt())?.cells
+        val declaredColumn = frame.cursorColumn.toInt()
+        val cursorColumn = if (cursorCells?.getOrNull(declaredColumn)?.width == 0.toUByte() &&
+            cursorCells.getOrNull(declaredColumn - 1)?.width == 2.toUByte()) declaredColumn - 1 else declaredColumn
+        val cursorWidth = if (cursorCells?.getOrNull(cursorColumn)?.width == 2.toUByte()) cellWidth * 2 else cellWidth
+        val cursorX = cursorColumn * cellWidth
+        val cursorY = (frame.firstRow + frame.windowOffset.toLong() + frame.cursorRow.toInt() - firstRow) * cellHeight
+        if (frame.cursorVisible && scrollPixels == 0f && (!frame.cursorBlinking || cursorPhaseVisible)) {
+            paint.color = frame.cursorColor.toInt(); paint.alpha = 130
+            val thickness = maxOf(1f, resources.displayMetrics.density * 2)
+            when (frame.cursorShape) {
+                NativeCursorShape.BLOCK -> canvas.drawRect(cursorX,cursorY,cursorX+cursorWidth,cursorY+cellHeight,paint)
+                NativeCursorShape.BEAM -> canvas.drawRect(cursorX,cursorY,cursorX+thickness,cursorY+cellHeight,paint)
+                NativeCursorShape.UNDERLINE -> canvas.drawRect(cursorX,cursorY+cellHeight-thickness,cursorX+cursorWidth,cursorY+cellHeight,paint)
+            }
+            paint.alpha = 255
+        }
+        if (composing.isNotEmpty() && scrollPixels == 0f) {
+            paint.color = frame.background.toInt()
+            val extent = paint.terminalAdvance(composing.toString())
+            canvas.drawRect(cursorX,cursorY,cursorX+extent,cursorY+cellHeight,paint)
+            paint.color = frame.cursorColor.toInt()
+            canvas.drawText(composing.toString(),cursorX,cursorY+baseline,paint)
+            canvas.drawLine(cursorX,cursorY+cellHeight-1,cursorX+extent,cursorY+cellHeight-1,paint)
+        }
+        canvas.restore()
+        if (drawnFrame !== frame || drawnGeometry?.firstRow != firstRow) {
+            if (drawnGeometry?.firstRow != firstRow) repository?.retireGeometry()
+            val base = if (frame === current) pendingSource ?: drawnSource else drawnSource
+            val source = try { base?.viewportSource(firstRow) } catch (_: NativeException.RequestFailed) { null }
+            drawnSource?.close(); drawnSource = source
+            if (frame === current) { pendingSource?.close(); pendingSource = null }
+        }
+        drawnFrame = frame
+        drawnGeometry = geometry
+        updateAnchor()
+        actionMode?.invalidateContentRect()
+        if (draggingHandle != null) post { extendHandle() }
+    }
+    private fun drawRow(canvas: Canvas, line: NativeRow) {
+        val top = 0f
+        // Fill the grid before drawing ink. At fractional cell boundaries an
+        // adjacent background must not blend over the previous glyph's edge.
+        paint.isAntiAlias = false
+        line.cells.forEachIndexed { column, cell ->
+            if (cell.width == 0.toUByte()) return@forEachIndexed
+            val x = column * cellWidth
+            if (x >= width) return@forEachIndexed
+            paint.color = cell.background.toInt(); paint.alpha = 255
+            canvas.drawRect(x, top, x + cellWidth * cell.width.toInt(), top + cellHeight, paint)
+        }
+        paint.isAntiAlias = true
+        line.cells.forEachIndexed { column, cell ->
+            if (cell.width == 0.toUByte()) return@forEachIndexed
+            val x = column * cellWidth
+            val right = x + cellWidth * cell.width.toInt()
+            if (x >= width) return@forEachIndexed
+            if (cell.attributes.toInt() and 16 != 0) return@forEachIndexed
+            // A plain space has no glyph ink; its background and decorations still draw.
+            if (cell.text.isNotEmpty() && cell.text != " ") {
+                paint.color = cell.foreground.toInt()
+                paint.alpha = if (cell.attributes.toInt() and 2 != 0) 150 else 255
+                val style = (if (cell.attributes.toInt() and 1 != 0) Typeface.BOLD else Typeface.NORMAL) or
+                    (if (cell.attributes.toInt() and 4 != 0) Typeface.ITALIC else Typeface.NORMAL)
+                paint.typeface = terminalTypefaces[style]
+                canvas.save(); canvas.clipRect(x, top, right, top + cellHeight)
+                drawTerminalGlyph(canvas, cell.text, x, top + baseline, cellWidth * cell.width.toInt(), paint); canvas.restore()
+                paint.typeface = terminalTypefaces[Typeface.NORMAL]; paint.alpha = 255
+            }
+            if (cell.attributes.toInt() and 8 != 0) {
+                paint.color = cell.foreground.toInt()
+                paint.strokeWidth = resources.displayMetrics.density
+                val y = top + baseline + paint.fontMetrics.ascent * .35f
+                canvas.drawLine(x, y, right, y, paint)
+            }
+            if (cell.underline.toInt() != 0) {
+                paint.color = cell.underlineColor.toInt(); paint.strokeWidth = resources.displayMetrics.density
+                val y = top + cellHeight - paint.strokeWidth
+                when (cell.underline.toInt()) {
+                    3 -> {
+                        val path = underlinePath.apply {
+                            reset()
+                            moveTo(x,y)
+                            var position = x
+                            while (position < right) {
+                                val end = minOf(position+4*paint.strokeWidth,right)
+                                quadTo((position+end)/2, y-3*paint.strokeWidth,end,y)
+                                position = end
+                            }
+                        }
+                        paint.style = Paint.Style.STROKE; canvas.drawPath(path,paint); paint.style = Paint.Style.FILL
+                    }
+                    4, 5 -> {
+                        paint.pathEffect = if (cell.underline.toInt() == 4) dotted else dashed
+                        canvas.drawLine(x,y,right,y,paint); paint.pathEffect = null
+                    }
+                    else -> {
+                        canvas.drawLine(x,y,right,y,paint)
+                        if (cell.underline.toInt() == 2) canvas.drawLine(x,y-2*paint.strokeWidth,right,y-2*paint.strokeWidth,paint)
+                    }
+                }
+            }
+        }
+    }
+    private fun scrollBounds(frame: NativeFrame): ClosedFloatingPointRange<Float> {
+        val maximum = minOf(frame.windowOffset.toLong(), frame.historyMaximum.toLong())
+        val minimum = (frame.windowOffset.toLong() - (frame.rows.size - frame.viewport.rows.toInt()).coerceAtLeast(0))
+            .coerceIn(0, maximum)
+        return minimum * cellHeight..maximum * cellHeight
+    }
+    private fun hit(x: Float, y: Float): Pair<Int,Int> {
+        val frame = drawnFrame
+        val geometry = drawnGeometry ?: return 0 to 0
+        return floor((y-geometry.shift) / geometry.cellHeight).toInt().coerceIn(0,(frame?.viewport?.rows?.toInt() ?: 1)-1) to
+            floor(x / geometry.cellWidth).toInt().coerceIn(0,(frame?.viewport?.columns?.toInt() ?: 1)-1)
+    }
+    private fun moveScroll(value: Float) {
+        val frame = current ?: return
+        if (frame.state != "active") return
+        val previous = scrollPixels
+        val bounds = scrollBounds(frame)
+        scrollPixels = value.coerceIn(bounds)
+        val target = kotlin.math.ceil(scrollPixels / cellHeight).toLong()
+        val edge = when { value > bounds.endInclusive -> 1; value < bounds.start -> -1; else -> 0 }
+        if (edge != 0) {
+            scroller.forceFinished(true)
+            waitingEdge = edge
+            // Ask for the next row to expose an adjacent cached/prefetched page.
+            // Discard excess distance: delivery expands bounds, never replays it.
+            submitScroll((target + edge).coerceIn(0, frame.historyMaximum.toLong()), edge > 0)
+        } else {
+            waitingEdge = 0
+            submitScroll(target, scrollPixels >= previous)
+        }
+        awakenScrollBars()
+        postInvalidateOnAnimation()
+    }
+    private fun submitScroll(target: Long, older: Boolean) {
+        if (lastScrollTarget == target) return
+        lastScrollTarget = target
+        repository?.scroll(target, older,
+            (2 + kotlin.math.abs(scroller.currVelocity) / (cellHeight * 12)).toInt().coerceIn(2, 8),
+            kotlin.math.ceil(scrollPixels / cellHeight).toLong())
+        scrollRequestGeneration = repository?.scrollRequestGeneration ?: scrollRequestGeneration
+    }
+    override fun computeVerticalScrollRange(): Int = ((current?.historyMaximum?.toLong() ?: 0) * cellHeight + height).coerceAtMost(Int.MAX_VALUE.toFloat()).toInt()
+    override fun computeVerticalScrollExtent(): Int = height
+    override fun computeVerticalScrollOffset(): Int = ((current?.historyMaximum?.toLong() ?: 0) * cellHeight - scrollPixels).coerceIn(0f,Int.MAX_VALUE.toFloat()).toInt()
+    override fun computeScroll() {
+        if (scroller.computeScrollOffset()) { moveScroll(scroller.currY.toFloat()); postInvalidateOnAnimation() }
+    }
+    private fun handlePosition(anchor: Boolean, frame: NativeFrame? = drawnFrame, geometry: DrawnTerminalGeometry? = drawnGeometry): Pair<Float,Float>? {
+        frame ?: return null
+        geometry ?: return null
+        val selection = frame.selection ?: return null
+        val row = (if (anchor) selection.anchorRow else selection.focusRow) - geometry.firstRow
+        if (row !in 0 until frame.viewport.rows.toLong()) return null
+        val column = if (anchor) selection.anchorColumn.toInt() else selection.focusColumn.toInt()+1
+        return (column * geometry.cellWidth).coerceIn(handleRadius, maxOf(handleRadius,geometry.width-handleRadius)) to (row+1) * geometry.cellHeight + geometry.shift
+    }
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (drawnGeometry?.version != geometryVersion || drawnFrame?.geometryGeneration != current?.geometryGeneration || imeAnimating()) return true
+        val geometry = drawnGeometry ?: return true
+        val frame = drawnFrame ?: return true
+        if (event.actionMasked == MotionEvent.ACTION_DOWN &&
+            (event.x >= frame.viewport.columns.toInt() * geometry.cellWidth || event.y < geometry.shift ||
+             event.y - geometry.shift >= frame.viewport.rows.toInt() * geometry.cellHeight)) return true
+        touchX = event.x; touchY = event.y
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            draggingHandle = listOf(true,false).mapNotNull { anchor ->
+                handlePosition(anchor)?.let { (x,y) ->
+                    val drawable = handles[if (anchor) 0 else 1]
+                    val centerX = x + (drawable?.intrinsicWidth ?: 0) * if (anchor) -.25f else .25f
+                    val dx = centerX-event.x; val dy = y+handleRadius-event.y
+                    if (kotlin.math.abs(dx) < handleRadius*2 && kotlin.math.abs(dy) < handleRadius*2) anchor to dx*dx+dy*dy else null
+                }
+            }.minByOrNull { it.second }?.first
+            if (draggingHandle != null) { scroller.forceFinished(true); postOnAnimation(autoScroll); parent?.requestDisallowInterceptTouchEvent(true) }
+        }
+        if (draggingHandle != null) {
+            if (event.actionMasked == MotionEvent.ACTION_MOVE) { actionMode?.hide(1000); extendHandle() }
+            if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                draggingHandle = null; removeCallbacks(autoScroll); actionMode?.invalidateContentRect()
+            }
+            return true
+        }
+        val handled = gesture.onTouchEvent(event)
+        if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) releaseGestureSource()
+        return handled
+    }
+    private fun extendHandle() {
+        val source = drawnSource ?: return
+        val anchor = draggingHandle ?: return
+        val (row,column) = hit(touchX,touchY-cellHeight*.5f)
+        repository?.extendSelection(source,row,column,anchor)
+    }
+    private fun drawSelection(canvas: Canvas, frame: NativeFrame, geometry: DrawnTerminalGeometry) {
+        val selection = frame.selection ?: return
+        val a = selection.anchorRow to selection.anchorColumn.toInt()
+        val b = selection.focusRow to selection.focusColumn.toInt()
+        val forward = a.first < b.first || a.first == b.first && a.second <= b.second
+        val first = if (forward) a else b; val last = if (forward) b else a
+        paint.color = 0xFF7CA66A.toInt(); paint.alpha = 90
+        frame.rows.forEachIndexed { index, _ ->
+            val logical = frame.firstRow + index
+            if (logical in first.first..last.first) {
+                val left = if (logical == first.first) first.second else 0
+                val right = if (logical == last.first) last.second+1 else frame.viewport.columns.toInt()
+                val row = logical - geometry.firstRow
+                canvas.drawRect(left*cellWidth,row*cellHeight,right*cellWidth,(row+1)*cellHeight,paint)
+            }
+        }
+        paint.alpha = 255
+        for (anchor in listOf(true,false)) handlePosition(anchor, frame, geometry)?.let { (x,y) ->
+            handles[if (anchor) 0 else 1]?.let { handle ->
+                val w = handle.intrinsicWidth.coerceAtLeast(1)
+                val h = handle.intrinsicHeight.coerceAtLeast(1)
+                val left = (x - if (anchor) w*.75f else w*.25f).toInt().coerceIn(0,(width-w).coerceAtLeast(0))
+                val top = (y-geometry.shift).toInt()
+                handle.setBounds(left,top,left+w,top+h); handle.draw(canvas)
+            }
+        }
+    }
+    private fun showSelectionActions() {
+        actionMode = startActionMode(object : ActionMode.Callback2() {
+            override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+                menu.add(0,android.R.id.copy,0,android.R.string.copy).setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+                menu.add(0,R.id.open_terminal_link,1,R.string.open_terminal_link).apply {
+                    setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM); isVisible = false
+                }
+                return true
+            }
+            override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean {
+                menu.findItem(R.id.open_terminal_link)?.isVisible = selectionLinkAvailable
+                return true
+            }
+            override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+                if (item.itemId == R.id.open_terminal_link) {
+                    repository?.selectionHyperlink { value ->
+                        val uri = value?.let(android.net.Uri::parse) ?: return@selectionHyperlink
+                        if (uri.scheme !in listOf("http", "https") || uri.host.isNullOrEmpty()) return@selectionHyperlink
+                        try {
+                            context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+                                .addCategory(android.content.Intent.CATEGORY_BROWSABLE)
+                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                            repository?.clearSelection(); mode.finish()
+                        } catch (_: android.content.ActivityNotFoundException) {
+                            android.widget.Toast.makeText(context,R.string.open_terminal_link_failed,android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    return true
+                }
+                if (item.itemId != android.R.id.copy) return false
+                repository?.copySelection { text ->
+                    context.getSystemService(android.content.ClipboardManager::class.java)
+                        .setPrimaryClip(android.content.ClipData.newPlainText("",text))
+                    repository?.clearSelection(); mode.finish()
+                }
+                return true
+            }
+            override fun onDestroyActionMode(mode: ActionMode) { if (actionMode === mode) { actionMode = null; if (!disposing) repository?.clearSelection() } }
+            override fun onGetContentRect(mode: ActionMode, view: View, outRect: Rect) {
+                val point = handlePosition(false) ?: handlePosition(true)
+                val y = point?.second?.toInt()?.coerceIn(0,height) ?: height/2
+                outRect.set(0,(y-cellHeight).toInt().coerceAtLeast(0),width,y)
+            }
+        },ActionMode.TYPE_FLOATING)
+    }
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        if (isAttachedToWindow) updateCursorBlink(reset = true)
+    }
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        updateCursorBlink(reset = true)
+        repository?.terminalVisible(visibility == VISIBLE)
+        if (visibility != VISIBLE) { rowRenderer.clear(); scroller.forceFinished(true); draggingHandle = null; releaseGestureSource(); removeCallbacks(autoScroll) }
+    }
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow(); disposing = false; observeFrames(); updateCursorBlink(reset = true)
+    }
+    override fun onDetachedFromWindow() {
+        disposing = true
+        removeCallbacks(cursorBlink); cursorBlinkScheduled = false; cursorPhaseVisible = true
+        rowRenderer.clear()
+        imeMeasurePending = false
+        releaseGestureSource()
+        unobserve?.invoke(); unobserve = null
+        pendingSource?.close(); pendingSource = null
+        drawnSource?.close(); drawnSource = null; drawnFrame = null; drawnGeometry = null; current = null
+        scroller.forceFinished(true); draggingHandle = null; removeCallbacks(autoScroll)
+        repository?.terminalVisible(false)
+        super.onDetachedFromWindow()
+    }
+    override fun performClick(): Boolean { super.performClick(); return true }
+    fun setKeyboardVisible(visible: Boolean) {
+        if (!visible) manager.hideSoftInputFromWindow(windowToken, 0)
+        else if (current?.inputReady == true) {
+            requestFocus()
+            manager.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+    override fun onCheckIsTextEditor(): Boolean = true
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
+        // This is a terminal preedit buffer, not a multiline text editor.
+        // MULTI_LINE makes some IMEs commit LF for Return instead of sending
+        // KEYCODE_ENTER. Multiline commits/pastes still pass through unchanged.
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_ACTION_NONE
+        outAttrs.initialSelStart = Selection.getSelectionStart(composing)
+        outAttrs.initialSelEnd = Selection.getSelectionEnd(composing)
+        outAttrs.privateImeOptions = "com.google.android.inputmethod.latin.noMicrophoneKey"
+        return TerminalInputConnection().also { ime = it }
+    }
+    private fun resetComposing() {
+        composing.clear(); composing.clearSpans(); Selection.setSelection(composing, 0)
+    }
+    private fun updateAnchor() {
+        if (ime?.inBatchEdit == true) return
+        val frame = drawnFrame ?: return
+        val geometry = drawnGeometry ?: return
+        if (geometry.version != geometryVersion || frame.inputEpoch != current?.inputEpoch) return
+        if (!frame.inputReady || scrollPixels != 0f || frame.historyOffset != 0uL || frame.selection != null) return
+        val matrix = Matrix().apply { setTranslate(geometry.screenX.toFloat(), geometry.screenY.toFloat()) }
+        val x = frame.cursorColumn.toInt() * geometry.cellWidth
+        val y = (frame.firstRow + frame.windowOffset.toLong() + frame.cursorRow.toInt() - geometry.firstRow) * geometry.cellHeight + geometry.shift
+        val visible = x in 0f..geometry.width.toFloat() && y >= 0f && y + geometry.cellHeight <= geometry.height
+        val flags = if (visible) CursorAnchorInfo.FLAG_HAS_VISIBLE_REGION else CursorAnchorInfo.FLAG_HAS_INVISIBLE_REGION
+        val builder = CursorAnchorInfo.Builder().setMatrix(matrix)
+            .setSelectionRange(Selection.getSelectionStart(composing), Selection.getSelectionEnd(composing))
+            .setInsertionMarkerLocation(x,y,y+geometry.baseline,y+geometry.cellHeight,flags)
+        val start = BaseInputConnection.getComposingSpanStart(composing)
+        val end = BaseInputConnection.getComposingSpanEnd(composing)
+        if (start >= 0 && end >= start) builder.setComposingText(start, composing.subSequence(start, end))
+        manager.updateCursorAnchorInfo(this,builder.build())
+    }
+    private inner class TerminalInputConnection : BaseInputConnection(this@TerminalView, true) {
+        private val inputEpoch = current?.inputEpoch
+        private val retiredEditable = SpannableStringBuilder().apply { Selection.setSelection(this, 0) }
+        private var batchDepth = 0
+        private var editorChanged = false
+        val inBatchEdit: Boolean get() = batchDepth > 0
+        private fun ready() = current?.inputReady == true && current?.inputEpoch == inputEpoch
+        override fun getEditable(): Editable = if (current?.inputEpoch == inputEpoch) composing else retiredEditable
+        override fun beginBatchEdit(): Boolean {
+            if (!ready()) return false
+            batchDepth++
+            return true
+        }
+        override fun endBatchEdit(): Boolean {
+            if (batchDepth == 0) return false
+            batchDepth--
+            if (!ready()) { editorChanged = false; return false }
+            if (batchDepth == 0 && editorChanged) {
+                editorChanged = false
+                manager.updateSelection(this@TerminalView, Selection.getSelectionStart(composing),
+                    Selection.getSelectionEnd(composing), getComposingSpanStart(composing), getComposingSpanEnd(composing))
+                updateAnchor(); invalidate()
+            }
+            return batchDepth > 0
+        }
+        private fun edit(action: () -> Boolean): Boolean {
+            if (!beginBatchEdit()) return false
+            try { return action().also { if (it) editorChanged = true } }
+            finally { endBatchEdit() }
+        }
+        private fun canReplace(text: CharSequence): Boolean {
+            val start = getComposingSpanStart(composing).takeIf { it >= 0 } ?: Selection.getSelectionStart(composing)
+            val end = getComposingSpanEnd(composing).takeIf { it >= 0 } ?: Selection.getSelectionEnd(composing)
+            return text.length <= 524288 - (composing.length - (maxOf(start, end) - minOf(start, end)))
+        }
+        override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
+            if (!ready() || !canReplace(text ?: "")) return false
+            return edit { super.setComposingText(text ?: "", newCursorPosition) }
+        }
+        override fun setComposingRegion(start: Int, end: Int): Boolean = edit { super.setComposingRegion(start, end) }
+        override fun setSelection(start: Int, end: Int): Boolean = edit { super.setSelection(start, end) }
+        private fun commit(value: String, paste: Boolean = false): Boolean {
+            if (!ready() || repository?.text(value, pendingModifiers(), paste) != true) return false
+            if (value.isNotEmpty()) consumedModifiers()
+            resetComposing()
+            return true
+        }
+        override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+            if (!ready() || !canReplace(text ?: "")) return false
+            return edit {
+                // Apply Android replacement semantics locally, then admit the
+                // resulting text once. A rejected enqueue must retain preedit,
+                // selection and composing spans exactly for a later retry.
+                // The copy constructor drops NoCopySpan, including Android's
+                // selection and composing markers; append preserves them.
+                val previous = SpannableStringBuilder().append(composing)
+                super.commitText(text ?: "", newCursorPosition)
+                if (commit(composing.toString())) true else {
+                    composing.clear(); composing.clearSpans(); composing.append(previous)
+                    false
+                }
+            }
+        }
+        override fun finishComposingText(): Boolean = edit {
+            if (composing.isEmpty()) { resetComposing(); true } else commit(composing.toString())
+        }
+        override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean = delete(beforeLength,afterLength,false)
+        override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean = delete(beforeLength,afterLength,true)
+        private fun delete(before: Int, after: Int, codePoints: Boolean): Boolean {
+            if (!ready()) return false
+            if (before < 0 || after < 0 || before > 128 || after > 128) return false
+            if (composing.isNotEmpty()) {
+                return edit {
+                    if (codePoints) super.deleteSurroundingTextInCodePoints(before, after)
+                    else super.deleteSurroundingText(before, after)
+                }
+            } else {
+                if (repository?.deleteKeys(before, after, pendingModifiers()) != true) return false
+                if (before + after > 0) consumedModifiers()
+            }
+            return true
+        }
+        override fun performEditorAction(actionCode: Int): Boolean { if (!ready() || repository?.key(NativeKey.Enter, pendingModifiers()) != true) return false; consumedModifiers(); return true }
+        override fun requestCursorUpdates(cursorUpdateMode: Int): Boolean { if (!ready()) return false; updateAnchor(); return true }
+        override fun sendKeyEvent(event: KeyEvent): Boolean = ready() && handleKey(event)
+        override fun performContextMenuAction(id: Int): Boolean {
+            if (!ready() || id != android.R.id.paste) return false
+            val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+            return clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()?.let { edit { commit(it,true) } } ?: false
+        }
+    }
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean = handleKey(event) || super.onKeyDown(keyCode,event)
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean = handleKey(event) || super.onKeyUp(keyCode,event)
+    private fun handleKey(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_BACK || KeyEvent.isModifierKey(event.keyCode)) return false
+        val key: NativeKey = when(event.keyCode) {
+            KeyEvent.KEYCODE_ESCAPE -> NativeKey.Escape; KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> NativeKey.Enter
+            KeyEvent.KEYCODE_TAB -> NativeKey.Tab; KeyEvent.KEYCODE_DEL -> NativeKey.Backspace; KeyEvent.KEYCODE_FORWARD_DEL -> NativeKey.Delete
+            KeyEvent.KEYCODE_DPAD_LEFT -> NativeKey.Left; KeyEvent.KEYCODE_DPAD_RIGHT -> NativeKey.Right
+            KeyEvent.KEYCODE_DPAD_UP -> NativeKey.Up; KeyEvent.KEYCODE_DPAD_DOWN -> NativeKey.Down
+            KeyEvent.KEYCODE_MOVE_HOME -> NativeKey.Home; KeyEvent.KEYCODE_MOVE_END -> NativeKey.End
+            KeyEvent.KEYCODE_PAGE_UP -> NativeKey.PageUp; KeyEvent.KEYCODE_PAGE_DOWN -> NativeKey.PageDown
+            in KeyEvent.KEYCODE_F1..KeyEvent.KEYCODE_F12 -> NativeKey.Function((event.keyCode-KeyEvent.KEYCODE_F1+1).toUByte())
+            else -> { val scalar = event.getUnicodeChar(0); if (scalar <= 0 || scalar and android.view.KeyCharacterMap.COMBINING_ACCENT != 0) return false; NativeKey.Unicode(scalar.toUInt()) }
+        }
+        val modifiers = (if (event.isShiftPressed) 1 else 0) or (if (event.isAltPressed) 2 else 0) or
+            (if (event.isCtrlPressed) 4 else 0) or (if (event.isMetaPressed) 8 else 0) or pendingModifiers()
+        val scalar = event.unicodeChar
+        val text = if (scalar in 32..0x10ffff && scalar !in 0x7f..0x9f && scalar !in 0xd800..0xdfff) String(Character.toChars(scalar)) else ""
+        if (repository?.key(key,modifiers,if (event.action == KeyEvent.ACTION_UP) 3 else if (event.repeatCount > 0) 2 else 1,text) != true) return false
+        if (event.action != KeyEvent.ACTION_UP) consumedModifiers()
+        return true
+    }
+}

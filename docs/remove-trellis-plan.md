@@ -1,4 +1,4 @@
-# Remove Trellis from zterm
+# Remove Trellis from voytty
 
 Status: project and global uninstall completed on 2026-09-30.
 Branch: `chore/remove-trellis`.

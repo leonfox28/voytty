@@ -2,7 +2,7 @@
 
 use std::fs;
 
-use zterm_platform::user_state::UserPaths;
+use voytty_platform::user_state::UserPaths;
 
 /// Temporary managed user-state paths.
 pub struct TestState {
@@ -44,7 +44,7 @@ impl TestState {
         let paths = UserPaths::for_test(
             uid,
             home.clone(),
-            home.join(".zterm"),
+            home.join(".voytty"),
             temporary.path().join("run"),
         );
         Self {

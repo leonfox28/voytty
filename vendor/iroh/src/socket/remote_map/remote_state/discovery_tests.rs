@@ -29,7 +29,7 @@ impl AddressLookup for DelayedLookup {
 }
 
 #[tokio::test]
-async fn zterm_fresh_discovery_does_not_wait_for_initial_retransmission() {
+async fn voytty_fresh_discovery_does_not_wait_for_initial_retransmission() {
     let network = TestNetwork::new();
     let host_key = SecretKey::generate();
     let client_key = SecretKey::generate();
@@ -100,7 +100,7 @@ fn discovered(
 }
 
 #[tokio::test]
-async fn zterm_initial_fanout_checks_identity_and_only_new_addresses() {
+async fn voytty_initial_fanout_checks_identity_and_only_new_addresses() {
     use super::{MAX_DATAGRAM_SEND_TASKS, TransportsSender};
     let mut state = pending_state();
     let (sender, mut receiver) = TransportsSender::with_bounded_relay(4, std::iter::empty());
@@ -133,7 +133,7 @@ async fn zterm_initial_fanout_checks_identity_and_only_new_addresses() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn zterm_initial_fanout_skips_expired_and_local_paths() {
+async fn voytty_initial_fanout_skips_expired_and_local_paths() {
     use super::{MAX_DATAGRAM_SEND_TASKS, TransportsSender};
     let mut state = pending_state();
     let (sender, _receiver) = TransportsSender::with_bounded_relay(4, std::iter::empty());
@@ -167,7 +167,7 @@ async fn zterm_initial_fanout_skips_expired_and_local_paths() {
 }
 
 #[tokio::test]
-async fn zterm_initial_fanout_survives_another_selected_path_and_stops_after_lookup() {
+async fn voytty_initial_fanout_survives_another_selected_path_and_stops_after_lookup() {
     use super::{MAX_DATAGRAM_SEND_TASKS, TransportsSender, transports};
     let mut state = pending_state();
     let (sender, mut receiver) = TransportsSender::with_bounded_relay(4, std::iter::empty());
@@ -212,7 +212,7 @@ fn sent(receiver: &mut (impl n0_future::Stream<Item = ()> + Unpin)) -> usize {
 }
 
 #[tokio::test]
-async fn zterm_new_handshake_is_not_pinned_to_another_connections_selected_path() {
+async fn voytty_new_handshake_is_not_pinned_to_another_connections_selected_path() {
     use super::{MAX_DATAGRAM_SEND_TASKS, Source, TransportsSender, transports};
     let mut state = pending_state();
     state.address_lookup_stream = None;
@@ -233,7 +233,7 @@ async fn zterm_new_handshake_is_not_pinned_to_another_connections_selected_path(
 }
 
 #[tokio::test]
-async fn zterm_new_connection_looks_up_addresses_despite_a_selected_path() {
+async fn voytty_new_connection_looks_up_addresses_despite_a_selected_path() {
     use super::{MAX_DATAGRAM_SEND_TASKS, transports};
     let mut state = pending_state();
     state.address_lookup_stream = None;

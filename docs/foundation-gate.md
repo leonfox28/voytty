@@ -9,7 +9,7 @@
 
 The terminal portions of this historical report were superseded by the direct
 cutover to official crates.io `alacritty_terminal 0.26.0` in the host-only
-`zterm-terminal` crate. Current code no longer contains `vt100`, the fixed-cell
+`voytty-terminal` crate. Current code no longer contains `vt100`, the fixed-cell
 projection API, aggregate 128 MiB terminal-memory admission, or the 256 MiB RSS
 qualification gate. The historical `terminal_state` benchmark and
 `tests/foundation/resource-gate.sh` were deleted and are not current commands.
@@ -48,7 +48,7 @@ the executable Gate with Case D and redacted Iroh NetReport observations:
   `mapping_varies_by_dest = None` is recorded as unknown, not "does not vary."
 
 This narrows the simulated failure to the shared outer Colima/TUN mapping or
-hairpin boundary and proves that zterm's retained Iroh candidate-discovery and
+hairpin boundary and proves that voytty's retained Iroh candidate-discovery and
 promotion path functions in the inner double-NAT lab. It does not identify the
 cause of the user's company/home result and does not replace M10's two-real-
 network official-n0 acceptance. The redacted record is retained in
@@ -59,7 +59,7 @@ network official-n0 acceptance. The redacted record is retained in
 - Rust 1.98.0 (`aarch64-apple-darwin` host; `aarch64-unknown-linux-gnu` Gate
   container).
 - Colima 0.10.3, Docker Engine 29.5.2 on Linux arm64.
-- One ephemeral privileged container named `zterm-foundation-network-gate`;
+- One ephemeral privileged container named `voytty-foundation-network-gate`;
   the repository was mounted read-only and the container was absent after the
   run.
 - Patchbay created a fresh isolated Home NAT × Home NAT lab for each Case. Only
@@ -84,13 +84,13 @@ Exact resolved dependencies used by the implemented scope:
 | `iroh` | 1.0.3; default features off; `portmapper`, `tls-ring` only |
 | `patchbay` | 0.6.0; Linux-only test dependency |
 | `noq` | 1.1.1 (resolved transitively by Iroh) |
-| `tokio` | 1.53.1; `macros`, `rt`, `sync`, `time` requested by zterm |
+| `tokio` | 1.53.1; `macros`, `rt`, `sync`, `time` requested by voytty |
 | `anyhow` | 1.0.104; test-only |
 | `futures-util` | 0.3.34; test-only |
 | `vt100` | 0.16.2; historical Foundation implementation, removed by the 2026-09-02 migration |
 | `vte` | 0.15.0; historical Foundation transitive dependency; current `vte` is only through pinned Alacritty |
 | `unicode-width` | 0.2.2; retained directly by the current terminal adapter |
-| `portable-pty` | 0.9.0; default feature set (empty), private behind `zterm-platform::pty` |
+| `portable-pty` | 0.9.0; default feature set (empty), private behind `voytty-platform::pty` |
 | `nix` | 0.28.0; direct Unix `fs`, `user` features for effective-account lookup and pre-spawn access checks |
 
 ## Effective Iroh profile
@@ -101,7 +101,7 @@ Iroh's explicit public production constants, then selects
 `RelayMode::Default`. This reproduces the production parts of `presets::N0`
 without allowing `IROH_FORCE_STAGING_RELAYS` to redirect lookup services. The
 Relay map still comes from Iroh's pinned production default rather than a
-copied zterm list. The executable profile test confirmed the exact Iroh 1.0.3
+copied voytty list. The executable profile test confirmed the exact Iroh 1.0.3
 map:
 
 - `use1-1.relay.n0.iroh.link` (US east)
@@ -114,12 +114,12 @@ asserted that the production map is disjoint from `RelayMode::Staging` and does
 not contain `relay.zenithconsulting.cn`. The n0 DNS/Pkarr publisher, resolver,
 and DNS lookup remain installed; publication remains relay-only; port mapping
 remains enabled; and the Foundation Gate accepted its then-temporary
-`zterm-gate/1` ALPN. M3 subsequently replaced it with the first product ALPN;
-the coordinated semantic cutover now uses `zterm/2` and `zterm-pair/2` only.
+`voytty-gate/1` ALPN. M3 subsequently replaced it with the first product ALPN;
+the coordinated semantic cutover now uses `voytty/2` and `voytty-pair/2` only.
 An isolated child
 process regression also confirmed that setting `IROH_FORCE_STAGING_RELAYS`
 does not change any production lookup URL, DNS origin, or Relay entry.
-Identities were generated in memory and were not written to `~/.zterm`.
+Identities were generated in memory and were not written to `~/.voytty`.
 
 ## Double-NAT evidence
 
@@ -184,9 +184,9 @@ profile, candidate construction, and path observation code are unchanged.
 
 ## Step 2 TerminalModel result
 
-At the time of this historical Gate, `zterm-core::terminal` used exactly `vt100 0.16.2`
+At the time of this historical Gate, `voytty-core::terminal` used exactly `vt100 0.16.2`
 behind private fields. Public snapshots, deltas, checkpoints, states, modes,
-cells, side events, resource projections, and errors are all zterm-owned types;
+cells, side events, resource projections, and errors are all voytty-owned types;
 no parser type or wire format crosses the boundary. At the time of this
 retained report, `BuildIdentity` reported `phase-one-foundation-gate` and the
 CLI was a side-effect-free build probe. M3 now reports
@@ -236,7 +236,7 @@ limit by itself. Step 6 combines it with saturated-process measurements.
 
 ## Step 3 PTY lifecycle result
 
-The retained `zterm-platform::pty` boundary owns `PtyHost`, `PtySession`, the
+The retained `voytty-platform::pty` boundary owns `PtyHost`, `PtySession`, the
 single-transfer `PtyReader`, explicit fixture commands, sizes, child states,
 exit statuses, and typed errors. Portable-pty master, reader, writer, child,
 killer, status, and error types remain private. Existing `PlatformFacts`,
@@ -262,12 +262,12 @@ completed. The test drained and counted the output too, but the marker, rather
 than observing the last PTY byte, is the independent progress proof.
 
 Only `close_explicitly()` invokes portable-pty's child killer and then waits.
-Zterm adds no signal escalation, process-group policy, restart, or Drop-time
+Voytty adds no signal escalation, process-group policy, restart, or Drop-time
 recovery.
 
 The public boundary and non-Unix skip branch are cfg-safe. With the
 `x86_64-pc-windows-msvc` Rust standard-library target installed,
-`cargo check -p zterm-platform --all-targets --all-features --target
+`cargo check -p voytty-platform --all-targets --all-features --target
 x86_64-pc-windows-msvc` passed locally. A whole-workspace cross-check from
 macOS still lacks the Windows MSVC C sysroot required by `ring` (`assert.h`),
 so the real Windows CI runner remains authoritative for the complete workspace.
@@ -277,7 +277,7 @@ Unix hosts.
 
 ## Step 4 retained drain and latest-state attachments
 
-`zterm-daemon::terminal_driver` now composes the retained platform and core
+`voytty-daemon::terminal_driver` now composes the retained platform and core
 boundaries without adding a session registry or wire protocol. One blocking
 reader sends every PTY chunk through a fixed-capacity `VecDeque` guarded by
 condition variables. A single model-owner thread removes chunks in order,
@@ -466,10 +466,10 @@ dash -n tests/foundation/network-gate.sh
 git diff --check
   all passed (cargo-deny emitted only allowed duplicate-version warnings)
 
-cargo test -p zterm-daemon --test iroh_profile_gate
+cargo test -p voytty-daemon --test iroh_profile_gate
   4 passed; 1 ignored child probe (executed by the staging-environment test)
 
-cargo test -p zterm-daemon --test iroh_network_gate --no-run
+cargo test -p voytty-daemon --test iroh_network_gate --no-run
   compiled
 
 sh tests/foundation/network-gate.sh
@@ -479,43 +479,43 @@ sh tests/foundation/network-gate.sh
   raw run aggregate before verdict-only update: non-zero NO_GO_ADDRESS_DISCOVERY
   cleanup: test container, network, links and nftables state absent
 
-cargo test -p zterm-core --test terminal_corpus
+cargo test -p voytty-core --test terminal_corpus
   5 passed
 
-cargo test -p zterm-core --test terminal_snapshot_delta
+cargo test -p voytty-core --test terminal_snapshot_delta
   4 passed
 
-cargo test -p zterm-core
+cargo test -p voytty-core
   11 passed total: 2 unit + 9 integration
 
-cargo clippy -p zterm-core --all-targets --all-features -- -D warnings
-cargo doc -p zterm-core --no-deps
+cargo clippy -p voytty-core --all-targets --all-features -- -D warnings
+cargo doc -p voytty-core --no-deps
   passed
 
-cargo test -p zterm-platform --all-features -- --nocapture
+cargo test -p voytty-platform --all-features -- --nocapture
   6 unit tests passed
   interactive: input/output, child-observed 47x123 resize, natural exit 23
   bulk: 1,048,576 bytes, independent completion marker
   explicit close: signal Hangup
   PTY_LIFECYCLE_GATE=PASS
 
-cargo clippy -p zterm-platform --all-targets --all-features -- -D warnings
-cargo doc -p zterm-platform --no-deps
+cargo clippy -p voytty-platform --all-targets --all-features -- -D warnings
+cargo doc -p voytty-platform --no-deps
   passed
 
-cargo test -p zterm-daemon --test terminal_drain -- --nocapture
+cargo test -p voytty-daemon --test terminal_drain -- --nocapture
   zero attachment: >1 MiB drained through capacity 2, independent marker
   simulated transport drop: root child continued and a new attachment synced
   concurrent wait: raw-mode DSR received CSI 0n before natural child exit
   TERMINAL_DRAIN_GATE=PASS
 
-cargo test -p zterm-daemon --test attachment_resync -- --nocapture
+cargo test -p voytty-daemon --test attachment_resync -- --nocapture
   slow attachment: revision 1 -> latest across >190 processed chunks
   capacity 3; maximum pending 3; latest full resync was semantically equal
   ATTACHMENT_RESYNC_GATE=PASS
 
-cargo clippy -p zterm-daemon --all-targets --all-features -- -D warnings
-cargo doc -p zterm-daemon --no-deps
+cargo clippy -p voytty-daemon --all-targets --all-features -- -D warnings
+cargo doc -p voytty-daemon --no-deps
   passed
 
 sh tests/foundation/terminal-blackbox.sh
@@ -525,7 +525,7 @@ sh tests/foundation/terminal-blackbox.sh
   OpenCode 1.18.20: checksum and isolated alternate-screen smoke passed; no prompt
   TERMINAL_BLACKBOX_GATE=PASS; BLACKBOX_CLEANUP=PASS
 
-historical only (removed): cargo bench -p zterm-core --bench terminal_state
+historical only (removed): cargo bench -p voytty-core --bench terminal_state
   stable 1/3/16 x 120x40/512x256 candidate matrix emitted six records
 
 historical only (removed): sh tests/foundation/resource-gate.sh
@@ -535,8 +535,8 @@ historical only (removed): sh tests/foundation/resource-gate.sh
   oversized 10k/512x256 and 16-session candidates were rejected
   TERMINAL_RESOURCE_GATE=PASS; RESOURCE_TEMP_CLEANUP=PASS
 
-cargo check -p zterm-platform --all-targets --all-features --target x86_64-pc-windows-msvc
-  passed; portable-pty/ConPTY-facing zterm boundary compiled
+cargo check -p voytty-platform --all-targets --all-features --target x86_64-pc-windows-msvc
+  passed; portable-pty/ConPTY-facing voytty boundary compiled
 
 Linux arm64 read-only Colima CI-equivalent run
   source/version/fmt/Clippy/workspace tests/doc passed

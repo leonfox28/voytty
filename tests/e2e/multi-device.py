@@ -37,12 +37,12 @@ ROOT = Path(__file__).resolve().parents[2]
 # The environment holds the emulator's disk and the only record of the owned
 # VMs, so it must survive `cargo clean`; it also stays outside the source tree
 # that `build` archives. Run evidence lives beside it.
-BASE = Path(os.environ.get("ZTERM_MULTI_DEVICE_ROOT")
+BASE = Path(os.environ.get("VOYTTY_MULTI_DEVICE_ROOT")
             or Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
-            / "zterm-verification/multi-device")
-PACKAGE = "io.github.leonfox28.zterm.dev"
+            / "voytty-verification/multi-device")
+PACKAGE = "io.github.leonfox28.voytty.dev"
 RUNNER = PACKAGE + ".test/androidx.test.runner.AndroidJUnitRunner"
-ACCOUNT = {"A": "zterm-a", "B": "zterm-b"}
+ACCOUNT = {"A": "voytty-a", "B": "voytty-b"}
 CORE_SCENARIOS = {"local", "fresh-pair", "cold", "first-existing", "detach", "takeover",
                   "recover-short", "recover-long", "host-network", "detach-other", "handoff-early", "handoff-late",
                   "race-connect", "race-takeover", "race-disconnect", "race-reconnect", "path-migrate", "relay-block"}
@@ -73,7 +73,7 @@ class Lab:
         self.root = args.environment.resolve()
         self.manifest = self.root / "environment.json"
         self.env = json.loads(self.manifest.read_text()) if self.manifest.exists() else {}
-        if self.env and (not re.fullmatch(r"zterm-md-\d{8}t\d{6}z", self.env.get("id", "")) or
+        if self.env and (not re.fullmatch(r"voytty-md-\d{8}t\d{6}z", self.env.get("id", "")) or
                          self.env.get("vms") != {d: self.env["id"] + "-" + d.lower() for d in ACCOUNT}):
             raise ValueError("refusing an environment not owned by this disposable runner")
         self.logdir = self.root / "logs"
@@ -127,7 +127,7 @@ class Lab:
         return self.vm(device, "sudo", "-Hu", ACCOUNT[device], *command, **options)
 
     def cli(self, device, *command, **options):
-        return self.user(device, "/usr/local/bin/zterm", *command, **options)
+        return self.user(device, "/usr/local/bin/voytty", *command, **options)
 
     def online(self, device):
         # Local endpoint preparation only; this never contacts a product peer.
@@ -138,15 +138,15 @@ class Lab:
     def install_linux(self, binary):
         expected = sha256(binary)
         for device in ACCOUNT:
-            present = self.vm(device, "sh", "-c", "test ! -x /usr/local/bin/zterm || echo present").strip()
+            present = self.vm(device, "sh", "-c", "test ! -x /usr/local/bin/voytty || echo present").strip()
             if present:
                 self.cli(device, "daemon", "stop", "-y", check=False)
                 until(lambda: "Stopped" in self.cli(device, "status", check=False), 60,
                       f"{device} old daemon stopped before binary installation")
-            self.call(["limactl", "copy", binary, self.env["vms"][device] + ":/tmp/zterm-linux-arm64"], timeout=90)
-            self.vm(device, "sudo", "install", "-m", "755", "/tmp/zterm-linux-arm64", "/usr/local/bin/zterm.next")
-            self.vm(device, "sudo", "mv", "/usr/local/bin/zterm.next", "/usr/local/bin/zterm")
-            if self.vm(device, "sha256sum", "/usr/local/bin/zterm").split()[0] != expected:
+            self.call(["limactl", "copy", binary, self.env["vms"][device] + ":/tmp/voytty-linux-arm64"], timeout=90)
+            self.vm(device, "sudo", "install", "-m", "755", "/tmp/voytty-linux-arm64", "/usr/local/bin/voytty.next")
+            self.vm(device, "sudo", "mv", "/usr/local/bin/voytty.next", "/usr/local/bin/voytty")
+            if self.vm(device, "sha256sum", "/usr/local/bin/voytty").split()[0] != expected:
                 raise AssertionError("A/B binary digest mismatch")
             self.cli(device, "setup", "--name", "multi-device-" + device, "--profile", "official-n0")
             self.online(device)
@@ -162,7 +162,7 @@ class Lab:
     def create(self):
         if self.env:
             raise RuntimeError("environment already exists; use start/build/run or another --environment")
-        identifier = "zterm-md-" + stamp().lower()
+        identifier = "voytty-md-" + stamp().lower()
         self.env = {"schema": 1, "id": identifier,
                     "vms": {d: identifier + "-" + d.lower() for d in ACCOUNT},
                     "avd": identifier + "-c", "serial": f"emulator-{self.args.port}",
@@ -260,20 +260,20 @@ containerd:
         changed += self.call(["git", "-C", ROOT, "ls-files", "--others", "--exclude-standard", "-z"]).split("\0")
         self.env["modified_sources"] = {name: sha256(ROOT / name) for name in sorted(set(changed))
                                         if name and (ROOT / name).is_file()}
-        self.call(["limactl", "copy", source, self.env["vms"]["A"] + ":/tmp/zterm-source.tar.gz"], timeout=90)
+        self.call(["limactl", "copy", source, self.env["vms"]["A"] + ":/tmp/voytty-source.tar.gz"], timeout=90)
         self.vm("A", "sudo", "sh", "-c",
                 "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential pkg-config "
                 "libssl-dev curl ca-certificates iptables python3", timeout=1200)
         self.vm("B", "sudo", "sh", "-c",
                 "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y iptables python3", timeout=1200)
-        self.vm("A", "sh", "-c", "mkdir -p ~/zterm-build && tar xzf /tmp/zterm-source.tar.gz -C ~/zterm-build && "
+        self.vm("A", "sh", "-c", "mkdir -p ~/voytty-build && tar xzf /tmp/voytty-source.tar.gz -C ~/voytty-build && "
                 "(test -x ~/.cargo/bin/rustup || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none) && "
-                "cd ~/zterm-build && ~/.cargo/bin/rustup toolchain install 1.98.0 --profile minimal --component clippy,rustfmt && "
-                f"umask 077 && ZTERM_SOURCE_COMMIT={revision} CARGO_BUILD_JOBS=1 ~/.cargo/bin/cargo build --locked -p zterm-cli",
+                "cd ~/voytty-build && ~/.cargo/bin/rustup toolchain install 1.98.0 --profile minimal --component clippy,rustfmt && "
+                f"umask 077 && VOYTTY_SOURCE_COMMIT={revision} CARGO_BUILD_JOBS=1 ~/.cargo/bin/cargo build --locked -p voytty-cli",
                 timeout=3600, log=self.logdir / "linux-build.log")
         build_home = self.vm("A", "sh", "-c", "printf '%s' ~").strip()
-        binary = self.root / ("zterm-linux-arm64-" + self.env["source_sha256"][:16])
-        self.call(["limactl", "copy", self.env["vms"]["A"] + ":" + build_home + "/zterm-build/target/debug/zterm", binary], timeout=90)
+        binary = self.root / ("voytty-linux-arm64-" + self.env["source_sha256"][:16])
+        self.call(["limactl", "copy", self.env["vms"]["A"] + ":" + build_home + "/voytty-build/target/debug/voytty", binary], timeout=90)
         self.install_linux(binary)
         self.call(["sh", ROOT / "tools/android/build.sh", ":app:assembleDebug", ":app:assembleDebugAndroidTest"],
                   timeout=1800, log=self.logdir / "android-build.log")
@@ -300,7 +300,7 @@ containerd:
                 "os": self.vm(device, "cat", "/etc/os-release"),
                 "addresses": self.vm(device, "ip", "-j", "address"),
                 "identity": self.cli(device, "status"),
-                "binary_sha256": self.vm(device, "sha256sum", "/usr/local/bin/zterm").split()[0]}
+                "binary_sha256": self.vm(device, "sha256sum", "/usr/local/bin/voytty").split()[0]}
             self.call(["ping", "-c", "1", "-W", "3000", addresses[device]])
             self.adb("shell", "ping", "-c", "1", "-W", "3", addresses[device])
         for device in ACCOUNT:
@@ -338,31 +338,31 @@ containerd:
         results = {}
         for device in ACCOUNT:
             port = 42071
-            ready = "/tmp/zterm-md-udp-" + uuid.uuid4().hex
+            ready = "/tmp/voytty-md-udp-" + uuid.uuid4().hex
             server = ("import socket,pathlib\ns=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\n"
                       f"s.bind(('0.0.0.0',{port}));s.settimeout(20)\n"
                       f"pathlib.Path({ready!r}).write_text('ready')\n"
                       "try:\n while True:\n  data,peer=s.recvfrom(1024);s.sendto(data,peer)\n"
                       "except TimeoutError: pass\n")
             pid = self.vm(device, "sh", "-c", "nohup python3 -c " + shlex.quote(server) +
-                          " >/tmp/zterm-md-udp.log 2>&1 </dev/null & echo $!").strip()
+                          " >/tmp/voytty-md-udp.log 2>&1 </dev/null & echo $!").strip()
             try:
                 until(lambda: self.vm(device, "sh", "-c", "test ! -f " + ready + " || echo ready",
                                       check=False).strip() == "ready", 10, "UDP preflight listener bound")
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
                     client.settimeout(3)
-                    client.sendto(b"zterm-md-udp", (addresses[device], port))
+                    client.sendto(b"voytty-md-udp", (addresses[device], port))
                     try:
-                        results["Mac→" + device] = client.recv(1024) == b"zterm-md-udp"
+                        results["Mac→" + device] = client.recv(1024) == b"voytty-md-udp"
                     except TimeoutError:
                         results["Mac→" + device] = False
                 response = self.adb("shell", "sh", "-c", shlex.quote(
-                    f"printf zterm-md-udp | timeout 3 toybox nc -u -w 2 {addresses[device]} {port}"), check=False, timeout=8)
-                results["C→" + device] = "zterm-md-udp" in response
+                    f"printf voytty-md-udp | timeout 3 toybox nc -u -w 2 {addresses[device]} {port}"), check=False, timeout=8)
+                results["C→" + device] = "voytty-md-udp" in response
                 peer = "B" if device == "A" else "A"
                 client_script = ("import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(3);"
-                                 f"s.sendto(b'zterm-md-udp',('lima-{self.env['vms'][device]}.internal',{port}));"
-                                 "print(s.recv(1024)==b'zterm-md-udp')")
+                                 f"s.sendto(b'voytty-md-udp',('lima-{self.env['vms'][device]}.internal',{port}));"
+                                 "print(s.recv(1024)==b'voytty-md-udp')")
                 results[peer + "→" + device] = self.vm(peer, "python3", "-c", client_script, check=False).strip() == "True"
             finally:
                 self.vm(device, "kill", pid, check=False)
@@ -444,7 +444,7 @@ class LinuxTerminal:
     def __init__(self, lab, device, host, output, session=None, takeover=False, create=None):
         import pyte  # requirements-multi-device.txt; environment/build need only stdlib
         class Screen(pyte.Screen):
-            # Zterm probes DEC private status/color capabilities. Pyte 0.8.2
+            # Voytty probes DEC private status/color capabilities. Pyte 0.8.2
             # parses those CSI sequences but its report callbacks lack kwargs.
             def report_device_status(self, mode, **options):
                 if not options.get("private"):
@@ -471,13 +471,13 @@ class LinuxTerminal:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
         vm = lab.env["vms"][device]
         target = "local" if host == device else "multi-device-" + host
-        command = (["/usr/local/bin/zterm", "session", "create", "--target", target, create] if create
-                   else ["/usr/local/bin/zterm", "connect", target])
+        command = (["/usr/local/bin/voytty", "session", "create", "--target", target, create] if create
+                   else ["/usr/local/bin/voytty", "connect", target])
         if session:
             command += ["--session", session]
         if takeover:
             command += ["--takeover"]
-        shell = "printf '[ZTERM_MD_PID=%s]\\n' \"$$\"; exec " + shlex.join(command)
+        shell = "printf '[VOYTTY_MD_PID=%s]\\n' \"$$\"; exec " + shlex.join(command)
         command = ["sudo", "-Hu", ACCOUNT[device], "env", "TERM=xterm-256color", "sh", "-c", shell]
         self.process = subprocess.Popen(["ssh", "-F", str(Path.home() / ".lima" / vm / "ssh.config"),
                                         "-tt", "lima-" + vm, shlex.join(command)],
@@ -526,7 +526,7 @@ class LinuxTerminal:
             # closed, including deferred resize after the driver says Active.
             # Do not infer readiness from the lower-level driver event alone.
             presented_ready = not self.screen.cursor.hidden
-        pid = re.search(r"\[ZTERM_MD_PID=(\d+)\]", raw)
+        pid = re.search(r"\[VOYTTY_MD_PID=(\d+)\]", raw)
         if pid and time.monotonic()-self.last_observation > 0.5 and exit_status is None:
             self.last_observation = time.monotonic()
             events = self.lab.cli(self.device, "logs", "--json", "--component", "terminal", "--since", "5m", "-n", "1000", private=True)
@@ -599,7 +599,7 @@ class Android:
         self.log = (self.output / ("android-" + self.token + ".log")).open("w")
         self.process = subprocess.Popen([str(SDK / "platform-tools/adb"), "-s", self.lab.env["serial"],
             "shell", "am", "instrument", "-w", "-r", "-e", "multiDevice", self.token,
-            "-e", "class", "io.github.leonfox28.zterm.MultiDeviceTest", RUNNER], stdout=self.log, stderr=subprocess.STDOUT)
+            "-e", "class", "io.github.leonfox28.voytty.MultiDeviceTest", RUNNER], stdout=self.log, stderr=subprocess.STDOUT)
         def ready():
             if self.process.poll() is not None:
                 raise RuntimeError("Android bridge exited; inspect instrumentation log")
@@ -856,14 +856,14 @@ def restore_identity(lab, journal):
     if device == "C":
         lab.adb("shell", "am", "force-stop", PACKAGE)
         command = (f"if [ -d no_backup/md-original-{token} ]; then "
-                   f"if [ -d no_backup/zterm ]; then mv no_backup/zterm no_backup/md-tested-{token}; fi; "
-                   f"mv no_backup/md-original-{token} no_backup/zterm; fi")
+                   f"if [ -d no_backup/voytty ]; then mv no_backup/voytty no_backup/md-tested-{token}; fi; "
+                   f"mv no_backup/md-original-{token} no_backup/voytty; fi")
         lab.adb("shell", "run-as", PACKAGE, "sh", "-c", shlex.quote(command))
     else:
         lab.cli(device, "daemon", "stop", "-y", check=False)
-        command = (f"cd /home/{ACCOUNT[device]} && if [ -d .zterm-md-original-{token} ]; then "
-                   f"if [ -d .zterm ]; then mv .zterm .zterm-md-tested-{token}; fi; "
-                   f"mv .zterm-md-original-{token} .zterm; fi")
+        command = (f"cd /home/{ACCOUNT[device]} && if [ -d .voytty-md-original-{token} ]; then "
+                   f"if [ -d .voytty ]; then mv .voytty .voytty-md-tested-{token}; fi; "
+                   f"mv .voytty-md-original-{token} .voytty; fi")
         lab.user(device, "sh", "-c", command)
         lab.cli(device, "setup", "--name", "multi-device-" + device, "--profile", "official-n0")
     journal.unlink()
@@ -879,10 +879,10 @@ def fresh_identity(lab, device):
             lab.adb("shell", "am", "force-stop", PACKAGE)
             # Preserve the Keystore key. Both independently generated seeds
             # remain wrapped at rest; no private identity bytes leave C.
-            lab.adb("shell", "run-as", PACKAGE, "mv", "no_backup/zterm", "no_backup/md-original-" + token)
+            lab.adb("shell", "run-as", PACKAGE, "mv", "no_backup/voytty", "no_backup/md-original-" + token)
         else:
             lab.cli(device, "daemon", "stop", "-y")
-            lab.user(device, "mv", f"/home/{ACCOUNT[device]}/.zterm", f"/home/{ACCOUNT[device]}/.zterm-md-original-{token}")
+            lab.user(device, "mv", f"/home/{ACCOUNT[device]}/.voytty", f"/home/{ACCOUNT[device]}/.voytty-md-original-{token}")
             lab.cli(device, "setup", "--name", "multi-device-" + device, "--profile", "official-n0")
             lab.online(device)
         yield
@@ -1142,7 +1142,7 @@ class Suite:
                  " try:\n"
                  f"  if p.stat().st_uid != {uid}: continue\n"
                  "  args=(p/'cmdline').read_bytes().split(b'\\0')\n"
-                 "  if args[:2]==[b'/usr/local/bin/zterm',b'--internal-daemon']: pids.append(int(p.name))\n"
+                 "  if args[:2]==[b'/usr/local/bin/voytty',b'--internal-daemon']: pids.append(int(p.name))\n"
                  " except (FileNotFoundError,ProcessLookupError): pass\n"
                  "print(json.dumps(pids))\n")
         try:
@@ -1691,7 +1691,7 @@ class Suite:
                 if name == "client-reboot":
                     self.restart_vm(device)
                 else:
-                    expression = "^/usr/local/bin/zterm " + ("--internal-daemon" if name == "client-daemon-crash" else "connect") + "( |$)"
+                    expression = "^/usr/local/bin/voytty " + ("--internal-daemon" if name == "client-daemon-crash" else "connect") + "( |$)"
                     self.lab.vm(device, "sudo", "pkill", "-KILL", "-u", ACCOUNT[device], "-f", expression)
                     if name == "client-daemon-crash":
                         self.lab.cli(device, "setup", "--name", "multi-device-" + device, "--profile", "official-n0")
@@ -1716,7 +1716,7 @@ class Suite:
             elif name == "host-reboot":
                 self.restart_vm(self.host)
             else:
-                self.lab.vm(self.host, "sudo", "pkill", "-KILL", "-u", ACCOUNT[self.host], "-f", "^/usr/local/bin/zterm --internal-daemon( |$)")
+                self.lab.vm(self.host, "sudo", "pkill", "-KILL", "-u", ACCOUNT[self.host], "-f", "^/usr/local/bin/voytty --internal-daemon( |$)")
                 self.lab.cli(self.host, "setup", "--name", "multi-device-" + self.host, "--profile", "official-n0")
             until(lambda: old.snapshot().get("state") in ("ended", "closed") or old.snapshot().get("error") == "session_not_found",
                   120, "client reports original Session ended")
@@ -1840,7 +1840,7 @@ class Suite:
 
     def restoration_evidence(self, phase):
         # No identity seed or encrypted identity envelope leaves the device.
-        saved = json.loads(self.lab.adb("shell", "run-as", PACKAGE, "cat", "no_backup/zterm/state.json", private=True))
+        saved = json.loads(self.lab.adb("shell", "run-as", PACKAGE, "cat", "no_backup/voytty/state.json", private=True))
         save(self.case / ("restoration-" + phase + ".json"),
              {"time": stamp(), "activeTerminal": saved.get("activeTerminal"), "recent": saved.get("recent")})
 
@@ -1945,10 +1945,10 @@ class Suite:
             (destination / f"{device}-status.txt").write_text(self.lab.cli(device, "status", check=False))
             (destination / f"{device}-sessions.txt").write_text(self.lab.cli(device, "session", "list", check=False))
             (destination / f"{device}-daemon.log").write_text(self.lab.user(device, "tail", "-c", "1000000",
-                                                          f"/home/{ACCOUNT[device]}/.zterm/logs/daemon.log", check=False))
+                                                          f"/home/{ACCOUNT[device]}/.voytty/logs/daemon.log", check=False))
             for name in ("daemon.debug.log", "daemon.debug.log.1"):
                 (destination / f"{device}-{name}").write_text(self.lab.user(
-                    device, "tail", "-c", "1000000", f"/home/{ACCOUNT[device]}/.zterm/logs/{name}",
+                    device, "tail", "-c", "1000000", f"/home/{ACCOUNT[device]}/.voytty/logs/{name}",
                     check=False, private=True))
         # A failed bridge leaves its last mailbox for evidence, but assertions
         # must never use that retained value as a live Android observation.

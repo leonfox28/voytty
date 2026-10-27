@@ -11,14 +11,14 @@ use flate2::{Compression, GzBuilder, read::GzDecoder};
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use semver::Version;
 use serde_json::{Value, json};
-use zeroize::Zeroizing;
-use zterm_core::release::{
+use voytty_core::release::{
     MAX_RELEASE_ARTIFACT_BYTES, MAX_RELEASE_MANIFEST_BYTES, MINIMUM_GLIBC, MINIMUM_MACOS,
     RELEASE_BOOTSTRAP_SCHEMA, RELEASE_KEY_ID, RELEASE_MANIFEST_SCHEMA, RELEASE_ORIGIN,
     ReleaseArtifact, ReleaseClassification, ReleaseManifest, ReleaseSelfCheck, artifact_filename,
     immutable_asset_url, official_release_public_key, sha256_hex, sha256_reader,
     validate_unsigned_manifest, verify_checksums_signature, verify_official_release_manifest,
 };
+use zeroize::Zeroizing;
 
 // Maintainer publication policy only; installed updaters must not depend on this list.
 // Expanding it requires an explicit future task.
@@ -27,15 +27,15 @@ const PUBLISHED_RELEASE_TARGETS: [&str; 3] = [
     "aarch64-unknown-linux-gnu",
     "x86_64-unknown-linux-gnu",
 ];
-use zterm_core::{STATE_SCHEMA_VERSION, WIRE_MAJOR};
+use voytty_core::{STATE_SCHEMA_VERSION, WIRE_MAJOR};
 
-const MANIFEST_NAME: &str = "zterm-release.json";
-const SIGNATURE_NAME: &str = "zterm-release.json.sig";
-const INSTALLER_NAME: &str = "zterm-install.sh";
-const SBOM_NAME: &str = "zterm-sbom.spdx.json";
+const MANIFEST_NAME: &str = "voytty-release.json";
+const SIGNATURE_NAME: &str = "voytty-release.json.sig";
+const INSTALLER_NAME: &str = "voytty-install.sh";
+const SBOM_NAME: &str = "voytty-sbom.spdx.json";
 const CHECKSUMS_NAME: &str = "SHA256SUMS";
 const CHECKSUMS_SIGNATURE_NAME: &str = "SHA256SUMS.sig";
-use zterm_core::release::android::{
+use voytty_core::release::android::{
     APK_NAME as ANDROID_APK_NAME, AndroidMetadata, METADATA_NAME as ANDROID_METADATA_NAME,
 };
 const MAX_INSTALLER_BYTES: u64 = 256 * 1024;
@@ -79,7 +79,7 @@ fn create_archive_at_epoch(binary: &Path, output: &Path, epoch: u64) -> Result<(
     header.set_entry_type(tar::EntryType::Regular);
     header.set_cksum();
     archive
-        .append_data(&mut header, "zterm", input)
+        .append_data(&mut header, "voytty", input)
         .context("unable to append release binary")?;
     let encoder = archive
         .into_inner()
@@ -107,7 +107,7 @@ fn inspect_archive(path: &Path) -> Result<()> {
             .path()
             .context("release archive path is invalid")?
             .as_ref()
-            == Path::new("zterm"),
+            == Path::new("voytty"),
         "release archive path is invalid"
     );
     let header = entry.header();
@@ -167,12 +167,12 @@ pub fn prepare(
         regular_file_metadata(&archive_path, "release archive")?;
         inspect_archive(&archive_path)?;
         let (length, digest) = digest_file(&archive_path, MAX_RELEASE_ARTIFACT_BYTES)?;
-        let identity_path = input.join(format!("zterm-{target}.identity.json"));
+        let identity_path = input.join(format!("voytty-{target}.identity.json"));
         let identity_raw = read_bounded(&identity_path, MAX_RELEASE_MANIFEST_BYTES as u64)?;
         let self_check: ReleaseSelfCheck =
             serde_json::from_slice(&identity_raw).context("release identity JSON is invalid")?;
         ensure!(
-            self_check.schema == RELEASE_MANIFEST_SCHEMA && self_check.product == "zterm",
+            self_check.schema == RELEASE_MANIFEST_SCHEMA && self_check.product == "voytty",
             "release identity schema is invalid"
         );
         ensure!(
@@ -200,7 +200,7 @@ pub fn prepare(
 
     let manifest = ReleaseManifest {
         schema: RELEASE_MANIFEST_SCHEMA,
-        product: "zterm".to_owned(),
+        product: "voytty".to_owned(),
         version: version_text.to_owned(),
         tag: tag.to_owned(),
         classification,
@@ -305,7 +305,7 @@ pub fn sign(directory: &Path) -> Result<()> {
         MAX_RELEASE_MANIFEST_BYTES as u64,
     )?;
     let secret_text = Zeroizing::new(
-        std::env::var("ZTERM_RELEASE_SIGNING_KEY")
+        std::env::var("VOYTTY_RELEASE_SIGNING_KEY")
             .map_err(|_| anyhow::anyhow!("release signing key secret is unavailable"))?,
     );
     let seed = Zeroizing::new(decode_seed(secret_text.as_str())?);
@@ -624,16 +624,16 @@ fn generate_sbom(manifest: &ReleaseManifest) -> Result<Vec<u8>> {
         "spdxVersion": "SPDX-2.3",
         "dataLicense": "CC0-1.0",
         "SPDXID": "SPDXRef-DOCUMENT",
-        "name": format!("zterm-{}", manifest.version),
+        "name": format!("voytty-{}", manifest.version),
         "documentNamespace": format!(
-            "https://github.com/leonfox28/zterm/releases/download/{}/{}#{}",
+            "https://github.com/leonfox28/voytty/releases/download/{}/{}#{}",
             manifest.tag, SBOM_NAME, manifest.source_commit
         ),
         "creationInfo": {
             "created": manifest.released_at,
-            "creators": [format!("Tool: zterm-release-tool-{}", env!("CARGO_PKG_VERSION"))]
+            "creators": [format!("Tool: voytty-release-tool-{}", env!("CARGO_PKG_VERSION"))]
         },
-        "comment": format!("zterm source commit {}", manifest.source_commit),
+        "comment": format!("voytty source commit {}", manifest.source_commit),
         "packages": spdx_packages
     });
     let encoded = serde_json::to_vec(&document).context("unable to encode SPDX SBOM")?;
@@ -675,7 +675,7 @@ fn verify_sbom(directory: &Path, manifest: &ReleaseManifest) -> Result<()> {
         "SPDX SBOM version is invalid"
     );
     ensure!(
-        sbom["name"] == format!("zterm-{}", manifest.version),
+        sbom["name"] == format!("voytty-{}", manifest.version),
         "SPDX SBOM product version is invalid"
     );
     ensure!(
@@ -683,7 +683,7 @@ fn verify_sbom(directory: &Path, manifest: &ReleaseManifest) -> Result<()> {
         "SPDX SBOM timestamp is invalid"
     );
     ensure!(
-        sbom["comment"] == format!("zterm source commit {}", manifest.source_commit),
+        sbom["comment"] == format!("voytty source commit {}", manifest.source_commit),
         "SPDX SBOM source commit is invalid"
     );
     ensure!(
@@ -792,7 +792,7 @@ fn ensure_executable(_metadata: &fs::Metadata) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zterm_core::release::ReleaseBuildIdentity;
+    use voytty_core::release::ReleaseBuildIdentity;
 
     #[test]
     fn derive_public_key_follows_fixed_vector_and_redaction_contract() {
@@ -857,7 +857,7 @@ mod tests {
         fs::create_dir(&input).expect("fixture inputs");
         let manifest = fixture_manifest();
         for artifact in &manifest.artifacts {
-            let binary = input.join(format!("zterm-{}", artifact.target));
+            let binary = input.join(format!("voytty-{}", artifact.target));
             fs::write(&binary, format!("synthetic binary for {}", artifact.target))
                 .expect("synthetic binary");
             make_executable(&binary);
@@ -865,21 +865,21 @@ mod tests {
                 .expect("archive fixture binary");
             let identity = ReleaseSelfCheck {
                 schema: RELEASE_MANIFEST_SCHEMA,
-                product: "zterm".to_owned(),
+                product: "voytty".to_owned(),
                 build: artifact.build.clone(),
             };
             fs::write(
-                input.join(format!("zterm-{}.identity.json", artifact.target)),
+                input.join(format!("voytty-{}.identity.json", artifact.target)),
                 serde_json::to_vec(&identity).expect("identity JSON"),
             )
             .expect("identity fixture");
         }
         let apk = b"synthetic unsigned APK payload";
         fs::write(input.join(ANDROID_APK_NAME), apk).expect("APK fixture");
-        let metadata = json!({"schema": 1, "product": "zterm", "version": manifest.version,
-            "source_commit": manifest.source_commit, "package": "io.github.leonfox28.zterm",
+        let metadata = json!({"schema": 1, "product": "voytty", "version": manifest.version,
+            "source_commit": manifest.source_commit, "package": "io.github.leonfox28.voytty",
             "abi": "arm64-v8a", "min_sdk": 26, "target_sdk": 36, "version_code": 1,
-            "certificate_sha256": zterm_core::release::android::CERTIFICATE.trim(), "signed": false,
+            "certificate_sha256": voytty_core::release::android::CERTIFICATE.trim(), "signed": false,
             "length": apk.len(), "sha256": sha256_hex(apk)});
         fs::write(
             input.join(ANDROID_METADATA_NAME),
@@ -921,14 +921,14 @@ mod tests {
         let artifact = &manifest.artifacts[0];
         let wrong_identity = ReleaseSelfCheck {
             schema: RELEASE_MANIFEST_SCHEMA,
-            product: "zterm".to_owned(),
+            product: "voytty".to_owned(),
             build: ReleaseBuildIdentity {
                 source_commit: "f".repeat(40),
                 ..artifact.build.clone()
             },
         };
         fs::write(
-            input.join(format!("zterm-{}.identity.json", artifact.target)),
+            input.join(format!("voytty-{}.identity.json", artifact.target)),
             serde_json::to_vec(&wrong_identity).expect("mixed identity"),
         )
         .expect("replace fixture identity");
@@ -1000,13 +1000,13 @@ mod tests {
     #[test]
     fn complete_inventory_signature_rejects_modified_checksums() {
         let pair = Ed25519KeyPair::from_seed_unchecked(&[7_u8; 32]).expect("fixture key");
-        let checksums = b"abc  zterm-android-arm64.apk\n";
+        let checksums = b"abc  voytty-android-arm64.apk\n";
         let signature = pair.sign(checksums);
         verify_checksums_signature(checksums, signature.as_ref(), pair.public_key().as_ref())
             .expect("authentic inventory");
         assert!(
             verify_checksums_signature(
-                b"def  zterm-android-arm64.apk\n",
+                b"def  voytty-android-arm64.apk\n",
                 signature.as_ref(),
                 pair.public_key().as_ref()
             )
@@ -1021,10 +1021,10 @@ mod tests {
         let manifest = fixture_manifest();
         let apk = b"fixture APK bytes";
         fs::write(directory.path().join(ANDROID_APK_NAME), apk).expect("APK");
-        let mut metadata = json!({"schema": 1, "product": "zterm", "version": manifest.version,
-            "source_commit": manifest.source_commit, "package": "io.github.leonfox28.zterm",
+        let mut metadata = json!({"schema": 1, "product": "voytty", "version": manifest.version,
+            "source_commit": manifest.source_commit, "package": "io.github.leonfox28.voytty",
             "abi": "arm64-v8a", "min_sdk": 26, "target_sdk": 36, "version_code": 102699,
-            "certificate_sha256": zterm_core::release::android::CERTIFICATE.trim(), "signed": false,
+            "certificate_sha256": voytty_core::release::android::CERTIFICATE.trim(), "signed": false,
             "length": apk.len(), "sha256": sha256_hex(apk)});
         let write = |value: &Value| {
             fs::write(
@@ -1100,7 +1100,7 @@ mod tests {
             .collect();
         ReleaseManifest {
             schema: RELEASE_MANIFEST_SCHEMA,
-            product: "zterm".to_owned(),
+            product: "voytty".to_owned(),
             version: version.to_owned(),
             tag,
             classification,

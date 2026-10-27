@@ -12,19 +12,19 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use zterm_platform::local_unix::{DaemonLock, bind_owned_daemon_socket, detach_current_process};
-use zterm_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
-use zterm_platform::user_state::{UserPaths, open_append};
+use voytty_platform::local_unix::{DaemonLock, bind_owned_daemon_socket, detach_current_process};
+use voytty_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
+use voytty_platform::user_state::{UserPaths, open_append};
 
-const FIXTURE_ROOT: &str = "ZTERM_HANDOFF_FIXTURE_ROOT";
-const FIXTURE_ROLE: &str = "ZTERM_HANDOFF_FIXTURE_ROLE";
-const FIXTURE_VERSION: &str = "ZTERM_HANDOFF_FIXTURE_VERSION";
+const FIXTURE_ROOT: &str = "VOYTTY_HANDOFF_FIXTURE_ROOT";
+const FIXTURE_ROLE: &str = "VOYTTY_HANDOFF_FIXTURE_ROLE";
+const FIXTURE_VERSION: &str = "VOYTTY_HANDOFF_FIXTURE_VERSION";
 
 fn paths(root: &Path) -> UserPaths {
     UserPaths::for_test(
         fs::metadata(root).expect("root metadata").uid(),
         root.into(),
-        root.join(".zterm"),
+        root.join(".voytty"),
         root.join("run"),
     )
 }
@@ -32,7 +32,7 @@ fn paths(root: &Path) -> UserPaths {
 fn runtime(root: &Path) -> LocalRuntime {
     LocalRuntime::for_test(
         paths(root),
-        DaemonLauncher::for_test(root.join("zterm"), "--fixture-daemon".into()),
+        DaemonLauncher::for_test(root.join("voytty"), "--fixture-daemon".into()),
     )
 }
 
@@ -52,13 +52,13 @@ fn executable_script(root: &Path, updated: bool) -> String {
     let check = if updated {
         crate::distribution::tests::update_fixture_self_check()
     } else {
-        zterm_core::release::ReleaseSelfCheck::current()
+        voytty_core::release::ReleaseSelfCheck::current()
     };
     let json = serde_json::to_string(&check).expect("self check");
     let post_check = if updated {
         format!(
             "if [ \"$0\" = {} ] && [ -f {} ]; then printf failed > {}; exit 1; fi; ",
-            quote(&root.join("zterm")),
+            quote(&root.join("voytty")),
             quote(&root.join("fail-post-check")),
             quote(&root.join("post-check-failed"))
         )
@@ -98,8 +98,9 @@ fn fixture_process() {
     }));
     match std::env::var(FIXTURE_ROLE).expect("fixture role").as_str() {
         "install" => {
-            fs::write(root.join("zterm"), executable_script(&root, false)).expect("old executable");
-            fs::set_permissions(root.join("zterm"), fs::Permissions::from_mode(0o700))
+            fs::write(root.join("voytty"), executable_script(&root, false))
+                .expect("old executable");
+            fs::set_permissions(root.join("voytty"), fs::Permissions::from_mode(0o700))
                 .expect("mode");
         }
         "daemon" => {
@@ -117,22 +118,22 @@ fn fixture_process() {
                 .expect("daemon lock")
                 .expect("exclusive daemon");
             let (listener, ownership) = bind_owned_daemon_socket(&paths, &lock).expect("socket");
-            zterm_platform::diagnostics::Store::new(paths.clone())
+            voytty_platform::diagnostics::Store::new(paths.clone())
                 .register_daemon(&lock)
                 .expect("new diagnostic writer");
             let cwd = root.clone();
             let sessions = SessionService::with_spawner(
                 setup.device_id,
-                zterm_core::ResourceLimits::default(),
+                voytty_core::ResourceLimits::default(),
                 move |size, _| {
                     let command = if cwd.join("hold-session").exists() {
                         ExplicitPtyCommand::new("/bin/sleep", &cwd).arg("30")
                     } else if cwd.join("restart-from-session").exists() {
-                        ExplicitPtyCommand::new(cwd.join("zterm"), &cwd).arg("--fixture-restart")
+                        ExplicitPtyCommand::new(cwd.join("voytty"), &cwd).arg("--fixture-restart")
                     } else if cwd.join("stop-from-session").exists() {
-                        ExplicitPtyCommand::new(cwd.join("zterm"), &cwd).arg("--fixture-stop")
+                        ExplicitPtyCommand::new(cwd.join("voytty"), &cwd).arg("--fixture-stop")
                     } else {
-                        ExplicitPtyCommand::new(cwd.join("zterm"), &cwd).arg("--fixture-update")
+                        ExplicitPtyCommand::new(cwd.join("voytty"), &cwd).arg("--fixture-update")
                     };
                     let pty = PtyHost::new()
                         .spawn(command, PtySize::new(size.rows, size.columns))
@@ -155,7 +156,7 @@ fn fixture_process() {
         }
         "foreground" => {
             let result = update(
-                &root.join("zterm"),
+                &root.join("voytty"),
                 &paths(&root),
                 None,
                 false,
@@ -309,7 +310,7 @@ impl Drop for Fixture {
 fn update_completes_after_its_originating_pty_ends() {
     let fixture = Fixture::new();
     let root = fixture.root.path();
-    let original = fs::read(root.join("zterm")).expect("original binary");
+    let original = fs::read(root.join("voytty")).expect("original binary");
     let identity = fs::read(paths(root).identity()).expect("identity");
     block_on(async {
         runtime(root)
@@ -325,14 +326,14 @@ fn update_completes_after_its_originating_pty_ends() {
         // The fixture PTY starts the updater itself; no fake shutdown or activation.
         let _ = client
             .create_session(
-                &zterm_core::SessionName::new("update-origin").expect("name"),
+                &voytty_core::SessionName::new("update-origin").expect("name"),
                 None,
                 None,
             )
             .await;
         let deadline = Instant::now() + Duration::from_secs(12);
         loop {
-            let current = fs::read(root.join("zterm")).expect("installed path");
+            let current = fs::read(root.join("voytty")).expect("installed path");
             if current != original
                 && let Ok(ready) = client.readiness().await
                 && ready.version == "9.1.0"
@@ -397,7 +398,7 @@ fn restart_completes_after_its_originating_pty_ends() {
         // The fixture PTY runs `restart -y` itself; stopping ends that PTY.
         let _ = client
             .create_session(
-                &zterm_core::SessionName::new("restart-origin").expect("name"),
+                &voytty_core::SessionName::new("restart-origin").expect("name"),
                 None,
                 None,
             )
@@ -439,7 +440,7 @@ fn stop_completes_after_its_originating_pty_ends() {
         // The fixture PTY runs `daemon stop -y` itself; stopping ends that PTY.
         let _ = client
             .create_session(
-                &zterm_core::SessionName::new("stop-origin").expect("name"),
+                &voytty_core::SessionName::new("stop-origin").expect("name"),
                 None,
                 None,
             )
@@ -479,7 +480,7 @@ fn hold_session(root: &Path) {
             });
         LocalClient::new(paths(root).socket().to_owned())
             .create_session(
-                &zterm_core::SessionName::new("retained-work").expect("name"),
+                &voytty_core::SessionName::new("retained-work").expect("name"),
                 None,
                 None,
             )
@@ -490,7 +491,7 @@ fn hold_session(root: &Path) {
 
 fn assert_unchanged(root: &Path, original: &[u8]) {
     assert_eq!(
-        fs::read(root.join("zterm")).expect("installed binary"),
+        fs::read(root.join("voytty")).expect("installed binary"),
         original
     );
     assert_eq!(
@@ -503,7 +504,7 @@ fn assert_unchanged(root: &Path, original: &[u8]) {
 
 fn direct_update(root: &Path) -> Result<UpdateResult, DaemonError> {
     update(
-        &root.join("zterm"),
+        &root.join("voytty"),
         &paths(root),
         Some("v9.1.0"),
         false,
@@ -540,9 +541,9 @@ fn cancelled_confirmation_preserves_sessions_and_installation() {
     let fixture = Fixture::new();
     let root = fixture.root.path();
     hold_session(root);
-    let original = fs::read(root.join("zterm")).expect("old binary");
+    let original = fs::read(root.join("voytty")).expect("old binary");
     let error = update(
-        &root.join("zterm"),
+        &root.join("voytty"),
         &paths(root),
         None,
         false,
@@ -572,7 +573,7 @@ fn cancelled_confirmation_preserves_sessions_and_installation() {
 
 fn child_at_handoff(root: &Path, command: Command, approved: bool) -> (Child, Channel) {
     let (child, stream) =
-        spawn_isolated_command(&root.join("zterm"), root, INTERNAL_HANDOFF_ARGUMENT)
+        spawn_isolated_command(&root.join("voytty"), root, INTERNAL_HANDOFF_ARGUMENT)
             .expect("lifecycle owner launch");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -613,7 +614,7 @@ fn lost_frontend_before_handoff_does_not_stop_approved_sessions() {
         let fixture = Fixture::new();
         let root = fixture.root.path();
         hold_session(root);
-        let original = fs::read(root.join("zterm")).expect("old binary");
+        let original = fs::read(root.join("voytty")).expect("old binary");
         let (mut child, channel) = child_at_handoff(root, command, true);
         drop(channel);
         wait_for_child(&mut child);
@@ -628,15 +629,15 @@ fn cancelled_stop_and_restart_confirmation_preserves_sessions() {
         let fixture = Fixture::new();
         let root = fixture.root.path();
         hold_session(root);
-        let original = fs::read(root.join("zterm")).expect("binary");
+        let original = fs::read(root.join("voytty")).expect("binary");
         let confirm = |impact: &SessionImpact| {
             assert_eq!(impact.active_session_names, ["retained-work"]);
             Err(cancelled())
         };
         let result = if restarting {
-            restart(&root.join("zterm"), &paths(root), false, confirm, |_| {}).map(|_| ())
+            restart(&root.join("voytty"), &paths(root), false, confirm, |_| {}).map(|_| ())
         } else {
-            stop(&root.join("zterm"), &paths(root), false, confirm, |_| {}).map(|_| ())
+            stop(&root.join("voytty"), &paths(root), false, confirm, |_| {}).map(|_| ())
         };
         assert_eq!(
             result.expect_err("cancel lifecycle command").kind(),
@@ -667,7 +668,7 @@ fn external_restart_reports_actual_stages_and_replacement_readiness() {
     ] {
         let mut stages = Vec::new();
         let ready = restart(
-            &root.join("zterm"),
+            &root.join("voytty"),
             &paths(root),
             false,
             |_| panic!("idle restart must not prompt"),
@@ -685,7 +686,7 @@ fn late_session_still_requires_approval_after_handoff() {
     let fixture = Fixture::new();
     let root = fixture.root.path();
     block_on(runtime(root).ensure_configured_daemon()).expect("idle daemon");
-    let original = fs::read(root.join("zterm")).expect("old binary");
+    let original = fs::read(root.join("voytty")).expect("old binary");
     let (mut child, mut channel) = child_at_handoff(root, Command::Update { version: None }, false);
     hold_session(root);
     channel
@@ -715,7 +716,7 @@ fn startup_failure_keeps_new_binary_and_records_partial_completion() {
     assert!(
         error
             .detail()
-            .contains("Updated zterm to 9.1.0, but the daemon could not start"),
+            .contains("Updated voytty to 9.1.0, but the daemon could not start"),
         "unexpected update failure: {error}"
     );
     assert_eq!(
@@ -723,7 +724,7 @@ fn startup_failure_keeps_new_binary_and_records_partial_completion() {
         b"failed"
     );
     assert_eq!(
-        fs::read_to_string(root.join("zterm")).expect("new binary"),
+        fs::read_to_string(root.join("voytty")).expect("new binary"),
         executable_script(root, true)
     );
     let log = fs::read_to_string(paths(root).daemon_log()).expect("partial outcome log");
@@ -737,7 +738,7 @@ fn startup_failure_keeps_new_binary_and_records_partial_completion() {
 fn post_check_failure_restores_previous_binary_and_reports_failure() {
     let fixture = Fixture::new();
     let root = fixture.root.path();
-    let original = fs::read(root.join("zterm")).expect("old binary");
+    let original = fs::read(root.join("voytty")).expect("old binary");
     fs::write(root.join("fail-post-check"), b"fail").expect("activation fault");
     let error = direct_update(root).expect_err("post-check failure");
     assert_eq!(
@@ -750,7 +751,7 @@ fn post_check_failure_restores_previous_binary_and_reports_failure() {
         b"failed"
     );
     assert_eq!(
-        fs::read(root.join("zterm")).expect("restored binary"),
+        fs::read(root.join("voytty")).expect("restored binary"),
         original
     );
     let log = fs::read_to_string(paths(root).daemon_log())
@@ -768,7 +769,7 @@ fn superseded_updater_cannot_replace_a_newer_activation() {
     let root = fixture.root.path();
     let replacement = executable_script(root, true);
     let error = update(
-        &root.join("zterm"),
+        &root.join("voytty"),
         &paths(root),
         None,
         false,
@@ -778,7 +779,7 @@ fn superseded_updater_cannot_replace_a_newer_activation() {
                 fs::write(root.join("other-update"), &replacement).expect("competing update");
                 fs::set_permissions(root.join("other-update"), fs::Permissions::from_mode(0o700))
                     .expect("mode");
-                fs::rename(root.join("other-update"), root.join("zterm"))
+                fs::rename(root.join("other-update"), root.join("voytty"))
                     .expect("competing commit");
             }
         },
@@ -786,7 +787,7 @@ fn superseded_updater_cannot_replace_a_newer_activation() {
     .expect_err("stale updater rejected");
     assert_eq!(error.kind(), DomainErrorKind::UpdateRejected);
     assert_eq!(
-        fs::read_to_string(root.join("zterm")).expect("competing binary retained"),
+        fs::read_to_string(root.join("voytty")).expect("competing binary retained"),
         replacement
     );
 }
@@ -816,7 +817,7 @@ fn failed_child_launch_leaves_daemon_and_sessions_untouched() {
     let fixture = Fixture::new();
     let root = fixture.root.path();
     hold_session(root);
-    let original = fs::read(root.join("zterm")).expect("old binary");
+    let original = fs::read(root.join("voytty")).expect("old binary");
     update(
         &root.join("missing-updater"),
         &paths(root),
@@ -846,7 +847,7 @@ fn yes_approval_ends_sessions_without_reading_input() {
     let root = fixture.root.path();
     hold_session(root);
     let result = update(
-        &root.join("zterm"),
+        &root.join("voytty"),
         &paths(root),
         None,
         true,
@@ -872,24 +873,24 @@ fn accepted_channel_loss_reports_unknown_outcome_not_cancellation() {
 fn preparation_failure_is_persisted_before_update_handoff() {
     let fixture = Fixture::new();
     let root = fixture.root.path();
-    let original = fs::read(root.join("zterm")).expect("old binary");
+    let original = fs::read(root.join("voytty")).expect("old binary");
     fs::write(root.join("fail-prepare"), b"fail").expect("preparation fault");
     let error = direct_update(root).expect_err("verification failed");
     assert_eq!(error.kind(), DomainErrorKind::ReleaseSignatureInvalid);
     assert_eq!(
         original,
-        fs::read(root.join("zterm")).expect("unchanged binary")
+        fs::read(root.join("voytty")).expect("unchanged binary")
     );
     let log = fs::read_to_string(paths(root).daemon_log()).expect("early failure persisted");
     let records: Vec<_> = log
         .lines()
-        .filter_map(|line| zterm_diagnostics::Record::decode(line.as_bytes()))
+        .filter_map(|line| voytty_diagnostics::Record::decode(line.as_bytes()))
         .collect();
     let outcome = records
         .iter()
-        .find(|r| r.event == zterm_diagnostics::Kind::UpdateCompleted)
+        .find(|r| r.event == voytty_diagnostics::Kind::UpdateCompleted)
         .expect("outcome");
-    assert_eq!(outcome.level, zterm_diagnostics::Level::Warn);
+    assert_eq!(outcome.level, voytty_diagnostics::Level::Warn);
     assert_eq!(outcome.fields.committed, Some(false));
     assert_eq!(
         outcome.fields.category.as_deref(),

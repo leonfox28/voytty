@@ -1,6 +1,6 @@
 //! Application title is bounded global metadata with the normal publication rules.
-use zterm_core::terminal::{MAX_TITLE_BYTES, TerminalSize, TerminalSurfaceDeltaResult};
-use zterm_terminal::TerminalModel;
+use voytty_core::terminal::{MAX_TITLE_BYTES, TerminalSize, TerminalSurfaceDeltaResult};
+use voytty_terminal::TerminalModel;
 
 #[test]
 fn title_only_updates_round_trip_through_delta_and_reset_without_touching_rows() {
@@ -75,7 +75,7 @@ fn synchronized_output_publishes_title_cursor_style_and_links_together() {
     assert_eq!(published.surface.application_title, "after");
     assert_eq!(
         published.surface.cursor.presentation.shape,
-        zterm_core::terminal::TerminalCursorShape::Beam
+        voytty_core::terminal::TerminalCursorShape::Beam
     );
     assert!(published.surface.cursor.presentation.blinking);
     let cell = &published.surface.rows[0].cells[0];

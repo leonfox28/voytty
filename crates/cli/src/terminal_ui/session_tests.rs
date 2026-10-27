@@ -1,14 +1,14 @@
 use nix::pty::openpty;
-use zterm_core::ResourceLimits;
-use zterm_daemon::bootstrap::bootstrap;
-use zterm_daemon::config::{ValidatedInfrastructure, validate_setup_input};
-use zterm_daemon::lifecycle::DaemonLauncher;
-use zterm_daemon::local_ipc::serve_local;
-use zterm_daemon::service::DaemonService;
-use zterm_daemon::session::SessionService;
-use zterm_platform::local_unix::{DaemonLock, bind_daemon_socket};
-use zterm_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
-use zterm_platform::user_state::UserPaths;
+use voytty_core::ResourceLimits;
+use voytty_daemon::bootstrap::bootstrap;
+use voytty_daemon::config::{ValidatedInfrastructure, validate_setup_input};
+use voytty_daemon::lifecycle::DaemonLauncher;
+use voytty_daemon::local_ipc::serve_local;
+use voytty_daemon::service::DaemonService;
+use voytty_daemon::session::SessionService;
+use voytty_platform::local_unix::{DaemonLock, bind_daemon_socket};
+use voytty_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
+use voytty_platform::user_state::UserPaths;
 
 #[derive(Clone, Copy, Debug)]
 enum ResizeTrigger {
@@ -42,7 +42,7 @@ async fn queued_delta_resize_case(trigger: ResizeTrigger) {
     let paths = UserPaths::for_test(
         nix::unistd::Uid::effective().as_raw(),
         home.clone(),
-        home.join(".zterm"),
+        home.join(".voytty"),
         temporary.path().join("run"),
     );
     let config = validate_setup_input("sync-test", ValidatedInfrastructure::OfficialN0)

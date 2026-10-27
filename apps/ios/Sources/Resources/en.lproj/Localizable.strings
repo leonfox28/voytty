@@ -122,7 +122,7 @@
 "无法读取此文件，请重新选择。" = "Cannot read this file. Choose it again.";
 "远端主机无法保存文件。" = "The remote host could not save the file.";
 "文件可能已上传，但结果未确认。重试会创建另一个文件。" = "The file may have been uploaded, but its result was lost. Retrying creates another file.";
-"请升级远端主机的 zterm 以使用文件上传。" = "Upgrade zterm on the remote host to use file uploads.";
+"请升级远端主机的 voytty 以使用文件上传。" = "Upgrade voytty on the remote host to use file uploads.";
 "上传图片" = "Upload image";
 "上传文件" = "Upload file";
 "长按显示终端操作" = "Touch and hold for terminal actions";

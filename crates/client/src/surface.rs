@@ -1,7 +1,7 @@
 //! Complete semantic surface ownership shared by desktop and native renderers.
 
-use zterm_core::Revision;
-use zterm_core::terminal::{
+use voytty_core::Revision;
+use voytty_core::terminal::{
     ActiveScreen, TerminalModes, TerminalSurface, TerminalSurfaceDelta, TerminalSurfaceError,
     TerminalSurfaceSnapshot,
 };

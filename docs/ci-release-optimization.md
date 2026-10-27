@@ -35,7 +35,7 @@
 4. **secret scan 区分大小写**，匹配不到 `userToken`、`dbPassword` 这类驼峰命名的赋值。
 5. **native 发布构建只在合并后运行。** glibc 2.28、macOS 13.0 下限或 release 自检的
    问题要到 main 才发现，届时 main 没有可发布的 candidate。
-6. **smoke 重编。** `cargo run -p zterm-cli` 的特性组合与测试不同，要重编约 151 个 crate。
+6. **smoke 重编。** `cargo run -p voytty-cli` 的特性组合与测试不同，要重编约 151 个 crate。
 7. **main 运行可能被取消。** `cancel-in-progress` 对 main push 也生效，连续合并会取消
    前一个 commit 的 main 运行。
 8. **Android job 没有任何缓存。** 每次从源码编译 cargo-ndk（约 40 秒），Rust 依赖冷编译
@@ -63,7 +63,7 @@
   不覆盖组装；2026-10-11 补充的 Rust 集成测试使用合成输入执行完整 unsigned 组装，
   真实跨平台候选的集中组装仍在 main 上进行。
 - **main 的 Android 候选冷编译。** 编译缓存只给 PR 恢复，与 native 候选一样，发布产物
-  不使用编译缓存。本地对比中，恢复构建与冷构建的 `libzterm_android.so` 逐字节一致；
+  不使用编译缓存。本地对比中，恢复构建与冷构建的 `libvoytty_android.so` 逐字节一致；
   以后若想让 main 也用缓存，可以参考这一结果。
 - **smoke 改为运行 release 二进制。** `--internal-release-self-check` 不覆盖无参数时
   真实默认路径下的 `observe()`，所以保留无参数运行，改在三个 native 候选上执行。原先
@@ -203,9 +203,9 @@ Kotlin 编译与检查 task 的耗时。hosted 稳态收益仍需 main 首次填
 ## 2026-10-20：Linux arm64 的 handoff 测试初始化竞态
 
 10 月 19 日，PR #90 的
-[首次运行](https://github.com/leonfox28/zterm/actions/runs/39233147500/job/117995786462)
+[首次运行](https://github.com/leonfox28/voytty/actions/runs/39233147500/job/117995786462)
 在 `startup_failure_keeps_new_binary_and_records_partial_completion` 的错误文本断言失败；
-合并后的 [main 首次运行](https://github.com/leonfox28/zterm/actions/runs/39247933910/job/118044379141)
+合并后的 [main 首次运行](https://github.com/leonfox28/voytty/actions/runs/39247933910/job/118044379141)
 在 `post_check_failure_restores_previous_binary_and_reports_failure` 读取结果日志时得到
 `NotFound`。两次都仅 Linux arm64 失败，同一提交重跑通过。
 
@@ -214,7 +214,7 @@ Kotlin 编译与检查 task 的耗时。hosted 稳态收益仍需 main 首次填
 `exec` 返回 `ETXTBSY`（`Text file busy`），独立更新进程尚未启动。
 另外一组交接与分发测试的普通并发运行也复现同类错误。
 
-测试父进程原先直接写入每个 fixture 的 `zterm` 脚本。另一测试同时创建子进程时，可能继承
+测试父进程原先直接写入每个 fixture 的 `voytty` 脚本。另一测试同时创建子进程时，可能继承
 尚未关闭的写入描述符；`CLOEXEC` 只在该子进程执行新程序时关闭它。即使原写入线程已经关闭
 文件，Linux 仍可能因另一子进程持有写入句柄而拒绝执行。单独的 `strace` 延迟实验捕捉到了
 这一顺序；延迟注入只用于验证机制，不属于 CI 或上述普通并发统计。

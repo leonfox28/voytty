@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 
 use crate::user_state::UserPaths;
 
-const LABEL: &str = "io.github.leonfox28.zterm.daemon";
-const UNIT: &str = "zterm-daemon.service";
-const MARKER: &str = "Managed by zterm daemon autostart v1";
+const LABEL: &str = "io.github.leonfox28.voytty.daemon";
+const UNIT: &str = "voytty-daemon.service";
+const MARKER: &str = "Managed by voytty daemon autostart v1";
 /// Service managers enter without daemonizing, before a Tokio runtime exists.
 pub const FOREGROUND_ARGUMENT: &str = "--internal-daemon-foreground";
 
@@ -100,7 +100,7 @@ impl Autostart {
         }
         if let Some(content) = content {
             if content != self.render(executable)? {
-                return Err("autostart configuration differs from this executable; run zterm daemon autostart enable to repair it".into());
+                return Err("autostart configuration differs from this executable; run voytty daemon autostart enable to repair it".into());
             }
             self.validate_executable(executable)?;
             if self.manager == Manager::LaunchAgent
@@ -121,7 +121,7 @@ impl Autostart {
                 }
             }
             if !enabled {
-                return Err("autostart service exists but is not enabled; run zterm daemon autostart enable or disable".into());
+                return Err("autostart service exists but is not enabled; run voytty daemon autostart enable or disable".into());
             }
         }
         Ok(if enabled {
@@ -144,7 +144,7 @@ impl Autostart {
         let destination = self.registration();
         let temporary = self
             .directory()
-            .join(format!(".zterm-autostart-{}.tmp", std::process::id()));
+            .join(format!(".voytty-autostart-{}.tmp", std::process::id()));
         let mut output = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -260,7 +260,7 @@ impl Autostart {
                 xml(home)
             ),
             Manager::Systemd => format!(
-                "# {MARKER}\n[Unit]\nDescription=zterm per-user daemon\n\n[Service]\nType=exec\nExecStart={} {FOREGROUND_ARGUMENT}\nWorkingDirectory={}\nRestart=no\nKillMode=process\nUMask=0077\n\n[Install]\nWantedBy=default.target\n",
+                "# {MARKER}\n[Unit]\nDescription=voytty per-user daemon\n\n[Service]\nType=exec\nExecStart={} {FOREGROUND_ARGUMENT}\nWorkingDirectory={}\nRestart=no\nKillMode=process\nUMask=0077\n\n[Install]\nWantedBy=default.target\n",
                 unit_quote(executable),
                 unit_quote(home).replace("$$", "$")
             ),
@@ -429,7 +429,7 @@ mod tests {
                 uid: nix::unistd::Uid::effective().as_raw(),
                 manager,
             };
-            let executable = temp.path().join("zterm %$ & \" binary");
+            let executable = temp.path().join("voytty %$ & \" binary");
             fs::write(&executable, "fixture executable").expect("fixture");
             fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).expect("mode");
             assert!(

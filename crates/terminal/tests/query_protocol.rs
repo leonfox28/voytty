@@ -1,6 +1,6 @@
 //! Exact query replies from the authoritative terminal state.
-use zterm_core::terminal::TerminalSize;
-use zterm_terminal::{MAX_REPLY_BYTES_PER_UPDATE, TerminalError, TerminalModel};
+use voytty_core::terminal::TerminalSize;
+use voytty_terminal::{MAX_REPLY_BYTES_PER_UPDATE, TerminalError, TerminalModel};
 
 #[test]
 fn extended_unknown_fields_are_encoded_in_order_across_chunks() {

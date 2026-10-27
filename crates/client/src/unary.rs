@@ -13,8 +13,8 @@ use std::{
     time::Duration,
 };
 use tokio::sync::Mutex as AsyncMutex;
-use zterm_core::{DomainErrorKind, OperationId, OperationLease, SessionId, SessionName};
-use zterm_proto::{DecodedFrame, WireKind, v2};
+use voytty_core::{DomainErrorKind, OperationId, OperationLease, SessionId, SessionName};
+use voytty_proto::{DecodedFrame, WireKind, v2};
 
 const MAX_MUTATION_TARGETS_PER_CLIENT: usize = 64;
 
@@ -128,7 +128,7 @@ impl SessionUnaryClient {
         transport: &dyn SessionUnaryTransport,
         name: &SessionName,
         working_directory: Option<&Path>,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
     ) -> Result<SessionSummary, ClientError> {
         self.create_session_at(
             transport,
@@ -147,7 +147,7 @@ impl SessionUnaryClient {
         target: ResolvedSessionTarget,
         name: &SessionName,
         working_directory: Option<&Path>,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
     ) -> Result<SessionSummary, ClientError> {
         self.create_session_at_with_colors(
             transport,
@@ -155,7 +155,7 @@ impl SessionUnaryClient {
             name,
             working_directory,
             viewport,
-            zterm_core::terminal::TerminalColorProfile::default(),
+            voytty_core::terminal::TerminalColorProfile::default(),
         )
         .await
     }
@@ -167,8 +167,8 @@ impl SessionUnaryClient {
         target: ResolvedSessionTarget,
         name: &SessionName,
         working_directory: Option<&Path>,
-        viewport: Option<zterm_core::terminal::TerminalSize>,
-        base_colors: zterm_core::terminal::TerminalColorProfile,
+        viewport: Option<voytty_core::terminal::TerminalSize>,
+        base_colors: voytty_core::terminal::TerminalColorProfile,
     ) -> Result<SessionSummary, ClientError> {
         let frame = self
             .mutation_request(
@@ -398,7 +398,7 @@ impl SessionUnaryClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zterm_core::{DaemonIncarnation, DeviceId};
+    use voytty_core::{DaemonIncarnation, DeviceId};
     #[test]
     fn mutation_state_debug_redacts_private_lease_owner() {
         let mutation = LocalMutationState {

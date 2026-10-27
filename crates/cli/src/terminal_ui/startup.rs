@@ -1,7 +1,7 @@
 use super::*;
 use composition::{ComposedCursor, LayoutIdentity, text_cells};
 use std::collections::BTreeMap;
-use zterm_core::terminal::{TerminalCell, TerminalStyle};
+use voytty_core::terminal::{TerminalCell, TerminalStyle};
 
 /// Client chrome before there is an authoritative Session surface.
 pub(super) struct StartupProgress {
@@ -45,12 +45,12 @@ impl StartupProgress {
         let width = usize::from(
             physical_size
                 .columns
-                .min(zterm_core::ResourceLimits::default().max_viewport_columns),
+                .min(voytty_core::ResourceLimits::default().max_viewport_columns),
         );
         let height = usize::from(
             physical_size
                 .rows
-                .min(zterm_core::ResourceLimits::default().max_viewport_rows),
+                .min(voytty_core::ResourceLimits::default().max_viewport_rows),
         );
         let history = self.history.borrow();
         let stages = history

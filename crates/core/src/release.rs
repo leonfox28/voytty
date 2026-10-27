@@ -16,7 +16,7 @@ pub const RELEASE_MANIFEST_SCHEMA: u32 = 1;
 /// Exact generated-installer schema supported by this product generation.
 pub const RELEASE_BOOTSTRAP_SCHEMA: u32 = 1;
 /// Reviewed identifier for the first long-lived release signing key.
-pub const RELEASE_KEY_ID: &str = "zterm-release-ed25519-v1";
+pub const RELEASE_KEY_ID: &str = "voytty-release-ed25519-v1";
 /// Maximum accepted exact JSON manifest byte length.
 pub const MAX_RELEASE_MANIFEST_BYTES: usize = 64 * 1024;
 /// Detached Ed25519 signature length.
@@ -28,7 +28,7 @@ pub const MINIMUM_GLIBC: &str = "2.28";
 /// Minimum supported macOS version declared by release artifacts.
 pub const MINIMUM_MACOS: &str = "13.0";
 /// Official immutable Release asset origin.
-pub const RELEASE_ORIGIN: &str = "https://github.com/leonfox28/zterm/releases";
+pub const RELEASE_ORIGIN: &str = "https://github.com/leonfox28/voytty/releases";
 
 const OFFICIAL_PUBLIC_KEY_HEX: &str = include_str!("../../../release/public-key.hex");
 
@@ -111,7 +111,7 @@ pub struct ReleaseArtifact {
 pub struct ReleaseManifest {
     /// Manifest schema major.
     pub schema: u32,
-    /// Product name; always `zterm`.
+    /// Product name; always `voytty`.
     pub product: String,
     /// Cargo workspace SemVer.
     pub version: String,
@@ -141,7 +141,7 @@ pub struct ReleaseManifest {
 pub struct ReleaseSelfCheck {
     /// Self-check schema major.
     pub schema: u32,
-    /// Product name; always `zterm`.
+    /// Product name; always `voytty`.
     pub product: String,
     /// Exact embedded build identity.
     pub build: ReleaseBuildIdentity,
@@ -159,7 +159,7 @@ impl ReleaseSelfCheck {
         };
         Self {
             schema: RELEASE_MANIFEST_SCHEMA,
-            product: "zterm".to_owned(),
+            product: "voytty".to_owned(),
             build: ReleaseBuildIdentity {
                 version: build.version.to_owned(),
                 target: build.target.to_owned(),
@@ -175,7 +175,7 @@ impl ReleaseSelfCheck {
     /// Cross-checks this self-check against the updater's authenticated selected artifact.
     pub fn require_artifact(&self, artifact: &ReleaseArtifact) -> Result<(), ReleaseError> {
         if self.schema != RELEASE_MANIFEST_SCHEMA
-            || self.product != "zterm"
+            || self.product != "voytty"
             || artifact.build != self.build
         {
             return Err(ReleaseError::BuildIdentityMismatch);
@@ -435,7 +435,7 @@ pub fn artifact_filename(target: &str) -> Result<String, ReleaseError> {
     if !is_target_identifier(target) {
         return Err(ReleaseError::UnsupportedTarget);
     }
-    Ok(format!("zterm-{target}.tar.gz"))
+    Ok(format!("voytty-{target}.tar.gz"))
 }
 
 /// Returns the exact immutable GitHub asset URL for one tag and filename.
@@ -450,7 +450,7 @@ fn validate_manifest(manifest: &ReleaseManifest) -> Result<(), ReleaseError> {
     {
         return Err(ReleaseError::Schema);
     }
-    if manifest.product != "zterm" {
+    if manifest.product != "voytty" {
         return Err(ReleaseError::ReleaseIdentity);
     }
     let version = manifest.parsed_version()?;
@@ -667,7 +667,7 @@ mod tests {
             .collect();
         ReleaseManifest {
             schema: RELEASE_MANIFEST_SCHEMA,
-            product: "zterm".to_owned(),
+            product: "voytty".to_owned(),
             version,
             tag,
             classification: ReleaseClassification::Stable,
@@ -784,7 +784,7 @@ mod tests {
         for (field, value, expected) in [
             (
                 "url",
-                serde_json::json!("https://example.invalid/zterm.tar.gz"),
+                serde_json::json!("https://example.invalid/voytty.tar.gz"),
                 ReleaseError::ArtifactLocation,
             ),
             (
@@ -821,7 +821,7 @@ mod tests {
         let manifest = fixture();
         let candidate = ReleaseSelfCheck {
             schema: RELEASE_MANIFEST_SCHEMA,
-            product: "zterm".to_owned(),
+            product: "voytty".to_owned(),
             build: manifest.artifacts[1].build.clone(),
         };
         assert_eq!(

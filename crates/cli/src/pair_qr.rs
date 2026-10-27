@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn automatic_presentation_preserves_one_manual_ticket_in_all_modes() {
-        let ticket = "zterm-pair-v1:synthetic-test-content";
+        let ticket = "voytty-pair-v1:synthetic-test-content";
         let (pipe, fallback) = present(ticket, None);
         assert_eq!(*pipe, format!("{ticket}\n"));
         assert!(fallback.is_none());
@@ -89,7 +89,7 @@ mod tests {
             assert_eq!(*manual, *pipe);
             assert!(!fallback.expect("fallback").to_string().contains(ticket));
         }
-        let oversized = "x".repeat(zterm_core::MAX_TICKET_TEXT_BYTES);
+        let oversized = "x".repeat(voytty_core::MAX_TICKET_TEXT_BYTES);
         let (manual, fallback) = present(&oversized, Some(Ok(200)));
         assert_eq!(*manual, format!("{oversized}\n"));
         let error = fallback.expect("capacity fallback");

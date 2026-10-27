@@ -13,14 +13,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ring::digest::{SHA256, digest};
 use ring::rand::{SecureRandom, SystemRandom};
-use zeroize::Zeroizing;
-use zterm_core::{
+use voytty_core::{
     AuthGeneration, DeviceDisplayName, DeviceId, EphemeralOperationId, PAIR_NONCE_BYTES,
     PAIR_OFFER_ID_BYTES, PAIR_PROTOCOL_VERSION, PAIR_SECRET_BYTES, PAIR_TICKET_FORMAT_VERSION,
     PairAccepted, PairBegin, PairChallenge, PairFingerprint, PairNonce, PairOfferId, PairProof,
     PairSecret, PairTicketError, PairTicketFields, PairTranscript, RelayHint, TransportLimits,
     validate_pair_ttl,
 };
+use zeroize::Zeroizing;
 
 use crate::error::DaemonError;
 
@@ -141,7 +141,7 @@ impl PairingEntropy for SystemPairingEntropy {
     }
 }
 
-pub use zterm_client::pairing::{PairingError, controller_transcript};
+pub use voytty_client::pairing::{PairingError, controller_transcript};
 
 /// Validated semantic input for one local pair-create mutation.
 #[derive(Clone, Debug)]
@@ -210,10 +210,11 @@ impl PairTicketText {
     /// function returns; only the intended bearer text remains.
     pub fn from_local_response(text: String) -> Result<Self, PairingError> {
         let text = Zeroizing::new(text);
-        if text.len() > zterm_core::MAX_TICKET_TEXT_BYTES {
+        if text.len() > voytty_core::MAX_TICKET_TEXT_BYTES {
             return Err(PairingError::ResourceExhausted);
         }
-        let _ = zterm_proto::decode_pair_ticket(&text).map_err(|_| PairingError::InvalidBinding)?;
+        let _ =
+            voytty_proto::decode_pair_ticket(&text).map_err(|_| PairingError::InvalidBinding)?;
         Ok(Self(text))
     }
 
@@ -317,7 +318,7 @@ pub struct PreparedPairChallenge {
 }
 
 impl PreparedPairChallenge {
-    /// Wire-ready challenge validated by zterm-core.
+    /// Wire-ready challenge validated by voytty-core.
     #[must_use]
     pub const fn challenge(&self) -> &PairChallenge {
         &self.challenge
@@ -898,7 +899,7 @@ impl PairingInner {
             )
             .map_err(PairingError::InvalidTicket)?;
             let offer_key = Zeroizing::new(fields.offer_key(&secret));
-            let ticket = PairTicketText::new(zterm_proto::encode_pair_ticket(&fields, &secret));
+            let ticket = PairTicketText::new(voytty_proto::encode_pair_ticket(&fields, &secret));
             if ticket.expose().len() > self.max_ticket_text_bytes {
                 return Err(PairingError::ResourceExhausted);
             }

@@ -13,20 +13,20 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use zterm_core::terminal::TerminalSize;
-use zterm_core::{
+use voytty_core::terminal::TerminalSize;
+use voytty_core::{
     AttachmentId, DeviceId, DomainErrorKind, ResourceLimits, Revision, SessionName, SessionSelector,
 };
-use zterm_daemon::bootstrap::bootstrap;
-use zterm_daemon::config::{ValidatedInfrastructure, validate_setup_input};
-use zterm_daemon::local_ipc::{
+use voytty_daemon::bootstrap::bootstrap;
+use voytty_daemon::config::{ValidatedInfrastructure, validate_setup_input};
+use voytty_daemon::local_ipc::{
     LocalAttachmentClient, LocalAttachmentEvent, LocalClient, LocalIpcLimits, serve_local,
     serve_local_with_limits,
 };
-use zterm_daemon::service::DaemonService;
-use zterm_platform::local_unix::{DaemonLock, bind_daemon_socket, remove_own_socket};
-use zterm_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
-use zterm_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
+use voytty_daemon::service::DaemonService;
+use voytty_platform::local_unix::{DaemonLock, bind_daemon_socket, remove_own_socket};
+use voytty_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
+use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
 
 use state_fixture::TestState;
 
@@ -98,8 +98,8 @@ async fn unary_mutations_and_duplex_reconnect_share_one_live_registry() -> Resul
     attached.write_input("printf '\\033]9;%s\\a\\033]777;notify;%s;%s\\033\\\\' '结果: done' '标题' 'body;结果'\n".as_bytes().to_vec())
         .await.map_err(session_fixture::display)?;
     for expected in [
-        zterm_core::terminal::TerminalNotification::osc9("结果: done".into()),
-        zterm_core::terminal::TerminalNotification::osc777("标题".into(), "body;结果".into()),
+        voytty_core::terminal::TerminalNotification::osc9("结果: done".into()),
+        voytty_core::terminal::TerminalNotification::osc777("标题".into(), "body;结果".into()),
     ] {
         let expected = expected.map_err(session_fixture::display)?;
         loop {
@@ -183,7 +183,7 @@ async fn unary_mutations_and_duplex_reconnect_share_one_live_registry() -> Resul
             LocalAttachmentEvent::SessionEnded(ended) => {
                 assert_eq!(
                     ended.reason,
-                    zterm_proto::v2::TerminalSessionEndReason::NaturalExit as i32
+                    voytty_proto::v2::TerminalSessionEndReason::NaturalExit as i32
                 );
                 break;
             }
@@ -253,7 +253,7 @@ async fn unary_mutations_and_duplex_reconnect_share_one_live_registry() -> Resul
     };
     assert_eq!(
         ended.reason,
-        zterm_proto::v2::TerminalSessionEndReason::DaemonStop as i32
+        voytty_proto::v2::TerminalSessionEndReason::DaemonStop as i32
     );
     server
         .await
@@ -295,7 +295,7 @@ async fn mutation_response_loss_replays_the_exact_completed_result_on_a_new_sock
     )
     .map_err(session_fixture::display)?;
     let lease_frame = raw_unary(state.paths.socket(), &lease_request).await?;
-    let lease: zterm_core::OperationLease = lease_frame
+    let lease: voytty_core::OperationLease = lease_frame
         .decode_message::<v2::SessionOperationLeaseResponse>(
             WireKind::SessionOperationLeaseResponse,
         )
@@ -304,7 +304,7 @@ async fn mutation_response_loss_replays_the_exact_completed_result_on_a_new_sock
         .ok_or_else(|| "lease response omitted lease".to_owned())?
         .try_into()
         .map_err(session_fixture::display)?;
-    let operation_id: v2::OperationId = zterm_core::OperationId { lease, sequence: 9 }.into();
+    let operation_id: v2::OperationId = voytty_core::OperationId { lease, sequence: 9 }.into();
     let first_request = session_create_bytes(90, operation_id.clone(), "response-loss")?;
     let mut abandoned = tokio::net::UnixStream::connect(state.paths.socket())
         .await
@@ -489,7 +489,7 @@ async fn blocked_pty_input_does_not_stall_the_socket_runtime_or_an_unrelated_ses
     let shell = shell_path()?;
     let cwd = state.paths.home().to_path_buf();
     let spawn_count = Arc::new(AtomicUsize::new(0));
-    let sessions = zterm_daemon::session::SessionService::with_spawner(
+    let sessions = voytty_daemon::session::SessionService::with_spawner(
         DeviceId::from_array([44; 32]),
         ResourceLimits::default(),
         {
@@ -510,7 +510,7 @@ async fn blocked_pty_input_does_not_stall_the_socket_runtime_or_an_unrelated_ses
                 let session = PtyHost::new()
                     .spawn(command, PtySize::new(size.rows, size.columns))
                     .map_err(|error| {
-                        zterm_daemon::error::DaemonError::new(
+                        voytty_daemon::error::DaemonError::new(
                             DomainErrorKind::StoreUnavailable,
                             error.to_string(),
                         )
@@ -592,7 +592,7 @@ async fn failed_bounded_stop_keeps_the_listener_available_until_session_ownershi
     let listener = bind_daemon_socket(&state.paths, &lock).map_err(session_fixture::display)?;
     let shell = shell_path()?;
     let cwd = state.paths.home().to_path_buf();
-    let sessions = zterm_daemon::session::SessionService::with_spawner(
+    let sessions = voytty_daemon::session::SessionService::with_spawner(
         DeviceId::from_array([45; 32]),
         ResourceLimits::default(),
         move |size, requested| {
@@ -605,7 +605,7 @@ async fn failed_bounded_stop_keeps_the_listener_available_until_session_ownershi
                     PtySize::new(size.rows, size.columns),
                 )
                 .map_err(|error| {
-                    zterm_daemon::error::DaemonError::new(
+                    voytty_daemon::error::DaemonError::new(
                         DomainErrorKind::StoreUnavailable,
                         error.to_string(),
                     )
@@ -744,7 +744,7 @@ fn session_create_bytes(
         request_id,
         5_000,
         &v2::SessionCreateRequest {
-            base_colors: Some(zterm_core::terminal::TerminalColorProfile::default().into()),
+            base_colors: Some(voytty_core::terminal::TerminalColorProfile::default().into()),
 
             operation_id: Some(operation_id),
             target: Some(v2::TargetSelector {
@@ -830,7 +830,7 @@ async fn synchronize_from(
                 revision = snapshot.revision;
             }
             Ok(LocalAttachmentEvent::Delta(_)) => return Ok(()),
-            Err(error) if error.kind() == zterm_core::DomainErrorKind::DeadlineExceeded => {
+            Err(error) if error.kind() == voytty_core::DomainErrorKind::DeadlineExceeded => {
                 return Ok(());
             }
             Ok(event) => return Err(format!("unexpected event while synchronizing: {event:?}")),
@@ -931,21 +931,21 @@ async fn wait_for_lease_lost(client: &mut LocalAttachmentClient) -> Result<(), S
 }
 
 fn initial_snapshot_contains(
-    snapshot: &zterm_core::terminal::TerminalSurfaceSnapshot,
+    snapshot: &voytty_core::terminal::TerminalSurfaceSnapshot,
     needle: &[u8],
 ) -> bool {
     semantic_snapshot_contains(snapshot, needle)
 }
 
 fn semantic_snapshot_contains(
-    snapshot: &zterm_core::terminal::TerminalSurfaceSnapshot,
+    snapshot: &voytty_core::terminal::TerminalSurfaceSnapshot,
     needle: &[u8],
 ) -> bool {
     semantic_rows_contain(&snapshot.surface.rows, needle)
 }
 
 fn semantic_delta_contains(
-    delta: &zterm_core::terminal::TerminalSurfaceDelta,
+    delta: &voytty_core::terminal::TerminalSurfaceDelta,
     needle: &[u8],
 ) -> bool {
     delta
@@ -954,7 +954,10 @@ fn semantic_delta_contains(
         .any(|patch| semantic_rows_contain(std::slice::from_ref(&patch.replacement), needle))
 }
 
-fn semantic_rows_contain(rows: &[zterm_core::terminal::TerminalSurfaceRow], needle: &[u8]) -> bool {
+fn semantic_rows_contain(
+    rows: &[voytty_core::terminal::TerminalSurfaceRow],
+    needle: &[u8],
+) -> bool {
     let contents = rows
         .iter()
         .flat_map(|row| row.cells.iter())

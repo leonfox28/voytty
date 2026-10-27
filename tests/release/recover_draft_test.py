@@ -17,10 +17,10 @@ recovery = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(recovery)
 
 
-def evidence():
+def evidence(product="voytty"):
     selection = {"tag": "v0.1.35", "run_id": 12, "artifact_id": 34, "release_id": 56}
     commit, annotation = "a" * 40, "b" * 40
-    payloads = {"zterm-release.json": json.dumps({"tag": selection["tag"],
+    payloads = {f"{product}-release.json": json.dumps({"tag": selection["tag"],
                                                  "source_commit": commit,
                                                  "classification": "stable"}).encode(),
                 "payload.apk": b"original signed payload"}
@@ -37,7 +37,7 @@ def evidence():
                      "workflow_run": {"id": 12, "head_sha": commit, "head_branch": "v0.1.35"}},
         "release": {"id": 56, "tag_name": "v0.1.35", "target_commitish": commit,
                     "draft": True, "immutable": False, "prerelease": False, "assets": assets,
-                    "html_url": "https://github.com/leonfox28/zterm/releases/tag/v0.1.35"},
+                    "html_url": "https://github.com/leonfox28/voytty/releases/tag/v0.1.35"},
         "jobs": [{"name": name, "status": "completed", "conclusion": "success"}
                  for name in recovery.REQUIRED_JOBS]
                 + [{"name": recovery.PUBLISH_JOB, "status": "completed", "conclusion": "failure"}],
@@ -68,6 +68,22 @@ class RecoveryTest(unittest.TestCase):
         self.plan["prerelease"] = True
         with self.assertRaisesRegex(ValueError, "classification"):
             recovery.verify_files(self.plan, self.signed)
+
+    def test_historical_manifest_keeps_the_original_signed_bytes(self):
+        selection, records, payloads = evidence("zterm")
+        plan = recovery.validate_evidence(selection, records)
+        directory = self.root / "historical"
+        directory.mkdir()
+        for name, value in payloads.items():
+            (directory / name).write_bytes(value)
+        recovery.verify_files(plan, directory)
+        # A mixed inventory must fail even if every asset digest is consistent.
+        value = payloads["zterm-release.json"]
+        (directory / "voytty-release.json").write_bytes(value)
+        plan["assets"].append({"id": 99, "name": "voytty-release.json", "size": len(value),
+                               "digest": "sha256:" + hashlib.sha256(value).hexdigest()})
+        with self.assertRaisesRegex(ValueError, "exactly one product manifest"):
+            recovery.verify_files(plan, directory)
 
     def test_wrong_or_missing_evidence_is_rejected(self):
         mutations = [

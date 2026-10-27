@@ -1,16 +1,16 @@
-# zterm Commercial Use License
+# voytty Commercial Use License
 
 Version 1.0 — 2026-10-23
 
 ## 1. Parties, software, and entitlement
 
-This is a separate commercial-use license from the zterm project maintainer,
+This is a separate commercial-use license from the voytty project maintainer,
 Leon (GitHub: https://github.com/leonfox28), to the entitled user. It applies
-only to zterm code that the maintainer owns or has authority to license, and
-covers the official client and its companion zterm CLI and daemon (the
+only to voytty code that the maintainer owns or has authority to license, and
+covers the official client and its companion voytty CLI and daemon (the
 "Software"). Third-party components retain their separate licenses.
 
-An entitlement is an official, valid zterm subscription, an official one-time
+An entitlement is an official, valid voytty subscription, an official one-time
 purchase granting permanent access, or an express written commercial grant
 from the maintainer. An official trial grants the same use rights for its
 stated trial period. Downloading source, installing a development build, or
@@ -35,18 +35,18 @@ covered use. The user's organization may make the internal copies and
 deployments needed to support that user. This does not grant an organization
 unlimited seats or authorize other users who lack their own entitlement.
 
-For example, using zterm to administer a company's own application servers is
+For example, using voytty to administer a company's own application servers is
 permitted even when that company's applications earn revenue. Selling access
-to zterm itself as a hosted terminal product is not included.
+to voytty itself as a hosted terminal product is not included.
 
 ## 3. Uses outside this grant
 
 Without a separate express written grant from the maintainer, this license
 does not authorize selling, sublicensing, renting, or commercially distributing
 the Software or modified versions, bundling them into a product for sale, or
-operating zterm as a paid hosted or managed service for third parties. It does
+operating voytty as a paid hosted or managed service for third parties. It does
 not grant trademark rights or permission to represent a modified version as
-an official zterm release.
+an official voytty release.
 
 These restrictions concern the Software, not the user's own programs, terminal
 output, files, or other work created or managed with it. They do not narrow
@@ -101,7 +101,7 @@ To the extent permitted by applicable law, the covered Software is provided
 as is, without warranties or liability for damages arising from its use. This
 does not exclude mandatory consumer rights or obligations that cannot legally
 be excluded. Questions about entitlements may be raised through the official
-project at https://github.com/leonfox28/zterm.
+project at https://github.com/leonfox28/voytty.
 
 This commercial grant is an alternative to the noncommercial permission in
 LICENSE for the uses expressly described here, not an amendment to the

@@ -2170,7 +2170,7 @@ mod tests {
     const ALPN: &[u8] = b"n0/test/1";
 
     #[test]
-    fn zterm_restart_cids_are_128_bit_fresh_across_generators() {
+    fn voytty_restart_cids_are_128_bit_fresh_across_generators() {
         let mut seen = std::collections::HashSet::new();
         let mut first = super::restart_connection_ids();
         let mut replacement = super::restart_connection_ids();

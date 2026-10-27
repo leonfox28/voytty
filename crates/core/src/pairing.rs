@@ -39,13 +39,13 @@ pub const MAX_PAIR_TTL_SECONDS: u64 = 3600;
 /// arbitrary or ticket-bearing bytes into a value that gets logged.
 pub const PAIR_FINGERPRINT_BYTES: usize = 32;
 
-const TICKET_DOMAIN: &[u8] = b"zterm-pair-ticket-v1\0";
-const OFFER_KEY_DOMAIN: &[u8] = b"zterm-pair-offer-key-v1\0";
-const TRANSCRIPT_DOMAIN: &[u8] = b"zterm-pair-transcript-v1\0";
-const CONTROLLER_PROOF_DOMAIN: &[u8] = b"zterm-pair-controller-proof-v1\0";
-const HOST_ACCEPTED_DOMAIN: &[u8] = b"zterm-pair-host-accepted-v1\0";
-const CREATE_FINGERPRINT_DOMAIN: &[u8] = b"zterm-local-pair-create-fingerprint-v1\0";
-const ACCEPT_FINGERPRINT_DOMAIN: &[u8] = b"zterm-local-pair-accept-fingerprint-v1\0";
+const TICKET_DOMAIN: &[u8] = b"voytty-pair-ticket-v1\0";
+const OFFER_KEY_DOMAIN: &[u8] = b"voytty-pair-offer-key-v1\0";
+const TRANSCRIPT_DOMAIN: &[u8] = b"voytty-pair-transcript-v1\0";
+const CONTROLLER_PROOF_DOMAIN: &[u8] = b"voytty-pair-controller-proof-v1\0";
+const HOST_ACCEPTED_DOMAIN: &[u8] = b"voytty-pair-host-accepted-v1\0";
+const CREATE_FINGERPRINT_DOMAIN: &[u8] = b"voytty-local-pair-create-fingerprint-v1\0";
+const ACCEPT_FINGERPRINT_DOMAIN: &[u8] = b"voytty-local-pair-accept-fingerprint-v1\0";
 
 /// Redacted, zeroizing bearer secret from a pairing ticket.
 #[derive(Clone, Eq, PartialEq)]
@@ -227,7 +227,7 @@ impl PairFingerprint {
     /// The exact language-neutral input is:
     ///
     /// ```text
-    /// "zterm-local-pair-create-fingerprint-v1\0"
+    /// "voytty-local-pair-create-fingerprint-v1\0"
     /// u64be effective_ttl_seconds
     /// ```
     ///
@@ -247,7 +247,7 @@ impl PairFingerprint {
     /// The exact language-neutral input is:
     ///
     /// ```text
-    /// "zterm-local-pair-accept-fingerprint-v1\0"
+    /// "voytty-local-pair-accept-fingerprint-v1\0"
     /// u64be ticket_text_byte_length
     /// ticket_text_bytes
     /// u8 explicit_alias_present

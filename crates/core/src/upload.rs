@@ -103,7 +103,7 @@ impl UploadedFile {
     pub fn new(path: String, size: u64) -> Result<Self, DomainErrorKind> {
         if size > MAX_UPLOAD_BYTES
             || path.len() > MAX_UPLOAD_PATH_BYTES
-            || !path.starts_with("/tmp/zterm-")
+            || !path.starts_with("/tmp/voytty-")
             || path
                 .split('/')
                 .skip(1)
@@ -168,14 +168,14 @@ mod tests {
     #[test]
     fn returned_paths_cannot_escape_or_inject_terminal_input() {
         for path in [
-            "/tmp/zterm-1/../file",
-            "/tmp/zterm-1/file\n",
-            "/tmp/zterm-1/$(id)",
+            "/tmp/voytty-1/../file",
+            "/tmp/voytty-1/file\n",
+            "/tmp/voytty-1/$(id)",
             "/etc/passwd",
-            "/tmp/zterm-1//file",
+            "/tmp/voytty-1//file",
         ] {
             assert!(UploadedFile::new(path.into(), 1).is_err());
         }
-        assert!(UploadedFile::new("/tmp/zterm-1/abcd/ef01/file.pdf".into(), 0).is_ok());
+        assert!(UploadedFile::new("/tmp/voytty-1/abcd/ef01/file.pdf".into(), 0).is_ok());
     }
 }

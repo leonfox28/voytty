@@ -3,9 +3,9 @@
 use std::time::{Duration, Instant};
 
 use iroh::SecretKey;
-use zterm_core::{DeviceId, DomainErrorKind, TransportLimits};
-use zterm_daemon::connection_broker::StreamPurpose;
-use zterm_proto::{FrameDecoder, WireKind, encode_message, v2};
+use voytty_core::{DeviceId, DomainErrorKind, TransportLimits};
+use voytty_daemon::connection_broker::StreamPurpose;
+use voytty_proto::{FrameDecoder, WireKind, encode_message, v2};
 
 #[path = "support/network_fixture.rs"]
 mod network_fixture;
@@ -101,7 +101,7 @@ async fn concurrent_demands_and_streams_share_one_primary_dial() {
 
 async fn read_response(
     recv: &mut iroh::endpoint::RecvStream,
-) -> Result<zterm_proto::DecodedFrame, String> {
+) -> Result<voytty_proto::DecodedFrame, String> {
     let mut decoder = FrameDecoder::new();
     let mut buffer = [0_u8; 1024];
     loop {
@@ -132,8 +132,8 @@ async fn read_response(
     ignore = "real Iroh UDP listeners are disabled on macOS to avoid application firewall prompts"
 )]
 async fn connection_progress_observes_fresh_dial_and_exact_reuse_without_redial_stages() {
-    use zterm_client::progress::ProgressObserver;
-    use zterm_core::connection_progress::ConnectionStage;
+    use voytty_client::progress::ProgressObserver;
+    use voytty_core::connection_progress::ConnectionStage;
     let a_id = device([0x31; 32]);
     let b_id = device([0x32; 32]);
     let limits = TransportLimits::default();

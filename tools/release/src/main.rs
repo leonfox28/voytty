@@ -10,7 +10,7 @@ use semver::Version;
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("zterm release tool failed: {error:#}");
+        eprintln!("voytty release tool failed: {error:#}");
         std::process::exit(1);
     }
 }
@@ -114,7 +114,7 @@ fn validate_next_version(candidate: &str, current: &str) -> Result<()> {
 
 fn usage<T>() -> Result<T> {
     bail!(
-        "usage: zterm-release-tool <validate-next-version|archive|prepare|sign|derive-public-key|verify|verify-unsigned|render-test-installer> ..."
+        "usage: voytty-release-tool <validate-next-version|archive|prepare|sign|derive-public-key|verify|verify-unsigned|render-test-installer> ..."
     )
 }
 

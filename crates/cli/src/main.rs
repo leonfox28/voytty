@@ -1,4 +1,4 @@
-//! zterm command-line executable entry.
+//! voytty command-line executable entry.
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use clap::Parser;
 
 fn main() -> ExitCode {
-    let cli = zterm_cli::Cli::parse();
+    let cli = voytty_cli::Cli::parse();
     if let Some(text) = cli.license_text() {
         return match write_output(&mut io::stdout().lock(), text.as_bytes()) {
             Ok(()) => ExitCode::SUCCESS,
@@ -18,7 +18,7 @@ fn main() -> ExitCode {
     }
     if cli.internal_handoff() {
         #[cfg(unix)]
-        return match zterm_daemon::handoff::run_internal_handoff() {
+        return match voytty_daemon::handoff::run_internal_handoff() {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => ExitCode::FAILURE,
         };
@@ -27,9 +27,9 @@ fn main() -> ExitCode {
     }
     if cli.internal_daemon() || cli.internal_daemon_foreground() {
         let result = if cli.internal_daemon_foreground() {
-            zterm_daemon::lifecycle::run_internal_daemon_foreground()
+            voytty_daemon::lifecycle::run_internal_daemon_foreground()
         } else {
-            zterm_daemon::lifecycle::run_internal_daemon()
+            voytty_daemon::lifecycle::run_internal_daemon()
         };
         return match result {
             Ok(()) => ExitCode::SUCCESS,
@@ -40,7 +40,7 @@ fn main() -> ExitCode {
         };
     }
     if cli.internal_release_self_check() {
-        return match zterm_daemon::distribution::self_check_json() {
+        return match voytty_daemon::distribution::self_check_json() {
             Ok(output) => {
                 print!("{output}");
                 ExitCode::SUCCESS
@@ -52,7 +52,7 @@ fn main() -> ExitCode {
         };
     }
     if let Some((manifest, signature)) = cli.internal_release_verify() {
-        return match zterm_daemon::distribution::verify_candidate_files(manifest, signature) {
+        return match voytty_daemon::distribution::verify_candidate_files(manifest, signature) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("{error}");
@@ -61,7 +61,7 @@ fn main() -> ExitCode {
         };
     }
     if let Some(destination) = cli.internal_release_install() {
-        return match zterm_daemon::distribution::install_current_executable(destination) {
+        return match voytty_daemon::distribution::install_current_executable(destination) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("{error}");
@@ -70,7 +70,7 @@ fn main() -> ExitCode {
         };
     }
 
-    let runtime = match zterm_daemon::operations::LocalRuntime::current() {
+    let runtime = match voytty_daemon::operations::LocalRuntime::current() {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("Error: {error}");
@@ -86,16 +86,16 @@ fn main() -> ExitCode {
     {
         Ok(tokio) => tokio,
         Err(error) => {
-            eprintln!("Error: Unable to initialize zterm runtime: {error}");
+            eprintln!("Error: Unable to initialize voytty runtime: {error}");
             return ExitCode::FAILURE;
         }
     };
-    match tokio.block_on(zterm_cli::execute(
+    match tokio.block_on(voytty_cli::execute(
         cli,
         &runtime,
-        zterm_cli::InteractionMode::detect(),
+        voytty_cli::InteractionMode::detect(),
     )) {
-        Ok(zterm_cli::CommandOutcome::Text(output)) => {
+        Ok(voytty_cli::CommandOutcome::Text(output)) => {
             match write_output(&mut io::stdout().lock(), output.as_bytes()) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
@@ -104,7 +104,7 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Ok(zterm_cli::CommandOutcome::PairTicket(output)) => {
+        Ok(voytty_cli::CommandOutcome::PairTicket(output)) => {
             let result = {
                 let stdout = io::stdout();
                 let mut stdout = stdout.lock();
@@ -119,8 +119,8 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Ok(zterm_cli::CommandOutcome::Terminal(request)) => {
-            match tokio.block_on(zterm_cli::run_terminal(request, &runtime)) {
+        Ok(voytty_cli::CommandOutcome::Terminal(request)) => {
+            match tokio.block_on(voytty_cli::run_terminal(request, &runtime)) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
                     eprintln!("Error: {error}");

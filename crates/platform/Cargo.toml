@@ -1,5 +1,5 @@
 [package]
-name = "zterm-platform"
+name = "voytty-platform"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,9 +9,9 @@ publish.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-zterm-diagnostics.workspace = true
+voytty-diagnostics.workspace = true
 portable-pty.workspace = true
-zterm-core.workspace = true
+voytty-core.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

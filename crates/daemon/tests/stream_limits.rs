@@ -7,7 +7,7 @@
 //! and stalled-first-frame isolation, so this target does not imply real-Iroh
 //! stream coverage.
 
-use zterm_daemon::connection_broker::stream_limit_test_evidence;
+use voytty_daemon::connection_broker::stream_limit_test_evidence;
 
 #[test]
 fn overflow_is_scoped_and_every_permit_releases_by_raii() {

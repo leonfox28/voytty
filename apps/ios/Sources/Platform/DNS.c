@@ -3,14 +3,14 @@
 #include <string.h>
 
 // Read current system DNS, including IPv6 scopes, without private APIs.
-int zterm_dns_servers(ZtermDNSServer *output, int capacity) {
+int voytty_dns_servers(VoyttyDNSServer *output, int capacity) {
     struct __res_state state = {0};
     if (res_9_ninit(&state) != 0) return 0;
     union res_9_sockaddr_union servers[8];
     int count = res_9_getservers(&state, servers, 8);
     int written = 0;
     for (int i = 0; i < count && i < 8 && written < capacity; i++) {
-        ZtermDNSServer value = {0};
+        VoyttyDNSServer value = {0};
         if (servers[i].sin.sin_family == AF_INET) {
             value.length = 4;
             memcpy(value.address, &servers[i].sin.sin_addr, 4);

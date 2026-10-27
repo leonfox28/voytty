@@ -8,15 +8,15 @@ mod daemon_harness;
 mod state_fixture;
 
 #[cfg(unix)]
-use zterm_core::DomainErrorKind;
+use voytty_core::DomainErrorKind;
 #[cfg(unix)]
-use zterm_daemon::bootstrap::{bootstrap, validate_committed_setup};
+use voytty_daemon::bootstrap::{bootstrap, validate_committed_setup};
 #[cfg(unix)]
-use zterm_daemon::config::{ValidatedInfrastructure, validate_setup_input};
+use voytty_daemon::config::{ValidatedInfrastructure, validate_setup_input};
 #[cfg(unix)]
-use zterm_daemon::local_ipc::LocalClient;
+use voytty_daemon::local_ipc::LocalClient;
 #[cfg(unix)]
-use zterm_daemon::operations::LocalRuntime;
+use voytty_daemon::operations::LocalRuntime;
 
 #[cfg(unix)]
 use state_fixture::TestState;
@@ -80,7 +80,7 @@ async fn detached_lifecycle() {
     wait_for_socket_state(&state.paths, false).await;
 
     let mut crashed =
-        zterm_platform::local_unix::detached_command(&executable, &state.paths, &argument)
+        voytty_platform::local_unix::detached_command(&executable, &state.paths, &argument)
             .expect("crash harness command")
             .spawn()
             .expect("crash harness spawn");
@@ -130,7 +130,7 @@ async fn detached_lifecycle() {
 }
 
 #[cfg(unix)]
-async fn wait_for_socket_state(paths: &zterm_platform::user_state::UserPaths, expected: bool) {
+async fn wait_for_socket_state(paths: &voytty_platform::user_state::UserPaths, expected: bool) {
     let started = std::time::Instant::now();
     while paths.socket().exists() != expected {
         assert!(

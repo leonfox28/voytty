@@ -1,5 +1,5 @@
 use super::*;
-use zterm_core::terminal::{COLOR_BACKGROUND, TerminalAppearance, TerminalColorValue};
+use voytty_core::terminal::{COLOR_BACKGROUND, TerminalAppearance, TerminalColorValue};
 
 fn profile(value: u8) -> TerminalColorProfile {
     let mut p = TerminalColorProfile {

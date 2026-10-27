@@ -86,11 +86,11 @@ struct TerminalScreen: View {
             Rectangle().fill(AppTheme.outline).frame(height: 1)
             toolbar
         }
-        .navigationTitle(model.selectedHost?.name ?? "zterm")
+        .navigationTitle(model.selectedHost?.name ?? "voytty")
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 2) {
-                    Text(model.selectedHost?.name ?? "zterm")
+                    Text(model.selectedHost?.name ?? "voytty")
                         .font(.headline).lineLimit(1).truncationMode(.middle)
                     HStack(spacing: 5) {
                         Circle().fill(statusColor).frame(width: 6, height: 6).accessibilityHidden(true)
@@ -154,7 +154,7 @@ struct TerminalScreen: View {
             Button { openPanel() } label: {
                 HStack(spacing: 5) {
                     Circle().fill(statusColor).frame(width: 6, height: 6)
-                    Text(model.sessionName.isEmpty ? model.selectedHost?.name ?? "zterm" : model.sessionName)
+                    Text(model.sessionName.isEmpty ? model.selectedHost?.name ?? "voytty" : model.sessionName)
                         .font(.system(size: 12, weight: .medium)).lineLimit(1)
                     Image(systemName: model.panel ? "chevron.down" : "chevron.up").font(.system(size: 9, weight: .semibold))
                 }.padding(.horizontal, 8).frame(height: 36)

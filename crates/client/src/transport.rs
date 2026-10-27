@@ -1,7 +1,7 @@
 //! Injected semantic stream adapters and cancellation-safe attachment epochs.
 use crate::{error::ClientError, model::ResolvedSessionTarget, protocol::*};
 use std::{future::Future, pin::Pin};
-use zterm_proto::{DecodedFrame, WireKind, v2};
+use voytty_proto::{DecodedFrame, WireKind, v2};
 
 /// Sendable, borrowed adapter operation.
 pub type TransportFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

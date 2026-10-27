@@ -26,8 +26,8 @@ fn run() -> Result<(), String> {
     use std::ffi::OsString;
 
     use support::{DEADLINE, TempMarker};
-    use zterm_core::terminal::TerminalSurfaceDeltaResult;
-    use zterm_daemon::terminal_driver::TerminalDriverConfig;
+    use voytty_core::terminal::TerminalSurfaceDeltaResult;
+    use voytty_daemon::terminal_driver::TerminalDriverConfig;
 
     let marker = TempMarker::new("slow-attachment")?;
     let config = TerminalDriverConfig {

@@ -9,7 +9,7 @@
 运行器、主机准备、诊断续开和审计脚本共用一个根目录：
 
 ```sh
-LAB=${ZTERM_MULTI_DEVICE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/zterm-verification/multi-device}
+LAB=${VOYTTY_MULTI_DEVICE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/voytty-verification/multi-device}
 ```
 
 其中 `environment/` 保存环境清单 `environment.json`、C 的 AVD 磁盘、构建制品和日志；
@@ -27,8 +27,8 @@ LAB=${ZTERM_MULTI_DEVICE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/zterm-verif
 
 ### 1. 旧环境核对（08:20 UTC／16:20）
 
-- A／B：`zterm-md-20261003t024103z-a`／`-b` 在 `~/.lima`，均为 Stopped，磁盘占用 16 GB／3.7 GB。
-- C：`~/.android/avd/zterm-md-20261003t024103z-c.ini` 仍在，但其 `path` 指向已删除的
+- A／B：`voytty-md-20261003t024103z-a`／`-b` 在 `~/.lima`，均为 Stopped，磁盘占用 16 GB／3.7 GB。
+- C：`~/.android/avd/voytty-md-20261003t024103z-c.ini` 仍在，但其 `path` 指向已删除的
   `target/verification/multi-device/environment/avd`，模拟器实际已不存在。
 - 运行器 `environment.json`、venv、日志及 `checks/` 均已删除。
 - 用户选择全新重建 A／B／C，而不是保留旧 VM 再手工补环境清单。旧 VM 与悬空的 AVD 记录
@@ -47,9 +47,9 @@ OpenJDK 17.0.20.1、Python 3.12.13。Mac 剩余磁盘约 453 GiB。
 
 `"$LAB/venv/bin/python" tests/e2e/multi-device.py create`，退出码 0，约 54 秒。
 
-- 环境 ID `zterm-md-20261011t084006z`；VM `zterm-md-20261011t084006z-a`／`-b`
+- 环境 ID `voytty-md-20261011t084006z`；VM `voytty-md-20261011t084006z-a`／`-b`
   （Ubuntu 24.04 ARM64，VZ，4 CPU／6 GiB／60 GiB，vzNAT + user-v2）。
-- AVD `zterm-md-20261011t084006z-c`，磁盘在 `$LAB/environment/avd`；串号 `emulator-5586`。
+- AVD `voytty-md-20261011t084006z-c`，磁盘在 `$LAB/environment/avd`；串号 `emulator-5586`。
 - 运行器自动启动三端，并确认 adb root。Lima 基础镜像已在缓存，无需重新下载。
 - 日志：`checks/lab-rebuild/create-01.log`，逐条命令在 `environment/logs/commands.jsonl`。
 
@@ -67,7 +67,7 @@ OpenJDK 17.0.20.1、Python 3.12.13。Mac 剩余磁盘约 453 GiB。
 | Android 应用 UID | 10213 |
 | A／B 地址（lima0） | 192.168.64.4／192.168.64.5 |
 
-- A 上安装 build-essential 等依赖和 Rust 1.98.0，在 A 内编译 `zterm-cli`（调试版，2 分 07 秒），
+- A 上安装 build-essential 等依赖和 Rust 1.98.0，在 A 内编译 `voytty-cli`（调试版，2 分 07 秒），
   复制到 A／B 后各自 `setup --profile official-n0` 并等到 Network Online。
 - Mac 上构建调试 APK 与测试 APK 并安装到 C。
 - preflight：A／B 二进制哈希一致；Mac→A／B、C→A／B、A↔B 的 ping 与 UDP 六个方向全部通过；
@@ -77,7 +77,7 @@ OpenJDK 17.0.20.1、Python 3.12.13。Mac 剩余磁盘约 453 GiB。
 
 ### 5. 首次运行：cold 场景（08:56:01–08:57:01 UTC／16:56–16:57）
 
-先在 A／B 上 `zterm logs debug on` 打开 15 分钟详细诊断窗口，再执行
+先在 A／B 上 `voytty logs debug on` 打开 15 分钟详细诊断窗口，再执行
 `run --scenario cold --repeat 1 --soak-seconds 0 --keep-running --run-id lab-rebuild-cold-01`（8 行）。
 
 - 运行开始时自动配对：A↔B 两个方向通过（0.92 秒／0.56 秒）；C 与 A、C 与 B 的配对均失败。
@@ -123,8 +123,8 @@ C 配对失败的原因是测试器问题（问题清单 T33）：运行器经 `
 
 ### 旧环境清理（13:55 UTC／21:55）
 
-经用户确认，已删除旧 VM `zterm-md-20261003t024103z-a`／`-b`（Stopped，约 20 GB）与指向
-已删除目录的 AVD 记录 `zterm-md-20261003t024103z-c`。当前环境 `zterm-md-20261011t084006z`
+经用户确认，已删除旧 VM `voytty-md-20261003t024103z-a`／`-b`（Stopped，约 20 GB）与指向
+已删除目录的 AVD 记录 `voytty-md-20261003t024103z-c`。当前环境 `voytty-md-20261011t084006z`
 保留；用户自己的其他模拟器（非运行器创建）未动。
 
 ### 7. P37 候选重建与 cold ×3（09:47–10:00 UTC／17:47–18:00）

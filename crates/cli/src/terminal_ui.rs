@@ -1,7 +1,7 @@
 //! Unix raw-terminal ownership and semantic terminal presentation.
 
 use super::{CliError, TerminalRequest};
-use zterm_daemon::operations::LocalRuntime;
+use voytty_daemon::operations::LocalRuntime;
 
 /// Runs one deferred terminal request after validating the physical terminal.
 pub async fn run_terminal(
@@ -28,8 +28,8 @@ pub async fn run_terminal(
     #[cfg(not(unix))]
     {
         let _ = (request, runtime);
-        Err(CliError::Daemon(zterm_daemon::error::DaemonError::new(
-            zterm_core::DomainErrorKind::UnsupportedPlatform,
+        Err(CliError::Daemon(voytty_daemon::error::DaemonError::new(
+            voytty_core::DomainErrorKind::UnsupportedPlatform,
             "interactive terminal attachment is not supported on this platform",
         )))
     }
@@ -56,32 +56,32 @@ mod unix {
     use rustix::event::{PollFd, PollFlags, poll};
     use tokio::signal::unix::{Signal, SignalKind, signal};
     use tokio::sync::{mpsc, watch};
-    use zterm_client::progress::{ProgressFailure, ProgressHistory, ProgressObserver};
+    use voytty_client::progress::{ProgressFailure, ProgressHistory, ProgressObserver};
     #[cfg(test)]
-    use zterm_core::Revision;
-    use zterm_core::terminal::{
+    use voytty_core::Revision;
+    use voytty_core::terminal::{
         ActiveScreen, TerminalHistoryWindowAnchor, TerminalHistoryWindowQuery, TerminalModes,
         TerminalMouseEncoding, TerminalMouseMode, TerminalScrollMetrics, TerminalSize,
         TerminalSurfaceDelta, TerminalSurfaceHistoryWindowResult, TerminalSurfaceRow,
         TerminalSurfaceSnapshot, TerminalViewportDisposition,
     };
     #[cfg(test)]
-    use zterm_core::terminal::{
+    use voytty_core::terminal::{
         TerminalCell, TerminalColor, TerminalCursor, TerminalStyle, TerminalSurface,
         TerminalSurfaceHistoryWindowFrame, TerminalSurfaceRowPatch,
     };
-    use zterm_core::terminal_selection::{TerminalTextPoint, TerminalTextSelectionError};
-    use zterm_core::viewport_cache::{
+    use voytty_core::terminal_selection::{TerminalTextPoint, TerminalTextSelectionError};
+    use voytty_core::viewport_cache::{
         CachedViewportWindow, ViewportAnchorObservation, ViewportCache, ViewportCacheUpdate,
     };
-    use zterm_core::{DomainErrorKind, SessionId, connection_progress::ConnectionStage};
-    use zterm_daemon::client::view::{
+    use voytty_core::{DomainErrorKind, SessionId, connection_progress::ConnectionStage};
+    use voytty_daemon::client::view::{
         PreparedTerminalView, TerminalViewConnectionPath, TerminalViewConnectionStatus,
         TerminalViewEndReason, TerminalViewEvent, TerminalViewHistoryWindow, TerminalViewRoute,
         TerminalViewTarget, TerminalViewTransportState,
     };
-    use zterm_daemon::error::DaemonError;
-    use zterm_daemon::operations::LocalRuntime;
+    use voytty_daemon::error::DaemonError;
+    use voytty_daemon::operations::LocalRuntime;
 
     use super::super::{CliError, TerminalRequest, TerminalRequestKind};
 
@@ -148,7 +148,7 @@ mod unix {
     const ENTER_TERMINAL_UI: &[u8] =
         b"\x1b[22;2t\x1b[?1049h\x1b[?25l\x1b[>0u\x1b[?1003h\x1b[?1006h";
     const HOST_SEQUENCE_BOUND: usize = 64;
-    use zterm_client::input::RESUME_INPUT_BOUND;
+    use voytty_client::input::RESUME_INPUT_BOUND;
     const PAGE_UP: &[u8] = b"\x1b[5~";
     const PAGE_DOWN: &[u8] = b"\x1b[6~";
     const PASTE_START: &[u8] = b"\x1b[200~";
@@ -190,7 +190,7 @@ mod unix {
         let startup_finished = !progress.is_active();
         finish_startup_progress(&progress, &result);
         if startup_finished && let Err(error) = &result {
-            use zterm_diagnostics::{Event, FrontendFailure, Kind, Level};
+            use voytty_diagnostics::{Event, FrontendFailure, Kind, Level};
             let event = Event::new(Kind::TerminalFailed).level(Level::Error);
             let event = match error {
                 CliError::Daemon(error)
@@ -202,7 +202,7 @@ mod unix {
                     event.frontend_error(FrontendFailure::TerminalDriver)
                 }
             };
-            zterm_diagnostics::record(event);
+            voytty_diagnostics::record(event);
         }
         result.and_then(emit_completion_diagnostic)
     }
@@ -487,7 +487,7 @@ mod unix {
         }
         let report_key_events = presenter
             .presented_keyboard_flags()
-            .contains(zterm_core::terminal::TerminalKeyboardFlags::REPORT_EVENT_TYPES);
+            .contains(voytty_core::terminal::TerminalKeyboardFlags::REPORT_EVENT_TYPES);
         let view = match await_while_inactive(
             async move { prepared.acknowledge_initial().await.map_err(Into::into) },
             InactiveWaitContext {
@@ -784,7 +784,7 @@ mod unix {
     async fn finish_terminal_view(
         loop_result: Result<TerminalCompletion, CliError>,
         stdin_pump: &mut StdinPump,
-        writer: &zterm_daemon::client::view::TerminalViewCommandWriter,
+        writer: &voytty_daemon::client::view::TerminalViewCommandWriter,
     ) -> Result<TerminalCompletion, CliError> {
         let stdin_result = stdin_pump.shutdown();
         let session_already_ended = matches!(&loop_result, Ok(TerminalCompletion::SessionEnded(_)));
@@ -811,7 +811,7 @@ mod unix {
         request: TerminalRequest,
         runtime: &LocalRuntime,
         viewport: TerminalSize,
-        base_colors: zterm_core::terminal::TerminalColorProfile,
+        base_colors: voytty_core::terminal::TerminalColorProfile,
     ) -> Result<PreparedTerminalView, CliError> {
         match request.kind {
             TerminalRequestKind::Attach {
@@ -856,7 +856,7 @@ mod unix {
     }
 
     fn preserve_created_session<T>(
-        session_id: zterm_core::SessionId,
+        session_id: voytty_core::SessionId,
         result: Result<T, DaemonError>,
     ) -> Result<T, CliError> {
         result.map_err(|source| CliError::CreatedSessionAttach { session_id, source })
@@ -1008,17 +1008,17 @@ mod unix {
         Ok(Some(match completion {
             TerminalCompletion::Detached => return Ok(None),
             TerminalCompletion::PreparedThenDetached(session_id) => format!(
-                "zterm: detached after Session {session_id} was prepared; it remains live.\n"
+                "voytty: detached after Session {session_id} was prepared; it remains live.\n"
             )
             .into_bytes(),
             TerminalCompletion::SessionEnded(TerminalViewEndReason::NaturalExit) => {
-                b"zterm: Session ended after its root shell exited.\n".to_vec()
+                b"voytty: Session ended after its root shell exited.\n".to_vec()
             }
             TerminalCompletion::SessionEnded(TerminalViewEndReason::ExplicitClose) => {
-                b"zterm: Session was closed explicitly.\n".to_vec()
+                b"voytty: Session was closed explicitly.\n".to_vec()
             }
             TerminalCompletion::SessionEnded(TerminalViewEndReason::DaemonStop) => {
-                b"zterm: Session ended because its daemon stopped.\n".to_vec()
+                b"voytty: Session ended because its daemon stopped.\n".to_vec()
             }
             TerminalCompletion::SessionEnded(TerminalViewEndReason::DriverFailure) => {
                 return Err(CliError::TerminalDriverFailure);
@@ -1338,7 +1338,7 @@ mod unix {
             #[cfg(test)]
             let thread_reader_test_seam = reader_test_seam.clone();
             let handle = std::thread::Builder::new()
-                .name("zterm-cli-stdin".to_owned())
+                .name("voytty-cli-stdin".to_owned())
                 .spawn(move || {
                     stdin_reader(
                         fd,
@@ -1718,7 +1718,7 @@ mod unix {
             let width = usize::from(
                 self.physical_size
                     .columns
-                    .min(zterm_core::ResourceLimits::default().max_viewport_columns),
+                    .min(voytty_core::ResourceLimits::default().max_viewport_columns),
             );
             let right = upload.text(width);
             let right_width = unicode_width::UnicodeWidthStr::width(right.as_str());
@@ -2221,7 +2221,7 @@ mod unix {
                         }
                         if let ViewportState::History(history) = &mut self.state {
                             history.notice = rebased.then_some(
-                                "[zterm: retained history changed; showing closest view]",
+                                "[voytty: retained history changed; showing closest view]",
                             );
                         }
                     }
@@ -2565,7 +2565,7 @@ mod unix {
     }
 
     fn append_resume_input(retained: &mut Vec<u8>, bytes: &[u8]) -> Result<(), CliError> {
-        zterm_client::input::append_resume_input(retained, bytes)
+        voytty_client::input::append_resume_input(retained, bytes)
             .map_err(|_| resume_input_overflow())
     }
 
@@ -3146,7 +3146,7 @@ mod unix {
         active_screen: ActiveScreen,
         modes: TerminalModes,
     ) -> Option<Vec<u8>> {
-        let input = zterm_client::mouse::MouseInput {
+        let input = voytty_client::mouse::MouseInput {
             code: mouse.code,
             column: mouse.column,
             row: mouse.row,
@@ -3165,7 +3165,7 @@ mod unix {
         )
     }
 
-    use zterm_client::mouse::cursor_wheel as emulated_wheel_cursor_keys;
+    use voytty_client::mouse::cursor_wheel as emulated_wheel_cursor_keys;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 
@@ -3187,7 +3187,7 @@ mod unix {
     fn route_enhanced_input(
         key: &EnhancedKey,
         child_modes: TerminalModes,
-        outer_flags: zterm_core::terminal::TerminalKeyboardFlags,
+        outer_flags: voytty_core::terminal::TerminalKeyboardFlags,
         selection_finalized: bool,
         lease: &mut CopyKeyLease,
     ) -> KeyboardRoute {
@@ -3648,7 +3648,7 @@ mod unix {
         viewport: &mut ViewportController,
         surface: &AttachmentSurface,
         presenter: &mut DesktopPresenter,
-        writer: &zterm_daemon::client::view::TerminalViewCommandWriter,
+        writer: &voytty_daemon::client::view::TerminalViewCommandWriter,
         status: &StatusRenderer,
         transport_state: TerminalViewTransportState,
         pacer: &mut ViewportPresentationPacer,
@@ -4468,7 +4468,7 @@ mod unix {
 
         #[test]
         fn palette_only_delta_recolors_live_and_pinned_history_without_losing_selection() {
-            use zterm_core::terminal::{
+            use voytty_core::terminal::{
                 COLOR_BACKGROUND, COLOR_SELECTION_BACKGROUND, COLOR_SELECTION_FOREGROUND,
                 TerminalColorValue,
             };
@@ -5270,7 +5270,7 @@ mod unix {
 
         #[test]
         fn upload_status_stays_right_aligned_without_changing_child_geometry() {
-            use zterm_core::upload::{UploadPhase, UploadProgress};
+            use voytty_core::upload::{UploadPhase, UploadProgress};
             for width in [4, 12, 24, 80, 120] {
                 for screen in [ActiveScreen::Main, ActiveScreen::Alternate] {
                     let physical = TerminalSize::new(24, width);
@@ -5311,7 +5311,7 @@ mod unix {
             let viewport = ViewportController::with_layout(layout, None);
             let style = TerminalStyle {
                 background: TerminalColor::Rgb(1, 2, 3),
-                underline: zterm_core::terminal::TerminalUnderline::Single,
+                underline: voytty_core::terminal::TerminalUnderline::Single,
                 ..TerminalStyle::default()
             };
             let mut snapshot = test_snapshot(size, ActiveScreen::Alternate, Revision::new(2));
@@ -5519,7 +5519,7 @@ mod unix {
                 .expect("present clipboard baseline frame");
             let baseline = presenter.baseline.clone();
 
-            let write = zterm_core::terminal::TerminalClipboardWrite::new("hello".to_owned())
+            let write = voytty_core::terminal::TerminalClipboardWrite::new("hello".to_owned())
                 .expect("clipboard value");
             let mut clipboard = ViewportFrameWriter::default();
             presenter
@@ -5530,11 +5530,11 @@ mod unix {
             assert_eq!(presenter.baseline, baseline);
             for (notification, bytes) in [
                 (
-                    zterm_core::terminal::TerminalNotification::osc9("结果: done".into()),
+                    voytty_core::terminal::TerminalNotification::osc9("结果: done".into()),
                     "\x1b]9;结果: done\x1b\\",
                 ),
                 (
-                    zterm_core::terminal::TerminalNotification::osc777(
+                    voytty_core::terminal::TerminalNotification::osc777(
                         "标题".into(),
                         "body;结果".into(),
                     ),
@@ -5589,7 +5589,7 @@ mod unix {
                 .present(&mut output, frame, None)
                 .expect("present clipboard failure baseline frame");
             let baseline = presenter.baseline.clone();
-            let write = zterm_core::terminal::TerminalClipboardWrite::new("secret".to_owned())
+            let write = voytty_core::terminal::TerminalClipboardWrite::new("secret".to_owned())
                 .expect("clipboard value");
 
             let error = presenter
@@ -5599,7 +5599,7 @@ mod unix {
             assert_eq!(presenter.baseline, baseline);
             assert!(!error.to_string().contains(write.as_str()));
             let notification =
-                zterm_core::terminal::TerminalNotification::osc9("secret notification".into())
+                voytty_core::terminal::TerminalNotification::osc9("secret notification".into())
                     .expect("valid");
             assert!(
                 presenter
@@ -5661,7 +5661,7 @@ mod unix {
             };
             presenter.set_selection(
                 Some(source),
-                Some(zterm_core::terminal_selection::TerminalTextRange::new(
+                Some(voytty_core::terminal_selection::TerminalTextRange::new(
                     TerminalTextPoint::new(0, 0),
                     TerminalTextPoint::new(0, 1),
                 )),
@@ -5682,7 +5682,7 @@ mod unix {
             presenter.set_selection(None, None, false);
             assert_eq!(
                 presenter
-                    .outer_keyboard_flags(zterm_core::terminal::TerminalKeyboardFlags::default())
+                    .outer_keyboard_flags(voytty_core::terminal::TerminalKeyboardFlags::default())
                     .bits(),
                 0
             );
@@ -5774,7 +5774,7 @@ mod unix {
                 .clone();
 
             output = ViewportFrameWriter::default();
-            let child_flags = zterm_core::terminal::TerminalKeyboardFlags::from_bits(9)
+            let child_flags = voytty_core::terminal::TerminalKeyboardFlags::from_bits(9)
                 .expect("valid child keyboard flags");
             let delta = TerminalSurfaceDelta {
                 application_title: String::new(),
@@ -6667,7 +6667,7 @@ mod unix {
 
         #[test]
         fn enhanced_keyboard_router_copies_once_and_preserves_forwarding_contracts() {
-            let flags_seven = zterm_core::terminal::TerminalKeyboardFlags::from_bits(7)
+            let flags_seven = voytty_core::terminal::TerminalKeyboardFlags::from_bits(7)
                 .expect("protocol-complete local copy mode");
             let child_legacy = TerminalModes::default();
 
@@ -6769,7 +6769,7 @@ mod unix {
             );
 
             let child_enhanced = TerminalModes {
-                keyboard_flags: zterm_core::terminal::TerminalKeyboardFlags::from_bits(9)
+                keyboard_flags: voytty_core::terminal::TerminalKeyboardFlags::from_bits(9)
                     .expect("valid child keyboard flags"),
                 ..TerminalModes::default()
             };
@@ -6780,7 +6780,7 @@ mod unix {
             } = route_enhanced_input(
                 &ctrl_x,
                 child_enhanced,
-                zterm_core::terminal::TerminalKeyboardFlags::default(),
+                voytty_core::terminal::TerminalKeyboardFlags::default(),
                 false,
                 &mut CopyKeyLease::default(),
             )
@@ -7141,7 +7141,7 @@ mod unix {
 
         #[test]
         fn created_session_attach_failure_retains_the_exact_live_session_identity() {
-            let session_id = zterm_core::SessionId::from_array([0xc1; 16]);
+            let session_id = voytty_core::SessionId::from_array([0xc1; 16]);
             let source = DaemonError::new(
                 DomainErrorKind::SessionOccupied,
                 "the exact created Session could not be attached",
@@ -7159,7 +7159,7 @@ mod unix {
 
         #[tokio::test(flavor = "current_thread")]
         async fn cancelled_stateful_prepare_preserves_every_exact_terminal_result() {
-            let session_id = zterm_core::SessionId::from_array([0xc2; 16]);
+            let session_id = voytty_core::SessionId::from_array([0xc2; 16]);
             let dropped = Arc::new(AtomicBool::new(false));
             let (submitted_sender, submitted_receiver) = tokio::sync::oneshot::channel();
             let (release_sender, release_receiver) = tokio::sync::oneshot::channel();
@@ -7227,7 +7227,7 @@ mod unix {
 
         #[test]
         fn cancelled_prepared_session_identity_is_user_visible_and_truthful() {
-            let session_id = zterm_core::SessionId::from_array([0xc3; 16]);
+            let session_id = voytty_core::SessionId::from_array([0xc3; 16]);
             let completion =
                 inactive_cancellation_result(InactiveCancellation::LocalDetach, Some(session_id))
                     .expect("prefix detach remains a successful completion");
@@ -7479,7 +7479,7 @@ mod unix {
 
         #[test]
         fn signals_restore_termios_and_ui_before_the_normal_mode_diagnostic() {
-            if std::env::var_os("ZTERM_TERMINAL_SIGNAL_CHILD").is_some() {
+            if std::env::var_os("VOYTTY_TERMINAL_SIGNAL_CHILD").is_some() {
                 return;
             }
             for signal in [NixSignal::SIGINT, NixSignal::SIGTERM, NixSignal::SIGHUP] {
@@ -7501,7 +7501,7 @@ mod unix {
                 .arg("terminal_ui::unix::tests::signal_restore_child")
                 .arg("--ignored")
                 .arg("--nocapture")
-                .env("ZTERM_TERMINAL_SIGNAL_CHILD", "1")
+                .env("VOYTTY_TERMINAL_SIGNAL_CHILD", "1")
                 .stdin(Stdio::from(child_stdin))
                 .stdout(Stdio::from(child_stdout))
                 .stderr(Stdio::from(child_stderr))
@@ -7554,7 +7554,7 @@ mod unix {
             assert!(status.success(), "isolated signal child failed: {signal:?}");
             let restore =
                 find_bytes(&bytes, RESTORE_TERMINAL_UI).expect("signal cleanup bytes are written");
-            let diagnostic = find_bytes(&bytes, b"ZTERM_SAFE_SIGNAL_DIAGNOSTIC")
+            let diagnostic = find_bytes(&bytes, b"VOYTTY_SAFE_SIGNAL_DIAGNOSTIC")
                 .expect("normal-mode signal diagnostic is written");
             assert!(
                 restore < diagnostic,
@@ -7594,7 +7594,7 @@ mod unix {
         #[test]
         #[ignore = "isolated terminal-signal helper"]
         fn signal_restore_child() {
-            if std::env::var_os("ZTERM_TERMINAL_SIGNAL_CHILD").is_none() {
+            if std::env::var_os("VOYTTY_TERMINAL_SIGNAL_CHILD").is_none() {
                 return;
             }
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -7632,13 +7632,13 @@ mod unix {
                 error,
                 CliError::Daemon(ref error) if error.kind() == DomainErrorKind::Cancelled
             ));
-            write_all_fd(&io::stderr(), b"ZTERM_SAFE_SIGNAL_DIAGNOSTIC")
+            write_all_fd(&io::stderr(), b"VOYTTY_SAFE_SIGNAL_DIAGNOSTIC")
                 .expect("write normal-mode diagnostic marker");
         }
 
         #[test]
         fn panic_restores_termios_and_ui_before_the_normal_mode_diagnostic() {
-            if std::env::var_os("ZTERM_TERMINAL_PANIC_CHILD").is_some() {
+            if std::env::var_os("VOYTTY_TERMINAL_PANIC_CHILD").is_some() {
                 return;
             }
             let pty = openpty(None, None).expect("open panic PTY");
@@ -7651,7 +7651,7 @@ mod unix {
                 .arg("terminal_ui::unix::tests::panic_restore_child")
                 .arg("--ignored")
                 .arg("--nocapture")
-                .env("ZTERM_TERMINAL_PANIC_CHILD", "1")
+                .env("VOYTTY_TERMINAL_PANIC_CHILD", "1")
                 .stdin(Stdio::from(slave.try_clone().expect("panic child stdin")))
                 .stdout(Stdio::from(slave.try_clone().expect("panic child stdout")))
                 .stderr(Stdio::from(slave.try_clone().expect("panic child stderr")))
@@ -7681,7 +7681,7 @@ mod unix {
             assert!(status.success(), "isolated panic child failed");
             let restore =
                 find_bytes(&bytes, RESTORE_TERMINAL_UI).expect("panic cleanup bytes are written");
-            let diagnostic = find_bytes(&bytes, b"ZTERM_SAFE_PANIC_DIAGNOSTIC")
+            let diagnostic = find_bytes(&bytes, b"VOYTTY_SAFE_PANIC_DIAGNOSTIC")
                 .expect("normal-mode panic diagnostic is written");
             assert!(
                 restore < diagnostic,
@@ -7692,7 +7692,7 @@ mod unix {
         #[test]
         #[ignore = "isolated terminal-panic helper"]
         fn panic_restore_child() {
-            if std::env::var_os("ZTERM_TERMINAL_PANIC_CHILD").is_none() {
+            if std::env::var_os("VOYTTY_TERMINAL_PANIC_CHILD").is_none() {
                 return;
             }
             let panic_hook = ScopedPanicHook::suppress();
@@ -7704,20 +7704,20 @@ mod unix {
             }));
             assert!(result.is_err());
             drop(panic_hook);
-            write_all_fd(&io::stderr(), b"ZTERM_SAFE_PANIC_DIAGNOSTIC")
+            write_all_fd(&io::stderr(), b"VOYTTY_SAFE_PANIC_DIAGNOSTIC")
                 .expect("write normal-mode panic diagnostic marker");
         }
 
         #[test]
         fn panic_hook_restoration_is_proved_in_an_isolated_process() {
-            if std::env::var_os("ZTERM_PANIC_HOOK_CHILD").is_some() {
+            if std::env::var_os("VOYTTY_PANIC_HOOK_CHILD").is_some() {
                 return;
             }
             let status = Command::new(std::env::current_exe().expect("current test binary"))
                 .arg("--exact")
                 .arg("terminal_ui::unix::tests::panic_hook_child")
                 .arg("--ignored")
-                .env("ZTERM_PANIC_HOOK_CHILD", "1")
+                .env("VOYTTY_PANIC_HOOK_CHILD", "1")
                 .status()
                 .expect("run isolated panic-hook child");
             assert!(status.success());
@@ -7726,7 +7726,7 @@ mod unix {
         #[test]
         #[ignore = "isolated panic-hook helper"]
         fn panic_hook_child() {
-            if std::env::var_os("ZTERM_PANIC_HOOK_CHILD").is_none() {
+            if std::env::var_os("VOYTTY_PANIC_HOOK_CHILD").is_none() {
                 return;
             }
             static CALLS: AtomicUsize = AtomicUsize::new(0);

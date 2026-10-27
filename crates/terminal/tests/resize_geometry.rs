@@ -1,7 +1,7 @@
 //! Resize presentation without a child repaint or a time-based hold.
 
-use zterm_core::terminal::{ActiveScreen, TerminalSize, TerminalSurfaceDeltaResult};
-use zterm_terminal::TerminalModel;
+use voytty_core::terminal::{ActiveScreen, TerminalSize, TerminalSurfaceDeltaResult};
+use voytty_terminal::TerminalModel;
 
 #[test]
 fn main_resize_keeps_the_prompt_while_alternate_resize_keeps_top_rows() {

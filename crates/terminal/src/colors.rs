@@ -2,11 +2,11 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD_NO_PAD;
 use std::fmt::Write as _;
-use zterm_core::Revision;
-use zterm_core::terminal::*;
+use voytty_core::Revision;
+use voytty_core::terminal::*;
 
 #[derive(Default)]
-pub(crate) struct ZtermColorState {
+pub(crate) struct VoyttyColorState {
     pub(crate) base: TerminalColorProfile,
     overrides: Vec<Option<TerminalColorValue>>,
     pub(crate) snapshot: TerminalColorSnapshot,
@@ -17,7 +17,7 @@ pub(crate) struct ZtermColorState {
     depth: usize,
     stored: usize,
 }
-impl ZtermColorState {
+impl VoyttyColorState {
     pub(crate) fn reset(&mut self) {
         self.overrides.clear();
         self.inherited_sources.clear();

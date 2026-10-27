@@ -8,7 +8,7 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Osc52, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use unicode_width::UnicodeWidthChar;
-use zterm_core::terminal::{
+use voytty_core::terminal::{
     ActiveScreen, MAX_SIDE_EVENTS_PER_UPDATE, RejectedEffect, TerminalSideEvent, TerminalSize,
     UnsupportedSequenceKind,
 };
@@ -164,7 +164,7 @@ impl CombiningBudget {
 
 pub(crate) struct AlacrittyEngine {
     pub(crate) application_title: String,
-    pub(crate) colors: crate::colors::ZtermColorState,
+    pub(crate) colors: crate::colors::VoyttyColorState,
     pub(crate) grid_input: bool,
     processor: Processor,
     pub(crate) term: Term<BoundedEventSink>,
@@ -185,7 +185,7 @@ impl AlacrittyEngine {
         };
         let mut engine = Self {
             application_title: String::new(),
-            colors: crate::colors::ZtermColorState::default(),
+            colors: crate::colors::VoyttyColorState::default(),
             grid_input: false,
             processor: Processor::new(),
             term: Term::new(config, &EngineSize::new(size), sink.clone()),
@@ -194,7 +194,7 @@ impl AlacrittyEngine {
             combining: CombiningBudget::default(),
             hyperlinks: Default::default(),
         };
-        // Alacritty enables alternate-scroll by default, while Zterm's public
+        // Alacritty enables alternate-scroll by default, while Voytty's public
         // contract starts with all optional input modes disabled.
         engine.feed_raw(b"\x1b[?1007l");
         let _ = engine.take_events();

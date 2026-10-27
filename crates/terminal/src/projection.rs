@@ -3,7 +3,7 @@ use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
-use zterm_core::terminal::{
+use voytty_core::terminal::{
     ActiveScreen, TerminalCell, TerminalColor, TerminalColorSnapshot, TerminalCursor,
     TerminalKeyboardFlags, TerminalModes, TerminalMouseEncoding, TerminalMouseMode,
     TerminalScrollMetrics, TerminalSize, TerminalStyle, TerminalSurface, TerminalSurfaceRow,
@@ -53,7 +53,7 @@ impl InlineCellText {
 
 #[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct ProjectedCell {
-    pub(crate) hyperlink: Option<std::sync::Arc<zterm_core::terminal::TerminalHyperlink>>,
+    pub(crate) hyperlink: Option<std::sync::Arc<voytty_core::terminal::TerminalHyperlink>>,
     pub(crate) text: InlineCellText,
     pub(crate) wide: bool,
     pub(crate) wide_continuation: bool,
@@ -145,15 +145,15 @@ pub(crate) fn project(engine: &AlacrittyEngine) -> ProjectedScreen {
         active_screen: engine.active_screen(),
         rows,
         cursor: TerminalCursor {
-            presentation: zterm_core::terminal::TerminalCursorPresentation {
+            presentation: voytty_core::terminal::TerminalCursorPresentation {
                 shape: match term.cursor_style().shape {
                     alacritty_terminal::vte::ansi::CursorShape::Beam => {
-                        zterm_core::terminal::TerminalCursorShape::Beam
+                        voytty_core::terminal::TerminalCursorShape::Beam
                     }
                     alacritty_terminal::vte::ansi::CursorShape::Underline => {
-                        zterm_core::terminal::TerminalCursorShape::Underline
+                        voytty_core::terminal::TerminalCursorShape::Underline
                     }
-                    _ => zterm_core::terminal::TerminalCursorShape::Block,
+                    _ => voytty_core::terminal::TerminalCursorShape::Block,
                 },
                 blinking: term.cursor_style().blinking,
             },

@@ -4,10 +4,10 @@ set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_root=$(CDPATH= cd -- "$script_dir/../.." && pwd)
-container_name=zterm-foundation-network-gate
-image_name=zterm-foundation-network-gate:local
+container_name=voytty-foundation-network-gate
+image_name=voytty-foundation-network-gate:local
 container_started=false
-relay_override_env=ZTERM_GATE_RELAY_IPV4_OVERRIDES
+relay_override_env=VOYTTY_GATE_RELAY_IPV4_OVERRIDES
 
 cleanup() {
     if [ "$container_started" = true ]; then

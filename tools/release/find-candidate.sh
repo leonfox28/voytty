@@ -8,7 +8,7 @@ fail() {
 
 run_id=${1:-}
 commit=${2:-}
-repository=${ZTERM_RELEASE_REPOSITORY:-${GITHUB_REPOSITORY:-leonfox28/zterm}}
+repository=${VOYTTY_RELEASE_REPOSITORY:-${GITHUB_REPOSITORY:-leonfox28/voytty}}
 case "$run_id" in ''|*[!0-9]*) fail "RUN_ID must be numeric" ;; esac
 case "$commit" in ''|*[!0-9a-f]*) fail "COMMIT must be lowercase hexadecimal" ;; esac
 [ "${#commit}" -eq 40 ] || fail "COMMIT must contain 40 hexadecimal characters"

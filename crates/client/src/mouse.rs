@@ -1,5 +1,7 @@
 //! Child-mode mouse encoding shared by physical and touch terminal frontends.
-use zterm_core::terminal::{ActiveScreen, TerminalModes, TerminalMouseEncoding, TerminalMouseMode};
+use voytty_core::terminal::{
+    ActiveScreen, TerminalModes, TerminalMouseEncoding, TerminalMouseMode,
+};
 
 /// One semantic report, with terminal protocol (one-based) coordinates.
 #[derive(Clone, Copy, Debug)]

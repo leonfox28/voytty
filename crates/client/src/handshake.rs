@@ -7,12 +7,12 @@ use iroh::{
 use ring::rand::{SecureRandom, SystemRandom};
 use std::time::Instant;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use zterm_core::{
+use voytty_core::{
     Capabilities, ConnectionAttemptId, ConnectionHello, ConnectionIncarnation, ConnectionWelcome,
     DeviceDisplayName, DeviceId, DomainErrorKind,
 };
-use zterm_diagnostics::{Event, Kind, Level, Operation, Outcome, Reason, Stage};
-use zterm_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
+use voytty_diagnostics::{Event, Kind, Level, Operation, Outcome, Reason, Stage};
+use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
 
 /// Connects under the caller's unchanged deadline, distinguishing Iroh route
 /// preparation from the cryptographic handshake in content-free diagnostics.
@@ -49,7 +49,7 @@ pub async fn connect_transport(
     }
     .await;
     if let Err(error) = &result {
-        zterm_diagnostics::record(
+        voytty_diagnostics::record(
             Event::new(Kind::ConnectionFailed)
                 .operation(&operation)
                 .stage(stage)
@@ -63,10 +63,10 @@ pub async fn connect_transport(
 
 /// Records selected path and counters only after complete transport authentication.
 pub fn record_transport_ready(operation: &Operation, connection: &Connection) {
-    if !zterm_diagnostics::detail_enabled() {
+    if !voytty_diagnostics::detail_enabled() {
         return;
     }
-    zterm_diagnostics::record(with_transport_state(
+    voytty_diagnostics::record(with_transport_state(
         Event::new(Kind::ConnectionStartup)
             .operation(operation)
             .stage(Stage::TransportReady)
@@ -83,7 +83,7 @@ pub fn record_transport_observation(
     stage: Stage,
     active_streams: Option<u64>,
 ) {
-    if !zterm_diagnostics::detail_enabled() {
+    if !voytty_diagnostics::detail_enabled() {
         return;
     }
     let mut event = Event::new(Kind::TransportObserved)
@@ -94,7 +94,7 @@ pub fn record_transport_observation(
     if let Some(count) = active_streams {
         event = event.transport_streams(count);
     }
-    zterm_diagnostics::record(with_transport_state(event, connection));
+    voytty_diagnostics::record(with_transport_state(event, connection));
 }
 
 pub(crate) fn with_transport_state(event: Event, connection: &Connection) -> Event {
@@ -121,7 +121,7 @@ pub(crate) fn with_transport_state(event: Event, connection: &Connection) -> Eve
 }
 
 fn record_transport_stage(operation: &Operation, stage: Stage) {
-    zterm_diagnostics::record(
+    voytty_diagnostics::record(
         Event::new(Kind::ConnectionStartup)
             .operation(operation)
             .stage(stage)
@@ -162,8 +162,8 @@ impl ConnectionIdentity {
         let platform = platform.into();
         // Reuse the domain handshake constructor as the single text boundary.
         ConnectionHello::new(
-            zterm_proto::WIRE_MAJOR,
-            zterm_proto::WIRE_MAJOR,
+            voytty_proto::WIRE_MAJOR,
+            voytty_proto::WIRE_MAJOR,
             capabilities,
             ConnectionAttemptId::from_array([1; 16]),
             display_name.as_str(),
@@ -260,8 +260,8 @@ impl ConnectionIdentity {
     /// Builds the exact existing normal-ALPN greeting for this connection attempt.
     pub fn hello(&self, attempt: ConnectionAttemptId) -> Result<ConnectionHello, DaemonError> {
         ConnectionHello::new(
-            zterm_proto::WIRE_MAJOR,
-            zterm_proto::WIRE_MAJOR,
+            voytty_proto::WIRE_MAJOR,
+            voytty_proto::WIRE_MAJOR,
             self.capabilities,
             attempt,
             self.display_name.as_str(),
@@ -353,7 +353,7 @@ pub async fn read_controller_welcome<Reader: AsyncRead + Unpin>(
             format!("invalid ConnectionWelcome: {error}"),
         )
     })?;
-    if welcome.wire_major() != zterm_proto::WIRE_MAJOR {
+    if welcome.wire_major() != voytty_proto::WIRE_MAJOR {
         return Err(DaemonError::new(
             DomainErrorKind::WireMajorMismatch,
             "remote selected an incompatible wire major",
@@ -399,7 +399,7 @@ pub async fn controller_handshake(
     result.map_err(|error| {
         let error = classify_handshake_failure(error, connection.close_reason());
         let stats = connection.stats();
-        zterm_diagnostics::record(
+        voytty_diagnostics::record(
             Event::new(Kind::ConnectionFailed)
                 .operation(&operation)
                 .stage(stage)
@@ -504,12 +504,12 @@ mod tests {
     #[tokio::test]
     async fn complete_welcome_does_not_require_transport_eof() {
         let welcome = ConnectionWelcome::new(
-            zterm_proto::WIRE_MAJOR,
+            voytty_proto::WIRE_MAJOR,
             Capabilities::from_bits_retain(0),
             "peer",
             "test",
             "test",
-            zterm_core::AuthGeneration::new(1).expect("generation"),
+            voytty_core::AuthGeneration::new(1).expect("generation"),
         )
         .expect("welcome");
         let bytes = encode_message(

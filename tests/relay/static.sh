@@ -52,7 +52,7 @@ grep -Fqx 'EXPOSE 38451/tcp' "$dockerfile" || fail "runtime exposure is not mini
 grep -Fqx 'CMD ["--config-path", "/etc/iroh-relay/relay.toml"]' "$dockerfile" \
     || fail "runtime default config command is missing"
 grep -Fq 'STOPSIGNAL SIGINT' "$dockerfile" || fail "upstream stop signal is missing"
-if grep -Fq 'zterm-relay-healthcheck' "$dockerfile"; then
+if grep -Fq 'voytty-relay-healthcheck' "$dockerfile"; then
     fail "obsolete custom health probe remains in the image"
 fi
 [ "$(sed '/^$/d' "$dockerignore")" = "*
@@ -102,9 +102,9 @@ command -v jq >/dev/null 2>&1 || fail "jq is required to inspect Compose"
 docker compose -f "$compose_file" config --quiet
 compose_json=$(docker compose -f "$compose_file" config --format json)
 printf '%s\n' "$compose_json" | jq -e '
-    .name == "zterm-relay"
+    .name == "voytty-relay"
     and (.services | keys) == ["relay"]
-    and .services.relay.container_name == "zterm-relay"
+    and .services.relay.container_name == "voytty-relay"
     and .services.relay.image == "ghcr.io/leonfox28/zterm-relay:latest"
     and .services.relay.command == null
     and .services.relay.entrypoint == null
@@ -128,7 +128,7 @@ printf '%s\n' "$compose_json" | jq -e '
     and (.services.relay | has("tmpfs") | not)
 ' >/dev/null || fail "Compose does not match the approved minimal contract"
 
-grep -Fq '/opt/1panel/docker/compose/zterm-relay' "$relay_doc" \
+grep -Fq '/opt/1panel/docker/compose/voytty-relay' "$relay_doc" \
     || fail "1Panel deployment root is not documented"
 grep -Fq 'Publication is paused' "$relay_doc" \
     || fail "paused image publication must be documented"

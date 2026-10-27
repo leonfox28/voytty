@@ -7,16 +7,16 @@ use std::fs;
 use std::sync::{Arc, Barrier};
 use std::thread;
 
-use zterm_core::{DeviceId, DomainErrorKind};
-use zterm_daemon::bootstrap::{bootstrap, validate_committed_setup};
-use zterm_daemon::config::{ValidatedInfrastructure, validate_setup_input, write_config};
-use zterm_daemon::identity::DeviceIdentity;
-use zterm_daemon::store::{DeviceMetadata, StateStore};
-use zterm_platform::user_state::atomic_write;
+use voytty_core::{DeviceId, DomainErrorKind};
+use voytty_daemon::bootstrap::{bootstrap, validate_committed_setup};
+use voytty_daemon::config::{ValidatedInfrastructure, validate_setup_input, write_config};
+use voytty_daemon::identity::DeviceIdentity;
+use voytty_daemon::store::{DeviceMetadata, StateStore};
+use voytty_platform::user_state::atomic_write;
 
 use state_fixture::TestState;
 
-fn requested(name: &str) -> zterm_daemon::config::ValidatedConfig {
+fn requested(name: &str) -> voytty_daemon::config::ValidatedConfig {
     validate_setup_input(name, ValidatedInfrastructure::OfficialN0).expect("valid setup input")
 }
 
@@ -166,7 +166,7 @@ fn conflicts_bad_key_and_metadata_mismatch_do_not_replace_identity() {
         .paths
         .prepare_state_directories()
         .expect("state dirs");
-    zterm_platform::user_state::atomic_create(
+    voytty_platform::user_state::atomic_create(
         malformed.paths.identity(),
         malformed.paths.uid(),
         |file| {

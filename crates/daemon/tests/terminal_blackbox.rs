@@ -10,12 +10,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
-use zterm_core::terminal::{ActiveScreen, TerminalSize, TerminalSurfaceDeltaResult};
+use voytty_core::terminal::{ActiveScreen, TerminalSize, TerminalSurfaceDeltaResult};
 #[cfg(unix)]
-use zterm_daemon::terminal_driver::{TerminalDriver, TerminalDriverConfig};
+use voytty_daemon::terminal_driver::{TerminalDriver, TerminalDriverConfig};
 #[cfg(unix)]
-use zterm_platform::pty::{ExplicitPtyCommand, PtyChildState, PtyHost, PtySize};
-use zterm_terminal::TerminalModel;
+use voytty_platform::pty::{ExplicitPtyCommand, PtyChildState, PtyHost, PtySize};
+use voytty_terminal::TerminalModel;
 
 #[cfg(unix)]
 const DEADLINE: Duration = Duration::from_secs(20);
@@ -306,10 +306,10 @@ fn exercise(driver: &TerminalDriver, options: &Options) -> Result<(), String> {
 #[cfg(unix)]
 fn wait_for_snapshot_marker(
     driver: &TerminalDriver,
-    attachment: &mut zterm_daemon::terminal_driver::TerminalAttachment,
-    mut snapshot: zterm_core::terminal::TerminalSurfaceSnapshot,
+    attachment: &mut voytty_daemon::terminal_driver::TerminalAttachment,
+    mut snapshot: voytty_core::terminal::TerminalSurfaceSnapshot,
     marker: &str,
-) -> Result<zterm_core::terminal::TerminalSurfaceSnapshot, String> {
+) -> Result<voytty_core::terminal::TerminalSurfaceSnapshot, String> {
     let deadline = Instant::now() + DEADLINE;
     loop {
         if snapshot_text(&snapshot)?.contains(marker) {
@@ -333,9 +333,9 @@ fn wait_for_snapshot_marker(
 #[cfg(unix)]
 fn wait_for_startup_ready(
     driver: &TerminalDriver,
-    attachment: &mut zterm_daemon::terminal_driver::TerminalAttachment,
-    mut snapshot: zterm_core::terminal::TerminalSurfaceSnapshot,
-) -> Result<zterm_core::terminal::TerminalSurfaceSnapshot, String> {
+    attachment: &mut voytty_daemon::terminal_driver::TerminalAttachment,
+    mut snapshot: voytty_core::terminal::TerminalSurfaceSnapshot,
+) -> Result<voytty_core::terminal::TerminalSurfaceSnapshot, String> {
     let ready_at = Instant::now() + Duration::from_secs(3);
     loop {
         if let PtyChildState::Exited(status) = driver.try_wait().map_err(display_error)? {
@@ -379,9 +379,9 @@ fn wait_for_detached_progress(
 #[cfg(unix)]
 fn wait_for_screen(
     driver: &TerminalDriver,
-    attachment: &mut zterm_daemon::terminal_driver::TerminalAttachment,
+    attachment: &mut voytty_daemon::terminal_driver::TerminalAttachment,
     expected_screen: ActiveScreen,
-) -> Result<zterm_core::terminal::TerminalSurfaceSnapshot, String> {
+) -> Result<voytty_core::terminal::TerminalSurfaceSnapshot, String> {
     let deadline = Instant::now() + DEADLINE;
     loop {
         let snapshot = attachment.latest_snapshot().map_err(display_error)?;
@@ -479,7 +479,7 @@ fn wait_for_natural_exit_until(
 
 #[cfg(unix)]
 fn snapshot_text(
-    snapshot: &zterm_core::terminal::TerminalSurfaceSnapshot,
+    snapshot: &voytty_core::terminal::TerminalSurfaceSnapshot,
 ) -> Result<String, String> {
     let mut text = String::new();
     for row in &snapshot.surface.rows {

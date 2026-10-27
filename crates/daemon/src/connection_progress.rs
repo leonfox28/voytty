@@ -1,8 +1,8 @@
 //! Same-UID connection observations and bounded configured-CLI log records.
 
 use tokio::sync::watch;
-use zterm_client::progress::{ProgressHistory, ProgressObserver};
-use zterm_platform::user_state::UserPaths;
+use voytty_client::progress::{ProgressHistory, ProgressObserver};
+use voytty_platform::user_state::UserPaths;
 
 pub(crate) fn recorder(paths: &UserPaths) -> (ProgressObserver, watch::Receiver<ProgressHistory>) {
     let log = crate::diagnostics::recorder(paths);
@@ -10,10 +10,10 @@ pub(crate) fn recorder(paths: &UserPaths) -> (ProgressObserver, watch::Receiver<
 }
 
 fn recorder_with_log(
-    log: zterm_diagnostics::Recorder,
+    log: voytty_diagnostics::Recorder,
 ) -> (ProgressObserver, watch::Receiver<ProgressHistory>) {
-    use zterm_core::connection_progress::ConnectionStage;
-    use zterm_diagnostics::{Event, Kind, Level, Operation};
+    use voytty_core::connection_progress::ConnectionStage;
+    use voytty_diagnostics::{Event, Kind, Level, Operation};
     let operation = Operation::default();
     ProgressObserver::channel(move |event| {
         let terminal = matches!(
@@ -37,8 +37,8 @@ fn recorder_with_log(
             .connection(operation.id())
             .startup(event.stage);
         if let Some(error) = event.failure {
-            use zterm_client::progress::ProgressFailure;
-            use zterm_diagnostics::FrontendFailure;
+            use voytty_client::progress::ProgressFailure;
+            use voytty_diagnostics::FrontendFailure;
             record = match error {
                 ProgressFailure::Domain(error) => record.error(error),
                 ProgressFailure::TerminalIo => record.frontend_error(FrontendFailure::TerminalIo),
@@ -58,8 +58,8 @@ fn recorder_with_log(
 pub(crate) mod local {
     use std::{future::Future, time::Instant};
     use tokio::io::{AsyncWrite, AsyncWriteExt};
-    use zterm_client::progress::{CONNECTION_PROGRESS_CAPACITY, ProgressObserver};
-    use zterm_proto::{WireKind, connection_stage_to_message, encode_message};
+    use voytty_client::progress::{CONNECTION_PROGRESS_CAPACITY, ProgressObserver};
+    use voytty_proto::{WireKind, connection_stage_to_message, encode_message};
 
     /// Progress writing never abandons the operation whose result must survive.
     pub(crate) async fn observe<W, F, T>(
@@ -133,8 +133,8 @@ mod tests {
     use super::*;
     use std::fs;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use zterm_core::{DomainErrorKind, connection_progress::ConnectionStage};
-    use zterm_proto::{FrameDecoder, WireKind, connection_stage_from_message, v2};
+    use voytty_core::{DomainErrorKind, connection_progress::ConnectionStage};
+    use voytty_proto::{FrameDecoder, WireKind, connection_stage_from_message, v2};
 
     #[test]
     fn configured_progress_logs_reopen_after_rotation_and_stop_at_ready() {
@@ -166,11 +166,11 @@ mod tests {
             fs::read_to_string(archive).expect("read archived log"),
             initial
         );
-        let initial_record =
-            zterm_diagnostics::Record::decode(initial.trim().as_bytes()).expect("structured start");
-        let final_record = zterm_diagnostics::Record::decode(final_log.trim().as_bytes())
+        let initial_record = voytty_diagnostics::Record::decode(initial.trim().as_bytes())
+            .expect("structured start");
+        let final_record = voytty_diagnostics::Record::decode(final_log.trim().as_bytes())
             .expect("structured ready");
-        assert_eq!(initial_record.level, zterm_diagnostics::Level::Info);
+        assert_eq!(initial_record.level, voytty_diagnostics::Level::Info);
         assert_eq!(
             initial_record.fields.startup_stage.as_deref(),
             Some("starting")
@@ -196,11 +196,11 @@ mod tests {
         failure.fail(DomainErrorKind::Unauthorized);
         assert!(log.flush(std::time::Duration::from_secs(2)));
         let failed = fs::read_to_string(paths.daemon_log()).expect("progress log fixture");
-        let failed = zterm_diagnostics::Record::decode(
+        let failed = voytty_diagnostics::Record::decode(
             failed.lines().last().expect("failed record").as_bytes(),
         )
         .expect("typed record");
-        assert_eq!(failed.level, zterm_diagnostics::Level::Warn);
+        assert_eq!(failed.level, voytty_diagnostics::Level::Warn);
         assert_eq!(failed.fields.category.as_deref(), Some("unauthorized"));
         // An unsafe logfile must not leak writes outside managed state or stop
         // the screen's observations; the operation owner still gets its result.

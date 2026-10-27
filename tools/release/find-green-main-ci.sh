@@ -7,7 +7,7 @@ fail() {
 }
 
 commit=${1:-}
-repository=${ZTERM_RELEASE_REPOSITORY:-${GITHUB_REPOSITORY:-leonfox28/zterm}}
+repository=${VOYTTY_RELEASE_REPOSITORY:-${GITHUB_REPOSITORY:-leonfox28/voytty}}
 case "$commit" in
     ''|*[!0-9a-f]*) fail "COMMIT must be a lowercase hexadecimal Git object ID" ;;
 esac

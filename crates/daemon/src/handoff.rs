@@ -17,12 +17,12 @@ use std::process::Child;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use zterm_core::DomainErrorKind;
-use zterm_diagnostics::{
+use voytty_core::DomainErrorKind;
+use voytty_diagnostics::{
     Event as DiagnosticEvent, Kind, Level, Operation, Outcome, Recorder, Stage,
 };
-use zterm_platform::local_unix::{spawn_isolated_command, take_isolated_channel};
-use zterm_platform::user_state::UserPaths;
+use voytty_platform::local_unix::{spawn_isolated_command, take_isolated_channel};
+use voytty_platform::user_state::UserPaths;
 
 use crate::distribution::{PreparedRelease, ReleaseSelection};
 use crate::error::DaemonError;
@@ -119,7 +119,7 @@ impl Failure {
 fn channel_error() -> DaemonError {
     DaemonError::new(
         DomainErrorKind::OperationOutcomeUnknown,
-        "Lifecycle control connection closed or failed. If the operation was accepted, it may still be running; check zterm --version, zterm status and zterm logs before retrying.",
+        "Lifecycle control connection closed or failed. If the operation was accepted, it may still be running; check voytty --version, voytty status and voytty logs before retrying.",
     )
 }
 
@@ -223,7 +223,7 @@ impl Drop for OwnerChild {
                 let _ = child.kill();
             }
             let _ = std::thread::Builder::new()
-                .name("zterm-handoff-reap".into())
+                .name("voytty-handoff-reap".into())
                 .spawn(move || {
                     let _ = child.wait();
                 });
@@ -571,7 +571,7 @@ impl HandoffInteraction for Worker<'_> {
                 }
             };
             if self.log_enabled {
-                zterm_platform::diagnostics::Store::new(self.paths.clone())
+                voytty_platform::diagnostics::Store::new(self.paths.clone())
                     .preflight()
                     .map_err(|_| {
                         DaemonError::new(

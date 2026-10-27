@@ -1,8 +1,8 @@
-use zterm_core::terminal::{TerminalKeyboardFlags, TerminalModes};
+use voytty_core::terminal::{TerminalKeyboardFlags, TerminalModes};
 
-use zterm_client::keyboard::{FunctionalKey, KeyCode, KeyInput, legacy_control,
+use voytty_client::keyboard::{FunctionalKey, KeyCode, KeyInput, legacy_control,
     MOD_SHIFT, MOD_ALT, MOD_CONTROL, MOD_SUPER, MOD_HYPER, MOD_META, MOD_CAPS_LOCK, MOD_NUM_LOCK};
-pub(super) use zterm_client::keyboard::KeyEventKind;
+pub(super) use voytty_client::keyboard::KeyEventKind;
 
 /// A binding is a key and exact modifiers, independent of its wire encoding.
 #[derive(Clone, Copy)]

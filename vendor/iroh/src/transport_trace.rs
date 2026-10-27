@@ -6,7 +6,7 @@ use std::{sync::OnceLock, time::Instant};
 use iroh_base::{EndpointId, RelayUrl, SecretKey};
 use iroh_relay::protos::relay::Datagrams;
 
-pub(crate) const TARGET: &str = "iroh::zterm_transport";
+pub(crate) const TARGET: &str = "iroh::voytty_transport";
 
 fn elapsed_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
@@ -134,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn zterm_transport_trace_matches_datagrams_across_rebatching() {
+    fn voytty_transport_trace_matches_datagrams_across_rebatching() {
         let capture = Capture::default();
         let subscriber = tracing_subscriber::registry().with(capture.clone());
         let _guard = tracing::subscriber::set_default(subscriber);

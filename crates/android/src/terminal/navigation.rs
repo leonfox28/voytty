@@ -1,8 +1,8 @@
 //! One mobile viewport/selection owner over the shared core page/query reducer.
 use super::{NativeError, NativeNavigationStats, failure};
 use std::sync::Arc;
-use zterm_client::{input::append_resume_input, surface::AttachmentSurface};
-use zterm_core::{
+use voytty_client::{input::append_resume_input, surface::AttachmentSurface};
+use voytty_core::{
     Revision,
     terminal::*,
     terminal_selection::{TerminalTextPoint, TerminalTextRange},
@@ -579,7 +579,7 @@ impl Navigation {
         )
         .extract(&rows)
         .map_err(|error| match error {
-            zterm_core::terminal_selection::TerminalTextSelectionError::Clipboard(
+            voytty_core::terminal_selection::TerminalTextSelectionError::Clipboard(
                 TerminalClipboardError::TooLarge,
             ) => failure("resource_limit"),
             _ => failure("selection_changed"),
@@ -744,7 +744,7 @@ mod tests {
             let terminal = NativeTerminal {
                 notifications: Arc::new(super::super::notifications::NotificationBridge::new()),
                 upload_input_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                session_id: zterm_core::SessionId::from_array([1; 16]),
+                session_id: voytty_core::SessionId::from_array([1; 16]),
                 commands,
                 frame,
                 cancel: CancellationToken::new(),

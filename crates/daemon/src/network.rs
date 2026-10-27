@@ -12,7 +12,7 @@ use iroh::endpoint::{Incoming, VarInt};
 use iroh::{Endpoint, SecretKey, Watcher};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tokio::task::{JoinHandle, JoinSet};
-use zterm_core::{DeviceId, DomainErrorKind, TransportLimits};
+use voytty_core::{DeviceId, DomainErrorKind, TransportLimits};
 
 use crate::authorization::AuthorizationRegistry;
 #[cfg(unix)]
@@ -21,7 +21,7 @@ use crate::connection_broker::{ConnectionBroker, ConnectionIdentity, PairConnect
 use crate::error::DaemonError;
 use crate::identity::DeviceIdentity;
 use crate::store::StoreHandle;
-use crate::transport::{InfrastructureProfile, ZTERM_ALPN, ZTERM_PAIR_ALPN};
+use crate::transport::{InfrastructureProfile, VOYTTY_ALPN, VOYTTY_PAIR_ALPN};
 
 /// Lifecycle state of the sole Iroh endpoint supervisor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -269,7 +269,7 @@ pub type PairConnectionHandlerFuture =
 /// the one absolute pairing deadline. It never receives the owning Endpoint,
 /// normal peer registry, or infrastructure profile.
 pub trait PairConnectionHandler: Send + Sync + 'static {
-    /// Handles one inbound `zterm-pair/2` connection.
+    /// Handles one inbound `voytty-pair/2` connection.
     fn handle_pair_connection(
         &self,
         connection: PairConnection,
@@ -673,10 +673,10 @@ impl NetworkStartup {
                         observation.state = NetworkState::Stopping;
                     });
                     self.broker.quiesce().await;
-                    let closing = zterm_diagnostics::Operation::default();
-                    record_shutdown_stage(&closing, zterm_diagnostics::Stage::ClosingEndpoint);
+                    let closing = voytty_diagnostics::Operation::default();
+                    record_shutdown_stage(&closing, voytty_diagnostics::Stage::ClosingEndpoint);
                     endpoint.close().await;
-                    record_shutdown_stage(&closing, zterm_diagnostics::Stage::Closed);
+                    record_shutdown_stage(&closing, voytty_diagnostics::Stage::Closed);
                     self.hooks
                         .endpoint_close_count
                         .fetch_add(1, Ordering::AcqRel);
@@ -786,10 +786,10 @@ impl NetworkSupervisor {
         }
         // Stop new business-stream admission and reclaim every installed
         // handler under the caller's lifecycle deadline before Endpoint close.
-        let closing = zterm_diagnostics::Operation::default();
-        record_shutdown_stage(&closing, zterm_diagnostics::Stage::QuiescingStreams);
+        let closing = voytty_diagnostics::Operation::default();
+        record_shutdown_stage(&closing, voytty_diagnostics::Stage::QuiescingStreams);
         self.handle.broker.quiesce_until(deadline).await?;
-        record_shutdown_stage(&closing, zterm_diagnostics::Stage::Stopping);
+        record_shutdown_stage(&closing, voytty_diagnostics::Stage::Stopping);
         let Some(mut task) = self.task.take() else {
             return Err(DaemonError::new(
                 DomainErrorKind::TransportUnavailable,
@@ -836,13 +836,13 @@ impl NetworkSupervisor {
 }
 
 fn record_shutdown_stage(
-    operation: &zterm_diagnostics::Operation,
-    stage: zterm_diagnostics::Stage,
+    operation: &voytty_diagnostics::Operation,
+    stage: voytty_diagnostics::Stage,
 ) {
-    zterm_diagnostics::record(
-        zterm_diagnostics::Event::new(zterm_diagnostics::Kind::ShutdownStage)
+    voytty_diagnostics::record(
+        voytty_diagnostics::Event::new(voytty_diagnostics::Kind::ShutdownStage)
             .operation(operation)
-            .level(zterm_diagnostics::Level::Debug)
+            .level(voytty_diagnostics::Level::Debug)
             .stage(stage),
     );
 }
@@ -1112,9 +1112,9 @@ enum IncomingProtocol {
 }
 
 fn classify_incoming_alpn(alpn: &[u8]) -> Option<IncomingProtocol> {
-    if alpn == ZTERM_ALPN {
+    if alpn == VOYTTY_ALPN {
         Some(IncomingProtocol::Normal)
-    } else if alpn == ZTERM_PAIR_ALPN {
+    } else if alpn == VOYTTY_PAIR_ALPN {
         Some(IncomingProtocol::Pairing)
     } else {
         None
@@ -1129,10 +1129,10 @@ async fn route_incoming(
     pair_handler: Option<Arc<dyn PairConnectionHandler>>,
     policy: TransportLimits,
 ) {
-    use zterm_diagnostics::{Event, Kind, Level, Operation, Outcome, Stage};
+    use voytty_diagnostics::{Event, Kind, Level, Operation, Outcome, Stage};
     let operation = Operation::default();
     let stage = |stage| {
-        zterm_diagnostics::record(
+        voytty_diagnostics::record(
             Event::new(Kind::ConnectionStartup)
                 .operation(&operation)
                 .stage(stage)
@@ -1140,7 +1140,7 @@ async fn route_incoming(
         );
     };
     let failed = |stage, kind| {
-        zterm_diagnostics::record(
+        voytty_diagnostics::record(
             Event::new(Kind::ConnectionFailed)
                 .operation(&operation)
                 .stage(stage)
@@ -1199,7 +1199,7 @@ async fn route_incoming(
                     return;
                 }
             };
-            zterm_client::handshake::record_transport_ready(&operation, &connection);
+            voytty_client::handshake::record_transport_ready(&operation, &connection);
             let remote = DeviceId::from_array(*connection.remote_id().as_bytes());
             let Some(_peer) = limits.normal_per_peer.try_acquire(remote) else {
                 connection.close(VarInt::from_u32(0x104), b"transport overloaded");
@@ -1358,9 +1358,9 @@ mod tests {
     use std::fs;
 
     #[cfg(unix)]
-    use zterm_platform::account::EffectiveAccount;
+    use voytty_platform::account::EffectiveAccount;
     #[cfg(unix)]
-    use zterm_platform::user_state::UserPaths;
+    use voytty_platform::user_state::UserPaths;
 
     use super::*;
     #[cfg(unix)]
@@ -1485,7 +1485,7 @@ mod tests {
             ConnectionIdentity::product(device_id, "handler-fixture").expect("connection identity");
         let (startup, _handle) = NetworkStartup::prepare(
             identity,
-            InfrastructureProfile::zterm(),
+            InfrastructureProfile::voytty(),
             connection_identity,
             store_actor.handle(),
             AuthorizationRegistry::new(),
@@ -1669,15 +1669,15 @@ mod tests {
     #[test]
     fn incoming_alpn_routes_only_exact_normal_and_pairing_protocols() {
         assert_eq!(
-            classify_incoming_alpn(ZTERM_ALPN),
+            classify_incoming_alpn(VOYTTY_ALPN),
             Some(IncomingProtocol::Normal)
         );
         assert_eq!(
-            classify_incoming_alpn(ZTERM_PAIR_ALPN),
+            classify_incoming_alpn(VOYTTY_PAIR_ALPN),
             Some(IncomingProtocol::Pairing)
         );
-        assert_eq!(classify_incoming_alpn(b"zterm/2\0"), None);
-        assert_eq!(classify_incoming_alpn(b"zterm/1"), None);
-        assert_eq!(classify_incoming_alpn(b"zterm-pair/1"), None);
+        assert_eq!(classify_incoming_alpn(b"voytty/2\0"), None);
+        assert_eq!(classify_incoming_alpn(b"voytty/1"), None);
+        assert_eq!(classify_incoming_alpn(b"voytty-pair/1"), None);
     }
 }

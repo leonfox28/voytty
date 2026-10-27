@@ -16,12 +16,12 @@ Compare in both light and dark host configurations:
 
 1. Palette swatches and default FG/BG should match the outer observations.
    Literal RGB orange must remain unchanged across palette changes.
-2. Change the host theme while ZTerm remains attached. If the host supports
+2. Change the host theme while Voytty remains attached. If the host supports
    appearance notifications, repeat the fixture and check updated observations,
    including a palette change that keeps the same dark/light preference.
 3. Scroll into retained history and change the palette from the child. Pinned
    text and selection stay in place while its indexed/default colors repaint.
-4. Inside a disposable ZTerm Session, exercise a saved palette and override:
+4. Inside a disposable Voytty Session, exercise a saved palette and override:
 
    ```sh
    printf '\033[#P\033]4;1;rgb:ff/80/00\007\033]11;rgb:20/20/20\007'
@@ -30,7 +30,7 @@ Compare in both light and dark host configurations:
    printf '\033[#Q\033]104\007\033]110\007\033]111\007'
    ```
 
-   Run setters only inside the disposable ZTerm Session; directly in the outer
+   Run setters only inside the disposable Voytty Session; directly in the outer
    terminal they would change its palette. Automated stream-order assertions
    live in `crates/terminal/tests/color_protocol.rs`.
 5. Exercise explicit cursor and cursor-text colors using OSC 21 in that Session;
@@ -39,7 +39,7 @@ Compare in both light and dark host configurations:
 6. Detach/reconnect and take over from a second terminal with a different theme.
    Application overrides survive; reset resolves to the new controller base.
    On exit, outer colors remain intact and only a mode-2031 subscription actually
-   enabled by ZTerm is restored.
+   enabled by Voytty is restored.
 
 Herdr/Pi is a secondary visual reproduction. Compare it with direct connection
 after the neutral protocol fixture; an application's explicitly chosen RGB theme

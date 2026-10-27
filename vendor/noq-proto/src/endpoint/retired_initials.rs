@@ -65,7 +65,7 @@ mod tests {
     }
 
     #[test]
-    fn zterm_retired_initials_are_bounded_and_duplicates_do_not_refresh_them() {
+    fn voytty_retired_initials_are_bounded_and_duplicates_do_not_refresh_them() {
         let mut retired = RetiredInitials::default();
         let now = SystemTime::UNIX_EPOCH;
         for sequence in 0..CAPACITY as u64 {
@@ -86,7 +86,7 @@ mod tests {
     }
 
     #[test]
-    fn zterm_retired_initial_identity_includes_both_cids_and_version() {
+    fn voytty_retired_initial_identity_includes_both_cids_and_version() {
         let mut retired = RetiredInitials::default();
         let now = SystemTime::UNIX_EPOCH;
         let original = key(0);

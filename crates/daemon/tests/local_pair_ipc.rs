@@ -9,14 +9,14 @@
 use std::path::PathBuf;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use zeroize::{Zeroize, Zeroizing};
-use zterm_core::{
+use voytty_core::{
     AuthGeneration, AuthorizationStatus, DEFAULT_PAIR_TTL_SECONDS, DeviceAlias, DeviceDisplayName,
     DeviceId, DeviceSummary, EphemeralOperationId, PairFingerprint, RelayHint, TransportLimits,
 };
-use zterm_daemon::local_ipc::LocalPairingClient;
-use zterm_daemon::pairing::{PairOfferRequest, PairTicketText, PairingManager};
-use zterm_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
+use voytty_daemon::local_ipc::LocalPairingClient;
+use voytty_daemon::pairing::{PairOfferRequest, PairTicketText, PairingManager};
+use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
+use zeroize::{Zeroize, Zeroizing};
 
 const HOST: DeviceId = DeviceId::from_array([0x31; 32]);
 
@@ -43,7 +43,7 @@ async fn accept_lost_responses_are_outcome_unknown_after_identical_retry() {
     server.await.expect("pair server");
     assert_eq!(
         error.kind(),
-        zterm_core::DomainErrorKind::PairOutcomeUnknown
+        voytty_core::DomainErrorKind::PairOutcomeUnknown
     );
 }
 
@@ -54,7 +54,7 @@ async fn accept_missing_daemon_before_any_write_is_not_ambiguous() {
         .accept(mint_ticket(), None)
         .await
         .expect_err("no request reached the absent daemon");
-    assert_eq!(error.kind(), zterm_core::DomainErrorKind::DaemonStopped);
+    assert_eq!(error.kind(), voytty_core::DomainErrorKind::DaemonStopped);
 }
 
 #[tokio::test]
@@ -77,7 +77,7 @@ async fn accept_failed_retry_connect_does_not_erase_first_delivery() {
     server.await.expect("pair server");
     assert_eq!(
         error.kind(),
-        zterm_core::DomainErrorKind::PairOutcomeUnknown
+        voytty_core::DomainErrorKind::PairOutcomeUnknown
     );
 }
 
@@ -112,7 +112,10 @@ async fn accept_authoritative_error_is_preserved_without_retry() {
         .accept(mint_ticket(), None)
         .await
         .expect_err("authoritative rejection");
-    assert_eq!(error.kind(), zterm_core::DomainErrorKind::PairTicketExpired);
+    assert_eq!(
+        error.kind(),
+        voytty_core::DomainErrorKind::PairTicketExpired
+    );
     server.await.expect("pair server");
 }
 

@@ -1,11 +1,11 @@
-use zterm_core::Revision;
-use zterm_core::terminal::{
+use voytty_core::Revision;
+use voytty_core::terminal::{
     ActiveScreen, TerminalClipboardWrite, TerminalSize, TerminalSurfaceRow,
 };
-use zterm_core::terminal_selection::{
+use voytty_core::terminal_selection::{
     TerminalTextPoint, TerminalTextRange, TerminalTextSelectionError,
 };
-use zterm_core::viewport_cache::ViewportSliceIdentity;
+use voytty_core::viewport_cache::ViewportSliceIdentity;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SelectionSourceIdentity {
@@ -257,7 +257,7 @@ impl SelectionController {
 
 #[cfg(test)]
 mod tests {
-    use zterm_core::terminal::TerminalCell;
+    use voytty_core::terminal::TerminalCell;
 
     use super::*;
 

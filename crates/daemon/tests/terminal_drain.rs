@@ -26,8 +26,8 @@ fn run() -> Result<(), String> {
     use std::ffi::OsString;
 
     use support::{DEADLINE, TempMarker};
-    use zterm_daemon::terminal_driver::{TerminalAttachment, TerminalDriverConfig};
-    use zterm_platform::pty::PtyChildState;
+    use voytty_daemon::terminal_driver::{TerminalAttachment, TerminalDriverConfig};
+    use voytty_platform::pty::PtyChildState;
 
     const BULK_BYTES: usize = 1024 * 1024;
     let config = TerminalDriverConfig {

@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use zterm_core::terminal::TerminalSize;
-use zterm_daemon::terminal_driver::{TerminalDriver, TerminalDriverConfig};
-use zterm_platform::pty::{ExplicitPtyCommand, PtyChildState, PtyHost, PtySize};
-use zterm_terminal::TerminalModel;
+use voytty_core::terminal::TerminalSize;
+use voytty_daemon::terminal_driver::{TerminalDriver, TerminalDriverConfig};
+use voytty_platform::pty::{ExplicitPtyCommand, PtyChildState, PtyHost, PtySize};
+use voytty_terminal::TerminalModel;
 
 pub const DEADLINE: Duration = Duration::from_secs(15);
 pub const SCROLLBACK_ROWS: usize = 10_000;
@@ -91,7 +91,7 @@ pub fn wait_for_text(driver: &TerminalDriver, needle: &str) -> Result<(), String
 }
 
 pub fn snapshot_text(
-    snapshot: &zterm_core::terminal::TerminalSurfaceSnapshot,
+    snapshot: &voytty_core::terminal::TerminalSurfaceSnapshot,
 ) -> Result<String, String> {
     let mut text = String::new();
     for row in &snapshot.surface.rows {
@@ -128,7 +128,7 @@ impl TempMarker {
             .map_err(display_error)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "zterm-{label}-{}-{nonce}.marker",
+            "voytty-{label}-{}-{nonce}.marker",
             std::process::id()
         ));
         if path.exists() {

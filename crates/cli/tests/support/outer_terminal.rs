@@ -1,11 +1,11 @@
-use zterm_core::{Revision, terminal::TerminalSize};
+use voytty_core::{Revision, terminal::TerminalSize};
 
 // Reuse the product's sole terminal model through a disposable SessionService.
 // The outer ANSI is replayed verbatim by a PTY child; no test ANSI interpreter or
 // direct CLI -> terminal-engine dependency is introduced.
 pub(crate) fn project_outer_child_rows(
     bytes: &[u8],
-) -> Vec<Vec<zterm_core::terminal::TerminalCell>> {
+) -> Vec<Vec<voytty_core::terminal::TerminalCell>> {
     project_outer_rows(bytes)
         .into_iter()
         .take(23)
@@ -14,11 +14,11 @@ pub(crate) fn project_outer_child_rows(
 }
 
 // The last six cells of row 24 are reserved for the replay completion marker.
-pub(crate) fn project_outer_rows(bytes: &[u8]) -> Vec<Vec<zterm_core::terminal::TerminalCell>> {
-    use zterm_core::{AttachmentId, DeviceId, DomainErrorKind, ResourceLimits};
-    use zterm_daemon::error::DaemonError;
-    use zterm_daemon::session::SessionService;
-    use zterm_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
+pub(crate) fn project_outer_rows(bytes: &[u8]) -> Vec<Vec<voytty_core::terminal::TerminalCell>> {
+    use voytty_core::{AttachmentId, DeviceId, DomainErrorKind, ResourceLimits};
+    use voytty_daemon::error::DaemonError;
+    use voytty_daemon::session::SessionService;
+    use voytty_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
 
     let temporary = tempfile::tempdir().expect("outer frame fixture");
     let transcript = temporary.path().join("frame.ansi");

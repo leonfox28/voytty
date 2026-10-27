@@ -1,6 +1,6 @@
 use super::*;
 use std::sync::atomic::AtomicBool;
-use zterm_core::terminal::{
+use voytty_core::terminal::{
     COLOR_BACKGROUND, COLOR_CURSOR, COLOR_CURSOR_TEXT, COLOR_FOREGROUND,
     COLOR_SELECTION_BACKGROUND, COLOR_SELECTION_FOREGROUND, TerminalAppearance,
     TerminalColorProfile, TerminalColorValue, parse_terminal_rgb,

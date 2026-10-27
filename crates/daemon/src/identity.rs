@@ -5,8 +5,8 @@ use std::fs;
 use std::io::Write;
 
 use iroh::SecretKey;
-use zterm_core::{DeviceId, DomainErrorKind};
-use zterm_platform::user_state::{UserPaths, atomic_create, validate_regular_file};
+use voytty_core::{DeviceId, DomainErrorKind};
+use voytty_platform::user_state::{UserPaths, atomic_create, validate_regular_file};
 
 use crate::error::DaemonError;
 

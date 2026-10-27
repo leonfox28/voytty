@@ -95,8 +95,8 @@ fn transport_trace_is_numeric_allowlisted_and_dynamically_gated() {
     let _guard = tracing::subscriber::set_default(subscriber);
     assert!(!tracing::enabled!(target: "unrelated_dependency", tracing::Level::TRACE));
     let emit = || {
-        let enabled = tracing::enabled!(target: "iroh::zterm_transport", tracing::Level::DEBUG);
-        tracing::debug!(target: "iroh::zterm_transport", phase = 4u64, relay = 17u64,
+        let enabled = tracing::enabled!(target: "iroh::voytty_transport", tracing::Level::DEBUG);
+        tracing::debug!(target: "iroh::voytty_transport", phase = 4u64, relay = 17u64,
             peer = 23u64, packet = 31u64, bytes = 1200u64, age_ms = 12u64,
             elapsed_ms = 37u64, kind = 2u64,
             address = "PRIVATE_ADDRESS", payload = ?b"PRIVATE_PAYLOAD", "PRIVATE_MESSAGE");
@@ -107,13 +107,13 @@ fn transport_trace_is_numeric_allowlisted_and_dynamically_gated() {
     wait(|| recorder.detail_enabled());
     assert!(emit(), "enabling detail must revisit the same callsite");
     assert!(!tracing::enabled!(target: "unrelated_dependency", tracing::Level::TRACE));
-    tracing::debug!(target: "iroh::zterm_transport", phase = 999u64, message = "PRIVATE_UNKNOWN");
-    tracing::debug!(target: "iroh::zterm_transport", phase = "4", message = "PRIVATE_TEXT_PHASE");
+    tracing::debug!(target: "iroh::voytty_transport", phase = 999u64, message = "PRIVATE_UNKNOWN");
+    tracing::debug!(target: "iroh::voytty_transport", phase = "4", message = "PRIVATE_TEXT_PHASE");
     tracing::debug!(target: "iroh::untrusted", phase = 4u64, message = "PRIVATE_DEPENDENCY");
     // Dependency text is reduced to a closed phase only inside an anonymous
     // dial span; unrelated events and every address/error field stay private.
     tracing::trace!(target: "iroh_relay::client::tls", "Starting TLS handshake");
-    let dial = tracing::debug_span!(target: "iroh::zterm_transport", "relay_dial",
+    let dial = tracing::debug_span!(target: "iroh::voytty_transport", "relay_dial",
         relay = 41u64, elapsed_ms = 53u64, address = "PRIVATE_SPAN_ADDRESS");
     {
         let _entered = dial.enter();
@@ -126,7 +126,7 @@ fn transport_trace_is_numeric_allowlisted_and_dynamically_gated() {
         tracing::trace!(target: "iroh_relay::client::conn", "PRIVATE_UNKNOWN_MESSAGE");
         tracing::trace!(target: "iroh_relay::client::conn", "{}", "PRIVATE_".repeat(100));
         tracing::trace!(target: "iroh_relay::client::conn", "Starting TLS handshake");
-        let other = tracing::debug_span!(target: "iroh::zterm_transport", "relay_dial",
+        let other = tracing::debug_span!(target: "iroh::voytty_transport", "relay_dial",
             relay = 67u64, elapsed_ms = 71u64);
         let _other = other.enter();
         tracing::trace!(target: "iroh_relay::client::tls", "Starting TLS handshake");
@@ -197,7 +197,7 @@ fn relay_failures_keep_only_known_categories() {
     let subscriber = tracing_subscriber::registry().with(transport_trace_layer(recorder.clone()));
     let _guard = tracing::subscriber::set_default(subscriber);
     for (phase, failure) in [(12u64, 11u64), (3, 6), (11, 14), (12, 999)] {
-        tracing::debug!(target: "iroh::zterm_transport", phase, failure, relay = 17u64,
+        tracing::debug!(target: "iroh::voytty_transport", phase, failure, relay = 17u64,
             error = "PRIVATE_REMOTE_MESSAGE", address = "PRIVATE_ADDRESS");
     }
     assert!(recorder.flush(Duration::from_secs(1)));
@@ -287,7 +287,7 @@ fn worker_routes_detail_only_during_explicit_interval_and_preserves_safe_correla
     recorder.record(
         Event::new(Kind::ConnectionFailed)
             .level(Level::Warn)
-            .error(zterm_core::DomainErrorKind::Unauthorized)
+            .error(voytty_core::DomainErrorKind::Unauthorized)
             .operation(&operation),
     );
     assert!(recorder.flush(Duration::from_secs(1)));
@@ -325,7 +325,7 @@ fn snapshot_stages_keep_order_without_per_session_coalescing() {
     *sink.control.lock().expect("control") = Control::enabled(now_ms());
     let recorder = Recorder::new(sink.clone()).expect("worker");
     wait(|| recorder.detail_enabled());
-    let session = zterm_core::SessionId::from_array([0x46; 16]);
+    let session = voytty_core::SessionId::from_array([0x46; 16]);
     let stages = [
         Stage::Snapshot,
         Stage::SnapshotSent,

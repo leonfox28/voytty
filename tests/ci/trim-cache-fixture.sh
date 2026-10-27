@@ -28,8 +28,8 @@ for profile in debug release; do
 done
 # Hosted caches restore selected subdirectories, not this root marker.
 rm "$fixture/compiled/CACHEDIR.TAG"
-ZTERM_CACHE_MANIFEST_PATH="$fixture/Cargo.toml" \
-    ZTERM_CACHE_TARGET_DIR="$fixture/compiled" GITHUB_OUTPUT="$fixture/output" \
+VOYTTY_CACHE_MANIFEST_PATH="$fixture/Cargo.toml" \
+    VOYTTY_CACHE_TARGET_DIR="$fixture/compiled" GITHUB_OUTPUT="$fixture/output" \
     sh "$repo_root/tools/ci/trim-rust-cache.sh" debug release
 grep -Fxq 'cacheable=true' "$fixture/output"
 for profile in debug release; do

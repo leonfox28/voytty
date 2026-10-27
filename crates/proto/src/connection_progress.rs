@@ -1,5 +1,5 @@
 use crate::{ProtocolError, v2};
-use zterm_core::connection_progress::ConnectionStage;
+use voytty_core::connection_progress::ConnectionStage;
 
 /// Encodes only the stages owned by the local connection broker.
 pub fn connection_stage_to_message(stage: ConnectionStage) -> Option<v2::LocalConnectionProgress> {

@@ -1,6 +1,6 @@
 //! Transport-neutral terminal domain values and reconnect payloads.
 //!
-//! The host-side parser and grid live in `zterm-terminal`. This module is kept
+//! The host-side parser and grid live in `voytty-terminal`. This module is kept
 //! free of terminal-engine dependencies so protocol and future client crates
 //! can share these values without compiling a host PTY stack.
 
@@ -979,7 +979,7 @@ pub enum TerminalSurfaceHistoryWindowResult {
     },
 }
 
-/// A side effect which zterm deliberately refuses to execute.
+/// A side effect which voytty deliberately refuses to execute.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RejectedEffect {
     /// The application attempted to write the system clipboard.

@@ -49,7 +49,7 @@ async fn race(
 }
 
 #[tokio::test(start_paused = true)]
-async fn zterm_relay_dial_hedge_recovers_a_stalled_first_attempt() {
+async fn voytty_relay_dial_hedge_recovers_a_stalled_first_attempt() {
     let fast = Duration::from_millis(100);
     let (result, elapsed, hedges) = race(None, Some((fast, true))).await;
     assert_eq!(result, Ok(2));
@@ -59,14 +59,14 @@ async fn zterm_relay_dial_hedge_recovers_a_stalled_first_attempt() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn zterm_relay_dial_fast_attempt_does_not_hedge() {
+async fn voytty_relay_dial_fast_attempt_does_not_hedge() {
     let (result, _, hedges) = race(Some((Duration::from_millis(500), true)), None).await;
     assert_eq!(result, Ok(1));
     assert_eq!(hedges, 0);
 }
 
 #[tokio::test(start_paused = true)]
-async fn zterm_relay_dial_early_error_is_returned_without_hedging() {
+async fn voytty_relay_dial_early_error_is_returned_without_hedging() {
     let (result, elapsed, hedges) = race(Some((Duration::from_millis(100), false)), None).await;
     assert_eq!(result, Err("failed"));
     assert_eq!(hedges, 0);
@@ -74,7 +74,7 @@ async fn zterm_relay_dial_early_error_is_returned_without_hedging() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn zterm_relay_dial_hedge_does_not_cancel_a_progressing_attempt() {
+async fn voytty_relay_dial_hedge_does_not_cancel_a_progressing_attempt() {
     let slow = Duration::from_millis(3_500);
     let (result, elapsed, hedges) = race(Some((slow, true)), None).await;
     assert_eq!(result, Ok(1));
@@ -83,7 +83,7 @@ async fn zterm_relay_dial_hedge_does_not_cancel_a_progressing_attempt() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn zterm_relay_dial_failed_attempt_waits_for_the_other() {
+async fn voytty_relay_dial_failed_attempt_waits_for_the_other() {
     // The hedge fails quickly; the original attempt still connects.
     let (result, elapsed, _) = race(
         Some((Duration::from_secs(4), true)),

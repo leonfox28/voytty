@@ -174,7 +174,7 @@ MANIFEST
 mkdir -p "$seed/crates/cli/src" "$seed/tests"
 cat >"$seed/crates/cli/Cargo.toml" <<'MEMBER_MANIFEST'
 [package]
-name = "zterm-cli"
+name = "voytty-cli"
 version.workspace = true
 edition.workspace = true
 MEMBER_MANIFEST
@@ -184,7 +184,7 @@ cat >"$seed/tests/workspace-version.sh" <<'VERSION_TEST'
 #!/bin/sh
 set -eu
 manifest_version=$(sed -n '/^\[workspace.package\]$/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml)
-lock_version=$(sed -n '/^name = "zterm-cli"$/{n;s/^version = "\([^"]*\)"/\1/p;}' Cargo.lock)
+lock_version=$(sed -n '/^name = "voytty-cli"$/{n;s/^version = "\([^"]*\)"/\1/p;}' Cargo.lock)
 [ "$manifest_version" = "$lock_version" ]
 if [ "${FIXTURE_VERSION_EXTRA:-0}" = 1 ]; then
     printf '%s\n' 'unexpected validator output' >unexpected-version-output
@@ -218,12 +218,12 @@ run_operator() {
         REAL_CARGO="$real_cargo" \
         FAKE_TRACE="$case_trace" \
         FAKE_STATE_DIR="$case_state" \
-        FAKE_REPOSITORY=fixture/zterm \
-        ZTERM_RELEASE_TEST_MODE=1 \
-        ZTERM_RELEASE_REPOSITORY=fixture/zterm \
-        ZTERM_RELEASE_WORKTREE="$case_worktree" \
-        ZTERM_RELEASE_POLL_ATTEMPTS=1 \
-        ZTERM_RELEASE_POLL_SECONDS=0 \
+        FAKE_REPOSITORY=fixture/voytty \
+        VOYTTY_RELEASE_TEST_MODE=1 \
+        VOYTTY_RELEASE_REPOSITORY=fixture/voytty \
+        VOYTTY_RELEASE_WORKTREE="$case_worktree" \
+        VOYTTY_RELEASE_POLL_ATTEMPTS=1 \
+        VOYTTY_RELEASE_POLL_SECONDS=0 \
         "$@"
 }
 
@@ -371,7 +371,7 @@ Cargo.toml" ] || fail "release commit changed files outside Cargo.toml and Cargo
 lock_contents=$(git --git-dir="$case_remote" \
     show refs/heads/release/v0.1.10:Cargo.lock)
 lock_version=$(printf '%s\n' "$lock_contents" \
-    | sed -n '/^name = "zterm-cli"$/{n;s/^version = "\([^"]*\)"/\1/p;}')
+    | sed -n '/^name = "voytty-cli"$/{n;s/^version = "\([^"]*\)"/\1/p;}')
 [ "$lock_version" = 0.1.10 ] \
     || fail "real Cargo did not refresh the inherited workspace package version"
 grep -Fxq 'cargo +1.98.0 update --workspace' "$case_trace" \
@@ -539,7 +539,7 @@ run_operator >"$case_root/prepare-stdout" 2>"$case_root/prepare-stderr" \
 if git --git-dir="$case_remote" show-ref --verify --quiet refs/heads/release/v0.1.10; then
     fail "feature preparation pushed a competing version branch"
 fi
-grep -Fq 'gh pr create --repo fixture/zterm --base main --head fix/one-release-pr --fill' \
+grep -Fq 'gh pr create --repo fixture/voytty --base main --head fix/one-release-pr --fill' \
     "$case_trace" || fail "feature PR did not retain its product change description"
 assert_no_remote_tag feature-pr-release
 

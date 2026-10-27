@@ -9,9 +9,9 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "apps/android/app/src/main/assets/licenses"
 COPIES = {
-    "LICENSE": "Zterm-PolyForm-Noncommercial-1.0.0.txt",
-    "NOTICE": "Zterm-NOTICE.txt",
-    "COMMERCIAL-LICENSE.md": "Zterm-Commercial-License.txt",
+    "LICENSE": "Voytty-PolyForm-Noncommercial-1.0.0.txt",
+    "NOTICE": "Voytty-NOTICE.txt",
+    "COMMERCIAL-LICENSE.md": "Voytty-Commercial-License.txt",
 }
 LICENSE_ID = "PolyForm-Noncommercial-1.0.0"
 LICENSE_SHA256 = "ffcca38841adb694b6f380647e15f17c446a4d1656fed51a1e2041d064c94cc8"

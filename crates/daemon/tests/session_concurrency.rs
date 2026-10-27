@@ -8,12 +8,12 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
-use zterm_core::{
+use voytty_core::{
     AttachmentId, DeviceId, DomainErrorKind, OperationId, ResourceLimits, SessionName,
 };
-use zterm_daemon::error::DaemonError;
-use zterm_daemon::session::SessionService;
-use zterm_platform::pty::{ExplicitPtyCommand, PtyHost, PtySession, PtySize};
+use voytty_daemon::error::DaemonError;
+use voytty_daemon::session::SessionService;
+use voytty_platform::pty::{ExplicitPtyCommand, PtyHost, PtySession, PtySize};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -248,7 +248,7 @@ fn create_reservation_prevents_a_concurrent_rename_from_publishing_the_same_name
 fn spawn_shell(
     shell: &Path,
     working_directory: &Path,
-    size: zterm_core::terminal::TerminalSize,
+    size: voytty_core::terminal::TerminalSize,
 ) -> Result<(PtySession, PathBuf), DaemonError> {
     let session = PtyHost::new()
         .spawn(

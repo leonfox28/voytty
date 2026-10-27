@@ -3,7 +3,7 @@ use crate::error::ClientError as DaemonError;
 use futures_util::StreamExt;
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayUrl, TransportAddr, endpoint::Connection};
 use std::{collections::BTreeSet, fmt, time::Instant};
-use zterm_core::{DeviceId, DomainErrorKind, RelayHint, TransportLimits};
+use voytty_core::{DeviceId, DomainErrorKind, RelayHint, TransportLimits};
 
 /// Origin of one ordered dial candidate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

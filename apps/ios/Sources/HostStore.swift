@@ -83,7 +83,7 @@ enum StoreError: LocalizedError {
 
 /// Identity and address book share one atomic Keychain item. No backup or iCloud sync.
 struct HostStore {
-    var service = (Bundle.main.bundleIdentifier ?? "zterm") + ".controller"
+    var service = (Bundle.main.bundleIdentifier ?? "voytty") + ".controller"
     /// Tests substitute Keychain availability, such as a locked device.
     var update: (CFDictionary, CFDictionary) -> OSStatus = SecItemUpdate
     private var query: [String: Any] {

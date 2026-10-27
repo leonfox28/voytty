@@ -1,4 +1,8 @@
-# zterm
+# voytty
+
+Formerly zterm. This rename uses new application IDs, data directories and
+pairing protocols; install voytty and pair your devices again. See the
+[rename transition](docs/install.md#transition-from-zterm) before switching.
 
 Source-available under [PolyForm Noncommercial 1.0.0](LICENSE). Noncommercial
 use and modification do not require publishing your changes. Commercial use
@@ -8,7 +12,7 @@ or authorized work computers. See [licensing / 许可说明](docs/licensing.md)
 and [contribution terms](CONTRIBUTING.md). Third-party components retain their
 original licenses. This is not an OSI-approved open-source license.
 
-zterm is a cross-platform remote-terminal project built around daemon-lifetime
+voytty is a cross-platform remote-terminal project built around daemon-lifetime
 terminal Sessions and end-to-end encrypted Iroh connections. The current tree
 contains the shared terminal/domain model, versioned protobuf contract, secure
 per-user state, one same-UID daemon, pairing and directional authorization, a
@@ -34,7 +38,7 @@ Windows is not a terminal runtime in this milestone.
 Install the latest stable native Release with the fixed bootstrap URL:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/leonfox28/zterm/main/install/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/leonfox28/voytty/main/install/install.sh | sh
 ```
 
 The installer does not run `setup` or start the daemon. See
@@ -44,42 +48,42 @@ review-first, update, uninstall, and recovery paths.
 Current public commands are:
 
 ```text
-zterm setup [--name <name>] [--profile <official-n0|self-hosted>]
+voytty setup [--name <name>] [--profile <official-n0|self-hosted>]
             [--relay-url <https-url>]
-zterm status
-zterm doctor
-zterm pair create
-zterm pair accept [--stdin] [--alias <alias>]
-zterm device list
-zterm device rename <device> <alias>
-zterm device revoke <device> [-y|--yes]
-zterm connect [<target>] [--session <name-or-id>] [--takeover]
-zterm session list [--target <target>]
-zterm session create <name> [--target <target>] [--cwd <host-path>]
-zterm session rename <session> <new-name> [--target <target>]
-zterm session close <session> [--target <target>] [-y|--yes]
-zterm daemon autostart <enable|disable|status>
-zterm daemon stop [-y|--yes]
-zterm daemon restart [-y|--yes]
-zterm logs [-n|--lines <n>] [--level <level>] [--since 30m] [--include-debug] [--json]
-zterm logs debug on|off|status
-zterm logs export --output <path> [--include-debug]
-zterm reset [-y|--yes]
-zterm update [--version <vSEMVER>] [-y|--yes]
-zterm uninstall [-y|--yes]
-zterm --license
+voytty status
+voytty doctor
+voytty pair create
+voytty pair accept [--stdin] [--alias <alias>]
+voytty device list
+voytty device rename <device> <alias>
+voytty device revoke <device> [-y|--yes]
+voytty connect [<target>] [--session <name-or-id>] [--takeover]
+voytty session list [--target <target>]
+voytty session create <name> [--target <target>] [--cwd <host-path>]
+voytty session rename <session> <new-name> [--target <target>]
+voytty session close <session> [--target <target>] [-y|--yes]
+voytty daemon autostart <enable|disable|status>
+voytty daemon stop [-y|--yes]
+voytty daemon restart [-y|--yes]
+voytty logs [-n|--lines <n>] [--level <level>] [--since 30m] [--include-debug] [--json]
+voytty logs debug on|off|status
+voytty logs export --output <path> [--include-debug]
+voytty reset [-y|--yes]
+voytty update [--version <vSEMVER>] [-y|--yes]
+voytty uninstall [-y|--yes]
+voytty --license
 ```
 
 `setup`, `daemon restart`, and a successful update of a configured installation
 start the daemon. Pair, device, connect, and Session commands start it on demand
 only after validating an
 existing setup. Inspection, logs, stop, help/version, and parse failures never
-start it. With setup complete, bare `zterm` is equivalent to
-`zterm connect local`; before setup it only prints setup
+start it. With setup complete, bare `voytty` is equivalent to
+`voytty connect local`; before setup it only prints setup
 guidance. Only omitted `--session` enables atomic creation of `main`; an explicit
 `--session main` (like any explicit name/ID) requires an existing Session.
 
-First setup defaults to `official-n0`; `zterm setup --name <name>` is enough.
+First setup defaults to `official-n0`; `voytty setup --name <name>` is enough.
 Commands print human-readable text. Update, daemon stop and daemon restart list
 running Sessions and ask for English `[y/N]` confirmation only when they would
 end live work; use `-y` or `--yes` to confirm directly. `logs -n 100` reads recent
@@ -97,7 +101,7 @@ the signed native Release path and its trust/recovery boundaries.
 
 ## Version policy
 
-zterm uses one lockstep SemVer for the product rather than independent
+voytty uses one lockstep SemVer for the product rather than independent
 component versions. The root `[workspace.package].version` is the only source
 for all product crates; future CLI, daemon, desktop/mobile apps, protocol
 artifacts advance together. Relay image publication is currently paused.
@@ -112,7 +116,7 @@ version.
 ## Repository boundaries
 
 - `crates/` — six Rust crates owning core, protocol, platform, terminal-engine, daemon, and CLI boundaries.
-- `proto/zterm/v2/` — the semantic product wire schema compiled with vendored `protoc` binaries.
+- `proto/voytty/v2/` — the semantic product wire schema compiled with vendored `protoc` binaries.
 - `deploy/relay/` — official relay artifact verification and Compose deployment.
 - `tests/relay/` — architecture, checksum, minimal configuration, and health checks.
 - `install/` and `tools/release/` — the reviewed bootstrap/template and private

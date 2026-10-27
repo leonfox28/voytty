@@ -1,1 +1,1 @@
-pub(super) use zterm_client::surface::AttachmentSurface;
+pub(super) use voytty_client::surface::AttachmentSurface;

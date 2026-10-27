@@ -30,12 +30,12 @@ def picker_storage(simulator: str) -> Path:
 
 @contextmanager
 def picker_export_directory(simulator: str):
-    directory = picker_storage(simulator) / ("zterm-export-" + uuid.uuid4().hex[:8])
+    directory = picker_storage(simulator) / ("voytty-export-" + uuid.uuid4().hex[:8])
     directory.mkdir(mode=0o700)
     try:
         yield {"exportDirectory": directory.name}
         exports = list(directory.iterdir())
-        if len(exports) != 1 or exports[0].name != "zterm-logs.jsonl":
+        if len(exports) != 1 or exports[0].name != "voytty-logs.jsonl":
             raise RuntimeError("diagnostic UI acceptance must save exactly one named export")
         lines = exports[0].read_text().splitlines()
         if not lines or json.loads(lines[0]).get("includes_debug") is not True or len(lines) < 2:
@@ -50,7 +50,7 @@ def picker_export_directory(simulator: str):
 @contextmanager
 def picker_files(simulator: str):
     storage = picker_storage(simulator)
-    prefix = "zterm-ui-" + uuid.uuid4().hex[:8]
+    prefix = "voytty-ui-" + uuid.uuid4().hex[:8]
     payload = bytes(index % 251 for index in range(12203))
     normal, oversized = storage / (prefix + ".txt"), storage / (prefix + "-large.bin")
     try:
@@ -77,7 +77,7 @@ class HostControl:
         self.resume_timer: threading.Timer | None = None
 
     def message(self, line: str):
-        match = re.fullmatch(r"ZTERM_UI_(SESSION|TAKEOVER|PAUSE|RESUME) (ios-keyboard-ui-[a-fA-F0-9]{8})", line)
+        match = re.fullmatch(r"VOYTTY_UI_(SESSION|TAKEOVER|PAUSE|RESUME) (ios-keyboard-ui-[a-fA-F0-9]{8})", line)
         if not match:
             return
         action, name = match.groups()

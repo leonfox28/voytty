@@ -13,11 +13,11 @@ use super::{
 };
 
 /// Fixed Android artifact name in the official release inventory.
-pub const APK_NAME: &str = "zterm-android-arm64.apk";
+pub const APK_NAME: &str = "voytty-android-arm64.apk";
 /// Fixed Android metadata name in the official release inventory.
-pub const METADATA_NAME: &str = "zterm-android.json";
+pub const METADATA_NAME: &str = "voytty-android.json";
 /// Official Android package (development variants cannot replace it).
-pub const PACKAGE: &str = "io.github.leonfox28.zterm";
+pub const PACKAGE: &str = "io.github.leonfox28.voytty";
 /// Reviewed Android signing certificate digest.
 pub const CERTIFICATE: &str = include_str!("../../../../release/android-certificate.sha256");
 
@@ -65,7 +65,7 @@ impl AndroidMetadata {
         }
         let value: Self = serde_json::from_slice(raw).map_err(|_| ReleaseError::ManifestSyntax)?;
         if value.schema != 1
-            || value.product != "zterm"
+            || value.product != "voytty"
             || value.version != manifest.version
             || value.source_commit != manifest.source_commit
             || value.package != PACKAGE
@@ -137,7 +137,7 @@ impl AndroidRelease {
         let inventory = parse_inventory(files.checksums)?;
         require_digest(
             &inventory,
-            "zterm-release.json",
+            "voytty-release.json",
             &sha256_hex(files.manifest),
         )?;
         // Bound before hashing or parsing even when called without the HTTP reader.
@@ -247,14 +247,14 @@ mod tests {
         fn new() -> Self {
             let apk = b"test-only APK bytes".to_vec();
             let manifest = serde_json::to_vec(&json!({
-                "schema":1,"product":"zterm","version":"0.1.35","tag":"v0.1.35",
+                "schema":1,"product":"voytty","version":"0.1.35","tag":"v0.1.35",
                 "classification":"stable","source_commit":"a".repeat(40),
                 "released_at":"2026-09-20T00:00:00Z","wire_major":2,"state_schema":1,
                 "bootstrap_schema":1,"public_key_id":super::super::RELEASE_KEY_ID,"artifacts":[]
             }))
             .expect("valid test fixture");
             let metadata = serde_json::to_vec(&json!({
-                "schema":1,"product":"zterm","version":"0.1.35","version_code":103599,
+                "schema":1,"product":"voytty","version":"0.1.35","version_code":103599,
                 "source_commit":"a".repeat(40),"package":PACKAGE,"abi":"arm64-v8a",
                 "min_sdk":26,"target_sdk":36,"certificate_sha256":CERTIFICATE.trim(),
                 "signed":true,"length":apk.len(),"sha256":sha256_hex(&apk)
@@ -269,7 +269,7 @@ mod tests {
         }
         fn inventory(&self) -> Vec<u8> {
             format!(
-                "{}  zterm-release.json\n{}  {METADATA_NAME}\n{}  {APK_NAME}\n",
+                "{}  voytty-release.json\n{}  {METADATA_NAME}\n{}  {APK_NAME}\n",
                 sha256_hex(&self.manifest),
                 sha256_hex(&self.metadata),
                 sha256_hex(&self.apk)
@@ -336,7 +336,7 @@ mod tests {
         );
         assert_eq!(
             candidate.apk_url(),
-            "https://github.com/leonfox28/zterm/releases/download/v0.1.35/zterm-android-arm64.apk"
+            "https://github.com/leonfox28/voytty/releases/download/v0.1.35/voytty-android-arm64.apk"
         );
     }
     #[test]

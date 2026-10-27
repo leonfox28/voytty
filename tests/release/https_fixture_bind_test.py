@@ -12,7 +12,7 @@ from unittest import mock
 
 
 fixture_path = pathlib.Path(__file__).with_name("https_fixture.py")
-spec = importlib.util.spec_from_file_location("zterm_https_fixture", fixture_path)
+spec = importlib.util.spec_from_file_location("voytty_https_fixture", fixture_path)
 if spec is None or spec.loader is None:
     raise SystemExit("unable to load HTTPS fixture module")
 fixture = importlib.util.module_from_spec(spec)

@@ -3,12 +3,12 @@ use crate::{
     error::ClientError,
     model::{ResolvedSessionTarget, SessionSummary, session_summary_from_wire},
 };
-use zterm_core::DomainErrorKind;
-use zterm_proto::{DecodedFrame, WireKind, v2};
+use voytty_core::DomainErrorKind;
+use voytty_proto::{DecodedFrame, WireKind, v2};
 
 /// Maps protocol validation failure to its stable domain category.
-pub fn protocol_error(error: zterm_proto::ProtocolError) -> ClientError {
-    use zterm_proto::ProtocolError;
+pub fn protocol_error(error: voytty_proto::ProtocolError) -> ClientError {
+    use voytty_proto::ProtocolError;
     let kind = match error {
         ProtocolError::WireMajorMismatch { .. } => DomainErrorKind::WireMajorMismatch,
         ProtocolError::UnknownKind(_) => DomainErrorKind::UnknownKind,

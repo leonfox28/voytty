@@ -24,34 +24,34 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(unix)]
-use zterm_core::{
+use voytty_core::{
     AttachmentPrincipal, AuthorizationSnapshot, AuthorizationStatus, DeviceAlias, DeviceId,
     DomainErrorKind, RelayHint, ResourceLimits, SessionSelector,
 };
 #[cfg(unix)]
-use zterm_daemon::authorization::AuthorizationRegistry;
+use voytty_daemon::authorization::AuthorizationRegistry;
 #[cfg(unix)]
-use zterm_daemon::bootstrap::bootstrap;
+use voytty_daemon::bootstrap::bootstrap;
 #[cfg(unix)]
-use zterm_daemon::config::{ValidatedInfrastructure, validate_setup_input};
+use voytty_daemon::config::{ValidatedInfrastructure, validate_setup_input};
 #[cfg(unix)]
-use zterm_daemon::device_directory::DeviceDirectory;
+use voytty_daemon::device_directory::DeviceDirectory;
 #[cfg(unix)]
-use zterm_daemon::local_ipc::{
+use voytty_daemon::local_ipc::{
     LocalClient, LocalDeviceClient, LocalIpcLimits, serve_local_with_limits,
 };
 #[cfg(unix)]
-use zterm_daemon::service::{
+use voytty_daemon::service::{
     DaemonService, DeviceLiveObservation, DeviceManagement, RemoteDeviceAccess,
 };
 #[cfg(unix)]
-use zterm_daemon::session::SessionService;
+use voytty_daemon::session::SessionService;
 #[cfg(unix)]
-use zterm_daemon::store::{RelayRouteCache, StateStore, StoreActor};
+use voytty_daemon::store::{RelayRouteCache, StateStore, StoreActor};
 #[cfg(unix)]
-use zterm_platform::local_unix::{DaemonLock, bind_daemon_socket, remove_own_socket};
+use voytty_platform::local_unix::{DaemonLock, bind_daemon_socket, remove_own_socket};
 #[cfg(unix)]
-use zterm_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
+use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
 
 #[cfg(unix)]
 use session_fixture::Fixture as SessionFixture;
@@ -85,7 +85,7 @@ impl RemoteDeviceAccess for RecordingRemoteAccess {
         _deadline: Instant,
     ) -> Pin<
         Box<
-            dyn Future<Output = Result<DeviceLiveObservation, zterm_daemon::error::DaemonError>>
+            dyn Future<Output = Result<DeviceLiveObservation, voytty_daemon::error::DaemonError>>
                 + Send
                 + 'a,
         >,
@@ -102,11 +102,11 @@ impl RemoteDeviceAccess for RecordingRemoteAccess {
         &'a self,
         device_id: DeviceId,
         _deadline: Instant,
-    ) -> Pin<Box<dyn Future<Output = Result<(), zterm_daemon::error::DaemonError>> + Send + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<(), voytty_daemon::error::DaemonError>> + Send + 'a>>
     {
         Box::pin(async move {
             if self.fail_close.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err(zterm_daemon::error::DaemonError::new(
+                return Err(voytty_daemon::error::DaemonError::new(
                     DomainErrorKind::TransportUnavailable,
                     "CLEANUP_SECRET_SENTINEL",
                 ));
@@ -123,7 +123,7 @@ struct Harness {
     state: TestState,
     lock: DaemonLock,
     actor: StoreActor,
-    server: tokio::task::JoinHandle<Result<(), zterm_daemon::error::DaemonError>>,
+    server: tokio::task::JoinHandle<Result<(), voytty_daemon::error::DaemonError>>,
     access: Arc<RecordingRemoteAccess>,
     registry: AuthorizationRegistry,
     sessions: SessionService,
@@ -587,7 +587,7 @@ async fn database_revoke_failure_changes_no_live_or_session_state() {
         harness.registry.snapshot(remote).expect("memory snapshot"),
         AuthorizationSnapshot {
             status: AuthorizationStatus::Authorized,
-            generation: zterm_core::AuthGeneration::new(1).expect("generation"),
+            generation: voytty_core::AuthGeneration::new(1).expect("generation"),
         }
     );
     assert!(harness.access.closed().is_empty());
@@ -627,7 +627,10 @@ async fn database_revoke_failure_changes_no_live_or_session_state() {
 }
 
 #[cfg(unix)]
-fn by_id(devices: &[zterm_core::DeviceSummary], device_id: DeviceId) -> &zterm_core::DeviceSummary {
+fn by_id(
+    devices: &[voytty_core::DeviceSummary],
+    device_id: DeviceId,
+) -> &voytty_core::DeviceSummary {
     devices
         .iter()
         .find(|device| device.device_id() == device_id)
@@ -704,7 +707,7 @@ async fn revoke_diagnostics_child() {
                 .expect("authorize");
         },
     );
-    let guard = zterm_daemon::diagnostics::install(&harness.state.paths);
+    let guard = voytty_daemon::diagnostics::install(&harness.state.paths);
     harness
         .access
         .fail_close
@@ -738,29 +741,29 @@ async fn revoke_diagnostics_child() {
     assert!(!text.contains("SENTINEL"));
     let records: Vec<_> = text
         .lines()
-        .map(|line| zterm_diagnostics::Record::decode(line.as_bytes()).expect("safe record"))
+        .map(|line| voytty_diagnostics::Record::decode(line.as_bytes()).expect("safe record"))
         .collect();
     let committed = records
         .iter()
-        .find(|r| r.event == zterm_diagnostics::Kind::AuthorizationRevoked)
+        .find(|r| r.event == voytty_diagnostics::Kind::AuthorizationRevoked)
         .expect("commit event");
     let cleanup = records
         .iter()
-        .find(|r| r.event == zterm_diagnostics::Kind::AuthorizationCleanup)
+        .find(|r| r.event == voytty_diagnostics::Kind::AuthorizationCleanup)
         .expect("cleanup outcome");
     assert_eq!(committed.fields.committed, Some(true));
     assert_eq!(cleanup.fields.committed, Some(true));
     assert_eq!(
         cleanup.fields.outcome,
-        Some(zterm_diagnostics::Outcome::PartialCompletion)
+        Some(voytty_diagnostics::Outcome::PartialCompletion)
     );
-    assert_eq!(cleanup.level, zterm_diagnostics::Level::Warn);
+    assert_eq!(cleanup.level, voytty_diagnostics::Level::Warn);
     assert_eq!(committed.fields.operation_id, cleanup.fields.operation_id);
     assert!(committed.sequence < cleanup.sequence);
     assert_eq!(
         records
             .iter()
-            .filter(|r| r.event == zterm_diagnostics::Kind::AuthorizationRevoked)
+            .filter(|r| r.event == voytty_diagnostics::Kind::AuthorizationRevoked)
             .count(),
         1
     );

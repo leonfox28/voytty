@@ -14,13 +14,13 @@ use std::{
     },
     time::Duration,
 };
-use zterm_core::terminal::{
+use voytty_core::terminal::{
     TerminalClipboardWrite, TerminalHistoryWindowQuery, TerminalNotification, TerminalSize,
     TerminalSurfaceDelta, TerminalSurfaceHistoryWindowResult, TerminalSurfaceSnapshot,
 };
 #[cfg(unix)]
-use zterm_core::terminal::{TerminalHostEffect, TerminalHostEffects};
-use zterm_core::{AttachmentId, DomainErrorKind, Revision, SessionId};
+use voytty_core::terminal::{TerminalHostEffect, TerminalHostEffects};
+use voytty_core::{AttachmentId, DomainErrorKind, Revision, SessionId};
 #[cfg(not(unix))]
 fn unsupported_command_platform() -> DaemonError {
     DaemonError::new(
@@ -611,7 +611,7 @@ impl TerminalViewCommandWriter {
     /// Publishes current controller color observations.
     pub async fn update_colors(
         &self,
-        profile: zterm_core::terminal::TerminalColorProfile,
+        profile: voytty_core::terminal::TerminalColorProfile,
     ) -> Result<(), DaemonError> {
         #[cfg(unix)]
         {
@@ -719,7 +719,7 @@ enum TerminalDriverCommand {
         bytes: Vec<u8>,
     },
     Colors {
-        profile: zterm_core::terminal::TerminalColorProfile,
+        profile: voytty_core::terminal::TerminalColorProfile,
     },
     SnapshotApplied {
         revision: Revision,
@@ -818,14 +818,14 @@ async fn run_terminal_driver(
     loop {
         if diagnostic_state != Some(last_state) {
             diagnostic_state = Some(last_state);
-            use zterm_diagnostics::{Event, Kind, Stage};
+            use voytty_diagnostics::{Event, Kind, Stage};
             let stage = match last_state {
                 TerminalViewTransportState::Preparing => Stage::Preparing,
                 TerminalViewTransportState::Synchronizing => Stage::Synchronizing,
                 TerminalViewTransportState::Active => Stage::Active,
                 TerminalViewTransportState::Reconnecting => Stage::Reconnecting,
             };
-            zterm_diagnostics::record(
+            voytty_diagnostics::record(
                 Event::new(Kind::ViewStateChanged)
                     .session(client.session_id())
                     .attachment(client.attachment_id())
@@ -1213,17 +1213,19 @@ fn terminal_event_from_local(
                     "local terminal received remote connection status",
                 ));
             }
-            let path = match zterm_proto::v2::TerminalConnectionPath::try_from(status.path)
+            let path = match voytty_proto::v2::TerminalConnectionPath::try_from(status.path)
                 .map_err(|_| terminal_protocol_error("unknown terminal connection path"))?
             {
-                zterm_proto::v2::TerminalConnectionPath::Unknown => {
+                voytty_proto::v2::TerminalConnectionPath::Unknown => {
                     TerminalViewConnectionPath::Unknown
                 }
-                zterm_proto::v2::TerminalConnectionPath::Direct => {
+                voytty_proto::v2::TerminalConnectionPath::Direct => {
                     TerminalViewConnectionPath::Direct
                 }
-                zterm_proto::v2::TerminalConnectionPath::Relay => TerminalViewConnectionPath::Relay,
-                zterm_proto::v2::TerminalConnectionPath::Unspecified => {
+                voytty_proto::v2::TerminalConnectionPath::Relay => {
+                    TerminalViewConnectionPath::Relay
+                }
+                voytty_proto::v2::TerminalConnectionPath::Unspecified => {
                     return Err(terminal_protocol_error(
                         "terminal connection path was unspecified",
                     ));
@@ -1243,22 +1245,22 @@ fn terminal_event_from_local(
             generation: lost.generation,
         })),
         LocalAttachmentEvent::SessionEnded(ended) => {
-            let reason = match zterm_proto::v2::TerminalSessionEndReason::try_from(ended.reason)
+            let reason = match voytty_proto::v2::TerminalSessionEndReason::try_from(ended.reason)
                 .map_err(|_| terminal_protocol_error("unknown terminal session end reason"))?
             {
-                zterm_proto::v2::TerminalSessionEndReason::NaturalExit => {
+                voytty_proto::v2::TerminalSessionEndReason::NaturalExit => {
                     TerminalViewEndReason::NaturalExit
                 }
-                zterm_proto::v2::TerminalSessionEndReason::ExplicitClose => {
+                voytty_proto::v2::TerminalSessionEndReason::ExplicitClose => {
                     TerminalViewEndReason::ExplicitClose
                 }
-                zterm_proto::v2::TerminalSessionEndReason::DaemonStop => {
+                voytty_proto::v2::TerminalSessionEndReason::DaemonStop => {
                     TerminalViewEndReason::DaemonStop
                 }
-                zterm_proto::v2::TerminalSessionEndReason::DriverFailure => {
+                voytty_proto::v2::TerminalSessionEndReason::DriverFailure => {
                     TerminalViewEndReason::DriverFailure
                 }
-                zterm_proto::v2::TerminalSessionEndReason::Unspecified => {
+                voytty_proto::v2::TerminalSessionEndReason::Unspecified => {
                     return Err(terminal_protocol_error(
                         "terminal session end reason was unspecified",
                     ));
@@ -1281,20 +1283,20 @@ fn terminal_event_from_local(
 fn terminal_transport_state_from_wire(
     value: i32,
 ) -> Result<TerminalViewTransportState, DaemonError> {
-    match zterm_proto::v2::TerminalTransportState::try_from(value)
+    match voytty_proto::v2::TerminalTransportState::try_from(value)
         .map_err(|_| terminal_protocol_error("unknown terminal transport state"))?
     {
-        zterm_proto::v2::TerminalTransportState::Preparing => {
+        voytty_proto::v2::TerminalTransportState::Preparing => {
             Ok(TerminalViewTransportState::Preparing)
         }
-        zterm_proto::v2::TerminalTransportState::Synchronizing => {
+        voytty_proto::v2::TerminalTransportState::Synchronizing => {
             Ok(TerminalViewTransportState::Synchronizing)
         }
-        zterm_proto::v2::TerminalTransportState::Active => Ok(TerminalViewTransportState::Active),
-        zterm_proto::v2::TerminalTransportState::Reconnecting => {
+        voytty_proto::v2::TerminalTransportState::Active => Ok(TerminalViewTransportState::Active),
+        voytty_proto::v2::TerminalTransportState::Reconnecting => {
             Ok(TerminalViewTransportState::Reconnecting)
         }
-        zterm_proto::v2::TerminalTransportState::Unspecified => Err(terminal_protocol_error(
+        voytty_proto::v2::TerminalTransportState::Unspecified => Err(terminal_protocol_error(
             "terminal transport state was unspecified",
         )),
     }
@@ -1315,9 +1317,9 @@ mod tests {
     #[cfg(unix)]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     #[cfg(unix)]
-    use zterm_core::DeviceId;
+    use voytty_core::DeviceId;
     #[cfg(unix)]
-    use zterm_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
+    use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
 
     #[cfg(unix)]
     #[tokio::test]
@@ -1341,14 +1343,14 @@ mod tests {
             .expect("capture current driver origin");
         assert_eq!(origin.target, target);
         let stale = crate::upload::UploadOrigin {
-            binding: zterm_core::upload::UploadBinding {
+            binding: voytty_core::upload::UploadBinding {
                 attachment_id: AttachmentId::from_array([0xe4; 16]),
                 ..origin.binding
             },
             ..origin
         };
         let error = writer
-            .write_upload_input(stale, b"/tmp/zterm-1/file.png".to_vec())
+            .write_upload_input(stale, b"/tmp/voytty-1/file.png".to_vec())
             .await
             .expect_err("retired attachment cannot receive upload input");
         assert_eq!(error.kind(), DomainErrorKind::LeaseLost);
@@ -2245,11 +2247,11 @@ mod tests {
             ))
         ));
         let query = TerminalHistoryWindowQuery {
-            anchor: zterm_core::terminal::TerminalHistoryWindowAnchor {
+            anchor: voytty_core::terminal::TerminalHistoryWindowAnchor {
                 epoch: Revision::new(1),
                 revision: Revision::new(2),
                 max_offset_from_bottom: 12,
-                viewport: zterm_core::terminal::TerminalSize::new(4, 10),
+                viewport: voytty_core::terminal::TerminalSize::new(4, 10),
             },
             target_offset_from_bottom: 0,
             older_margin_rows: 8,
@@ -2661,23 +2663,23 @@ mod tests {
 
     #[cfg(unix)]
     fn receipt_test_delta(attachment_id: AttachmentId, from: u64, frame_sequence: u64) -> Vec<u8> {
-        let delta = zterm_core::terminal::TerminalSurfaceDelta {
+        let delta = voytty_core::terminal::TerminalSurfaceDelta {
             application_title: String::new(),
             colors: Default::default(),
             from_revision: Revision::new(from),
             to_revision: Revision::new(from + 1),
             size: TerminalSize::new(24, 80),
-            active_screen: zterm_core::terminal::ActiveScreen::Main,
+            active_screen: voytty_core::terminal::ActiveScreen::Main,
             row_patches: Vec::new(),
-            cursor: zterm_core::terminal::TerminalCursor {
+            cursor: voytty_core::terminal::TerminalCursor {
                 presentation: Default::default(),
                 row: 0,
                 column: 0,
                 visible: true,
                 style: Default::default(),
             },
-            modes: zterm_core::terminal::TerminalModes::default(),
-            scroll_metrics: Some(zterm_core::terminal::TerminalScrollMetrics {
+            modes: voytty_core::terminal::TerminalModes::default(),
+            scroll_metrics: Some(voytty_core::terminal::TerminalScrollMetrics {
                 epoch: Revision::ZERO,
                 revision: Revision::new(from + 1),
                 offset_from_bottom: 0,
@@ -2685,7 +2687,7 @@ mod tests {
                 viewport_rows: 24,
             }),
         };
-        let mut message = zterm_proto::terminal_surface_delta_message(attachment_id, delta);
+        let mut message = voytty_proto::terminal_surface_delta_message(attachment_id, delta);
         message.frame_sequence = frame_sequence;
         encode_message(WireKind::TerminalSemanticDelta, 0, 0, &message).expect("bounded delta")
     }

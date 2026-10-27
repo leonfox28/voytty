@@ -22,14 +22,14 @@ local environment uses Xcode 27.1 and an iOS 27.0 simulator.
 ```sh
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim --toolchain 1.98.0
 just ios-project
-open apps/ios/Zterm.xcodeproj
+open apps/ios/Voytty.xcodeproj
 just ios-build
 just ios-device-build
 xcrun simctl list devices available
 just ios-check <simulator-uuid>
 ```
 
-Select the **Zterm** scheme in Xcode. Simulator builds use ad-hoc signing, which
+Select the **Voytty** scheme in Xcode. Simulator builds use ad-hoc signing, which
 also supplies the application identity required by Keychain. Do not disable
 signing for simulator runtime tests. `ios-device-build` cross-builds the device
 app without signing; it does not install an app or prove phone behavior. To run
@@ -40,13 +40,13 @@ For interactive review, keep the device window in the foreground. Command-line
 builds, XCTest and XCUITest may also run headlessly, including while the Mac is
 locked; record runtime checks separately from visual/manual acceptance. Xcode 27 displays
 simulators in **Xcode → Open Developer Tool → Device Hub**, rather than the old
-Simulator app. Select the booted iPhone and open **zterm Dev**. Tests disable
+Simulator app. Select the booted iPhone and open **voytty Dev**. Tests disable
 parallel device cloning so the explicit destination is also the visible device.
 **Device → Keyboard → Toggle Software Keyboard** shows the on-screen keyboard;
 use its globe button to switch between English and Chinese Pinyin.
 
-Debug uses `io.github.leonfox28.zterm.dev` / **zterm Dev**; release uses
-`io.github.leonfox28.zterm` / **zterm**. Their identities and saved hosts are
+Debug uses `io.github.leonfox28.voytty.dev` / **voytty Dev**; release uses
+`io.github.leonfox28.voytty` / **voytty**. Their identities and saved hosts are
 independent. Product version comes from the root Cargo workspace; build number 1
 is only a development placeholder until an iOS distribution workflow is added.
 
@@ -60,7 +60,7 @@ libraries from workspace/Android builds that enable different Cargo features.
 
 ## Use
 
-1. On the host, run `zterm pair create`.
+1. On the host, run `voytty pair create`.
 2. Tap **添加主机** and scan the pairing QR, choose an image through the system
    photo picker, or use **手动输入 → 配对并连接**. When an image contains multiple
    valid pairing codes, choose the device by name and ID suffix. Saving a pairing
@@ -241,12 +241,12 @@ acceptance; simulator tests do not establish these behaviors.
 SwiftUI owns navigation; UIKit owns the terminal canvas, measured size and input.
 The app declares a single window scene: one application model owns the attachment,
 viewport and input, so iPad multiwindow is disabled rather than letting windows
-share and resize the same terminal. The shared `zterm-client` and UniFFI bridge own protocol, transport, synchronization,
+share and resize the same terminal. The shared `voytty-client` and UniFFI bridge own protocol, transport, synchronization,
 history and terminal input encoding. No shell, PTY or ANSI parser runs on iOS.
 
 For this initial slice, both mobile apps use `crates/android` (its historical
 package name), without copying its protocol/reducer into a second crate. iOS
-generates the **ZtermNative** Swift API and links the same library statically;
+generates the **VoyttyNative** Swift API and links the same library statically;
 Android keeps its existing Kotlin API and dynamic library. The target-specific
 controller label identifies iOS to the host. Android update APIs in the shared
 bridge are not used by the iOS UI.
@@ -289,8 +289,8 @@ Build/run the ordinary simulator checks before issuing the short-lived ticket,
 so a first cold build does not consume its lifetime.
 
 ```sh
-cargo build --locked -p zterm-cli --example presentation_fixture
-# Supply a new, short /tmp path; never use ~/.zterm or an existing host.
+cargo build --locked -p voytty-cli --example presentation_fixture
+# Supply a new, short /tmp path; never use ~/.voytty or an existing host.
 target/debug/examples/presentation_fixture init /tmp/ios-acceptance-host
 target/debug/examples/presentation_fixture start /tmp/ios-acceptance-host
 # In another terminal, after the daemon is ready:
@@ -362,7 +362,7 @@ full feature parity.
   assertions remain unchanged; no automatic test retries or probe replays were added.
 - Dependency policy passes after upgrading `rustls-webpki` to 0.103.16 and both
   `webpki-root-certs` and `webpki-roots` to 1.0.10 in the applicable lockfiles.
-  The [Askama upstream backport](../vendor/askama_derive/ZTERM.md) removes
+  The [Askama upstream backport](../vendor/askama_derive/VOYTTY.md) removes
   `basic-toml`. No advisory exceptions were added. Android, device compilation
   and both simulator test profiles were rerun with these dependencies.
 
@@ -586,7 +586,7 @@ UI acceptance now requires the disposable host root as well as host/restore
 Session IDs. The recipe validates its marker and only takes over or cleans up
 random Sessions created by this run. File checks create two uniquely named
 Files-provider documents and remove them afterward. Photo checks grant the
-**test runner**, not zterm, Photos access to create/delete one test asset; the
+**test runner**, not voytty, Photos access to create/delete one test asset; the
 production picker still requires no broad photo-library permission. All iOS
 recipes hold a build lock to prevent overlapping builds from replacing the
 generated test resources.

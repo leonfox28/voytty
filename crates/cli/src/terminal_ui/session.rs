@@ -1,12 +1,12 @@
 use super::*;
-use zterm_daemon::client::view::{TerminalViewCommandWriter, TerminalViewEventReader};
+use voytty_daemon::client::view::{TerminalViewCommandWriter, TerminalViewEventReader};
 
 /// One owner for attachment semantics, presentation, navigation, and input fences.
 /// The presenter commits physical output; surface and viewport retain their own
 /// validated semantic and history states at that successful presentation boundary.
 pub(super) struct TerminalUiSession {
     pub(super) upload: Option<upload::DesktopUpload>,
-    pub(super) upload_connector: Arc<dyn zterm_client::upload::UploadConnector>,
+    pub(super) upload_connector: Arc<dyn voytty_client::upload::UploadConnector>,
     pub(super) progress: ProgressObserver,
     pub(super) session_id: SessionId,
     pub(super) events: TerminalViewEventReader,
@@ -54,7 +54,7 @@ impl TerminalUiSession {
         resize_signal: &mut Signal,
         cancellation_receiver: &mut watch::Receiver<Option<TerminalSignalCancellation>>,
     ) -> Result<TerminalCompletion, CliError> {
-        let mut upload_tick = tokio::time::interval(zterm_core::upload::UPLOAD_PROGRESS_INTERVAL);
+        let mut upload_tick = tokio::time::interval(voytty_core::upload::UPLOAD_PROGRESS_INTERVAL);
         upload_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         'terminal: loop {
             self.host_colors
@@ -225,7 +225,7 @@ impl TerminalUiSession {
                                     self.prefix.route(
                                         host_event, Instant::now(),
                                         self.presenter.presented_keyboard_flags().contains(
-                                            zterm_core::terminal::TerminalKeyboardFlags::REPORT_EVENT_TYPES,
+                                            voytty_core::terminal::TerminalKeyboardFlags::REPORT_EVENT_TYPES,
                                         ),
                                     )?
                                 };
@@ -820,7 +820,7 @@ impl TerminalUiSession {
             };
             let result = match result {
                 Ok(file) => {
-                    let bytes = zterm_client::upload::paste_bytes(&file, &self.surface.modes());
+                    let bytes = voytty_client::upload::paste_bytes(&file, &self.surface.modes());
                     self.writer
                         .write_upload_input(operation.origin, bytes)
                         .await

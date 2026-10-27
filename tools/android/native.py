@@ -25,26 +25,26 @@ def main() -> None:
     ndk = args.sdk / "ndk" / args.ndk_version
     if not (ndk / "source.properties").is_file():
         parser.error(f"install Android NDK {args.ndk_version} with the Android SDK manager")
-    run("cargo", "+1.98.0", "build", "--locked", "-p", "zterm-android", "-p", "zterm-uniffi-bindgen")
+    run("cargo", "+1.98.0", "build", "--locked", "-p", "voytty-android", "-p", "voytty-uniffi-bindgen")
     target = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")).resolve()
-    library = target / "debug" / ("libzterm_android.dylib" if sys.platform == "darwin" else "libzterm_android.so")
+    library = target / "debug" / ("libvoytty_android.dylib" if sys.platform == "darwin" else "libvoytty_android.so")
     args.kotlin_out.mkdir(parents=True, exist_ok=True)
-    run(str(target / "debug" / "zterm-uniffi-bindgen"), "generate", str(library),
+    run(str(target / "debug" / "voytty-uniffi-bindgen"), "generate", str(library),
         "--language", "kotlin", "--config", str(ROOT / "crates/android/uniffi.toml"),
         "--out-dir", str(args.kotlin_out), "--no-format")
     env = os.environ.copy()
     env["ANDROID_NDK_HOME"] = str(ndk)
     env["ANDROID_HOME"] = str(args.sdk)
     run("cargo", "+1.98.0", "ndk", "--target", "arm64-v8a", "--platform", "26",
-        "build", "--locked", "--release", "-p", "zterm-android", env=env)
+        "build", "--locked", "--release", "-p", "voytty-android", env=env)
     # cargo-ndk's output copy can pick up stale dependency cdylibs in Cargo's
     # target directory. Package only this bridge; its Rust dependencies are static.
     destination = args.jni_out / "arm64-v8a"
     destination.mkdir(parents=True, exist_ok=True)
     for stale in destination.glob("*.so"):
-        if stale.name != "libzterm_android.so":
+        if stale.name != "libvoytty_android.so":
             stale.unlink()
-    shutil.copy2(target / "aarch64-linux-android/release/libzterm_android.so", destination / "libzterm_android.so")
+    shutil.copy2(target / "aarch64-linux-android/release/libvoytty_android.so", destination / "libvoytty_android.so")
 
 
 if __name__ == "__main__":

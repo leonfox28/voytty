@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use zterm_core::terminal::{TerminalNotification, TerminalNotificationQueue};
+use voytty_core::terminal::{TerminalNotification, TerminalNotificationQueue};
 
 use crate::NativeError;
 

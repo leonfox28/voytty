@@ -2,7 +2,7 @@
 
 ## 中文说明
 
-zterm 采用“源码公开，非商业用途免费；商业用途另行授权”的模式，
+voytty 采用“源码公开，非商业用途免费；商业用途另行授权”的模式，
 不是 OSI 定义的开源软件。
 
 - 自有源码适用 [PolyForm Noncommercial 1.0.0](../LICENSE)。非商业使用、
@@ -13,7 +13,7 @@ zterm 采用“源码公开，非商业用途免费；商业用途另行授权�
   授权包含官方客户端及配套 CLI/daemon，允许该用户在有权使用和管理的工作电脑、
   服务器上部署服务端，通过 iPhone/iPad 开展开发、运维等内部工作，无需另购服务端授权。
 - 单个用户的授权不等于整个公司所有员工均获授权。出售修改版、转售软件、出租或
-  将 zterm 作为收费托管服务对外提供，需要另行书面授权。
+  将 voytty 作为收费托管服务对外提供，需要另行书面授权。
 - 取消续订后，已支付期间的权利继续有效；到期后的商业使用需要其他有效授权。
   买断所含功能的永久使用权不因改用订阅收费而消失。
 - 第三方代码、字体和 vendor 包保留原许可。这些规则不限制它们独立授予的权利。
@@ -24,12 +24,12 @@ zterm 采用“源码公开，非商业用途免费；商业用途另行授权�
 ## Distribution and implementation
 
 The root LICENSE is the unmodified official PolyForm Noncommercial 1.0.0
-text. NOTICE identifies zterm's copyright and the scope of the project grant.
+text. NOTICE identifies voytty's copyright and the scope of the project grant.
 The workspace package metadata declares `PolyForm-Noncommercial-1.0.0`.
 Commercial grants are conditional on an actual entitlement and are not
 represented as an unconditional SPDX `OR` alternative.
 
-The CLI embeds the project notice and both license texts in `zterm --license`,
+The CLI embeds the project notice and both license texts in `voytty --license`,
 which runs before configuration, diagnostics, or daemon startup. This keeps
 the existing single-binary archive and installer contract. Android and iOS
 bundle the same texts and expose them under Licenses. `just licensing-sync`

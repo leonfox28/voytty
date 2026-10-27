@@ -6,7 +6,7 @@ Phase One endpoints currently use Iroh's official n0 production infrastructure
 by default. This document covers the separately operable, optional self-hosted
 Relay; it is not silently added to that default profile.
 
-zterm does not implement or fork a Relay data plane. Its optional image
+voytty does not implement or fork a Relay data plane. Its optional image
 downloads the official Iroh 1.0.3 Linux musl artifact, selects it from
 BuildKit's `TARGETARCH`, verifies the upstream SHA-256, and copies the binary
 and Alpine CA bundle into a shell-free `scratch` runtime. The process runs as
@@ -25,7 +25,7 @@ The checksum is verified at the artifact-download boundary. Deployment does
 not add another image digest parser; Docker and GHCR already transfer images by
 content address.
 
-The Relay forwards zterm's future end-to-end encrypted packets and stores no
+The Relay forwards voytty's future end-to-end encrypted packets and stores no
 terminal state, device key, session, or business record. Like any network
 forwarder, it can still observe connection metadata such as source addresses,
 endpoint identifiers, timing, and encrypted traffic sizes.
@@ -38,7 +38,7 @@ There is one supported configuration for the optional self-hosted Relay:
 - Iroh serves plain HTTP inside the container on TCP 38451;
 - Docker publishes that listener only as `127.0.0.1:38451`;
 - QAD and metrics are disabled;
-- Relay access is `everyone`, with no zterm-specific limits;
+- Relay access is `everyone`, with no voytty-specific limits;
 - Docker's rotating and compressed `local` log driver bounds logs.
 
 The complete deployment consists of only:
@@ -46,7 +46,7 @@ The complete deployment consists of only:
 - `deploy/relay/compose.yaml`;
 - `deploy/relay/relay.toml`.
 
-Compose project and container are both named `zterm-relay`. The image supplies
+Compose project and container are both named `voytty-relay`. The image supplies
 its own default `--config-path /etc/iroh-relay/relay.toml` command, so Compose
 does not repeat it. There is no server-side build, `.env` image indirection,
 container healthcheck, custom probe, metrics port, certificate volume, monitor,
@@ -85,29 +85,35 @@ exercises are not part of normal release acceptance.
 
 ## Publication status
 
-Publication is paused. Native zterm releases do not build or publish a companion
+Publication is paused. Native voytty releases do not build or publish a companion
 GHCR image, and the automated/manual image publisher has been removed. Restore
 publication only when a future task explicitly requests it.
 
 The existing `ghcr.io/leonfox28/zterm-relay` images and deployed infrastructure
-remain historical assets; their `latest` tag no longer tracks new native zterm
+remain historical assets; their `latest` tag no longer tracks new native voytty
 versions. Existing Compose deployments and isolated relay build/runtime tests
 retain their current behavior. Historical production/development publication
 evidence is recorded in [Phase Zero verification](phase-zero-verification.md).
+
+The source bundle now names new Compose projects/containers `voytty-relay`, but
+pulls the existing `zterm-relay` image. A repository rename does not publish a
+new GHCR package or modify running servers. Existing deployments retain their
+old project/container names and paths; do not run the renamed Compose project
+beside an existing instance on the same port.
 
 ## Manual deployment and updates
 
 The default 1Panel Compose directory is:
 
 ```text
-/opt/1panel/docker/compose/zterm-relay
+/opt/1panel/docker/compose/voytty-relay
 ```
 
 Place the reviewed `compose.yaml` and `relay.toml` there. The normal install and
 every later update use the same two commands:
 
 ```bash
-cd /opt/1panel/docker/compose/zterm-relay
+cd /opt/1panel/docker/compose/voytty-relay
 docker compose pull
 docker compose up -d
 ```
@@ -126,7 +132,7 @@ sh tests/relay/public-handshake.sh https://relay.zenithconsulting.cn
 ```
 
 Also inspect the host once to confirm that only loopback TCP 38451 is published,
-the container is named `zterm-relay`, its configured image is
+the container is named `voytty-relay`, its configured image is
 `ghcr.io/leonfox28/zterm-relay:latest`, and its log driver is `local`. Stop after
 those checks pass; do not restart or switch images merely to repeat the same
 evidence.
@@ -142,7 +148,7 @@ query data, the long-lived HTTP/1.1 WebSocket upgrade on `/relay`, and Iroh's
 authentication headers. Equivalent Nginx/OpenResty semantics are:
 
 ```nginx
-map $http_upgrade $zterm_connection_upgrade {
+map $http_upgrade $voytty_connection_upgrade {
     default upgrade;
     ''      close;
 }
@@ -152,7 +158,7 @@ location / {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection $zterm_connection_upgrade;
+    proxy_set_header Connection $voytty_connection_upgrade;
     proxy_set_header Sec-WebSocket-Protocol $http_sec_websocket_protocol;
     proxy_set_header X-Iroh-Relay-Client-Auth-V1 $http_x_iroh_relay_client_auth_v1;
     proxy_buffering off;

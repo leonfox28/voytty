@@ -1,4 +1,4 @@
-[crates.zterm_android.bindings.kotlin]
-package_name = "io.github.leonfox28.zterm.nativebridge"
-cdylib_name = "zterm_android"
+[crates.voytty_android.bindings.kotlin]
+package_name = "io.github.leonfox28.voytty.nativebridge"
+cdylib_name = "voytty_android"
 android = true

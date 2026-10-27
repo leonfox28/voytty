@@ -11,15 +11,15 @@ mod state_fixture;
 use std::sync::Arc;
 
 #[cfg(unix)]
-use zterm_daemon::bootstrap::{bootstrap, validate_committed_setup};
+use voytty_daemon::bootstrap::{bootstrap, validate_committed_setup};
 #[cfg(unix)]
-use zterm_daemon::config::{ValidatedInfrastructure, validate_setup_input};
+use voytty_daemon::config::{ValidatedInfrastructure, validate_setup_input};
 #[cfg(unix)]
-use zterm_daemon::lifecycle::ensure_daemon_with;
+use voytty_daemon::lifecycle::ensure_daemon_with;
 #[cfg(unix)]
-use zterm_daemon::local_ipc::LocalClient;
+use voytty_daemon::local_ipc::LocalClient;
 #[cfg(unix)]
-use zterm_platform::local_unix::DaemonLock;
+use voytty_platform::local_unix::DaemonLock;
 
 #[cfg(unix)]
 use state_fixture::TestState;
@@ -78,7 +78,7 @@ async fn startup_waits_for_a_transient_lock_observation() {
     drop(DaemonLock::try_acquire(&state.paths).expect("create lifetime lock"));
     // inspect_existing_lock briefly owns this exact file lock. Retain that
     // observation across a controlled scheduler delay, without a daemon owner.
-    let observation = zterm_platform::user_state::FileLock::try_acquire_existing(
+    let observation = voytty_platform::user_state::FileLock::try_acquire_existing(
         state.paths.daemon_lock(),
         state.paths.uid(),
     )
@@ -89,7 +89,7 @@ async fn startup_waits_for_a_transient_lock_observation() {
     let paths = state.paths.clone();
     let child = std::thread::spawn(move || {
         child_starting.wait();
-        zterm_daemon::lifecycle::run_local_only_daemon_for_test(&paths)
+        voytty_daemon::lifecycle::run_local_only_daemon_for_test(&paths)
     });
     starting.wait();
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -174,7 +174,7 @@ async fn singleflight_launch() {
 }
 
 #[cfg(unix)]
-async fn wait_for_stop(paths: &zterm_platform::user_state::UserPaths) {
+async fn wait_for_stop(paths: &voytty_platform::user_state::UserPaths) {
     let started = std::time::Instant::now();
     loop {
         if !paths.socket().exists()

@@ -10,15 +10,15 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
-use zterm_client::progress::ProgressObserver;
+use voytty_client::progress::ProgressObserver;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 #[cfg(test)]
-use zterm_client::model::session_summary_from_wire;
-use zterm_core::{DeviceId, DomainErrorKind};
-use zterm_proto::DecodedFrame;
+use voytty_client::model::session_summary_from_wire;
+use voytty_core::{DeviceId, DomainErrorKind};
+use voytty_proto::DecodedFrame;
 #[cfg(test)]
-use zterm_proto::v2;
+use voytty_proto::v2;
 
 use crate::connection_broker::{ConnectionBroker, ConnectionDemand, StreamPurpose};
 use crate::device_directory::{DeviceDirectory, ResolvedSessionTarget};
@@ -182,15 +182,15 @@ impl RemoteSessionService {
 }
 
 #[cfg(test)]
-use zterm_client::remote_unary::{
+use voytty_client::remote_unary::{
     REMOTE_SESSION_FAILURE_DETAIL, decode_exact_frame, decode_session_service_error,
     read_exact_response,
 };
-use zterm_client::remote_unary::{
+use voytty_client::remote_unary::{
     RemoteAttemptError, RemoteUnaryClient, RemoteUnaryDemand, RemoteUnaryTransport,
     RequestAcknowledgement, RequestContract, read_acknowledged_response,
 };
-pub(crate) use zterm_client::remote_unary::{
+pub(crate) use voytty_client::remote_unary::{
     SessionUnaryResponseStatus, validate_session_unary_response,
 };
 
@@ -310,7 +310,7 @@ where
         })?
 }
 
-use zterm_client::remote_unary::timeout_until;
+use voytty_client::remote_unary::timeout_until;
 
 async fn write_local_attachment_error_best_effort<Writer>(
     writer: &mut Writer,
@@ -342,17 +342,17 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, MutexGuard};
     use std::time::Duration;
-    use zterm_core::SessionName;
+    use voytty_core::SessionName;
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
     use tokio::sync::{mpsc, oneshot};
-    use zterm_core::{
+    use voytty_core::{
         AttachmentPrincipal, AuthGeneration, AuthorizationStatus, DaemonIncarnation,
         DeviceDisplayName, OperationId, OperationLease, ResourceLimits, SessionId,
     };
-    use zterm_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
-    use zterm_platform::user_state::UserPaths;
-    use zterm_proto::{WireKind, encode_message};
+    use voytty_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
+    use voytty_platform::user_state::UserPaths;
+    use voytty_proto::{WireKind, encode_message};
 
     use super::*;
     use crate::authorization::AuthorizationRegistry;
@@ -665,7 +665,7 @@ mod tests {
         let paths = UserPaths::for_test(
             nix::unistd::Uid::effective().as_raw(),
             home.clone(),
-            home.join(".zterm"),
+            home.join(".voytty"),
             temporary.path().join("run"),
         );
         paths
@@ -1463,7 +1463,7 @@ mod tests {
             request_id,
             1_000,
             &v2::SessionCreateRequest {
-                base_colors: Some(zterm_core::terminal::TerminalColorProfile::default().into()),
+                base_colors: Some(voytty_core::terminal::TerminalColorProfile::default().into()),
 
                 operation_id: Some(
                     OperationId {
@@ -1495,13 +1495,13 @@ mod tests {
             request_id,
             5_000,
             &v2::SessionCreateRequest {
-                base_colors: Some(zterm_core::terminal::TerminalColorProfile::default().into()),
+                base_colors: Some(voytty_core::terminal::TerminalColorProfile::default().into()),
 
                 operation_id: Some(operation_id.into()),
                 target: Some(wire_target(target)),
                 name: name.to_owned(),
                 working_directory: String::new(),
-                viewport: Some(zterm_core::terminal::TerminalSize::new(24, 80).into()),
+                viewport: Some(voytty_core::terminal::TerminalSize::new(24, 80).into()),
             },
         )
         .expect("bounded committed create request")

@@ -2,12 +2,12 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use zterm_core::terminal::{
+use voytty_core::terminal::{
     MAX_SIDE_EVENTS_PER_UPDATE, MAX_TERMINAL_CLIPBOARD_BYTES, RejectedEffect, TerminalColor,
     TerminalHostEffect, TerminalHostEffects, TerminalKeyboardFlags, TerminalSideEvent,
     TerminalSize, UnsupportedSequenceKind,
 };
-use zterm_terminal::{
+use voytty_terminal::{
     MAX_CELL_TEXT_BYTES, MAX_COMBINING_BYTES_PER_SESSION, MAX_COMBINING_CELLS_PER_SESSION,
     MAX_CONTROL_SEQUENCE_BYTES, MAX_CONTROL_STRING_BYTES, MAX_OSC52_BASE64_BYTES,
     MAX_REPLY_BYTES_PER_UPDATE, TerminalError, TerminalModel,
@@ -539,7 +539,7 @@ fn kitty_keyboard_stack_is_strict_projected_and_queryable() {
     model.ingest(b"\x1b[=1;3u").expect("difference flags");
     assert_eq!(model.snapshot().surface.modes.keyboard_flags.bits(), 8);
     let delta = model.delta_or_resync(&checkpoint);
-    let zterm_core::terminal::TerminalSurfaceDeltaResult::Delta(delta) = delta else {
+    let voytty_core::terminal::TerminalSurfaceDeltaResult::Delta(delta) = delta else {
         panic!("keyboard-only change remains a semantic delta");
     };
     assert_eq!(delta.modes.keyboard_flags.bits(), 8);

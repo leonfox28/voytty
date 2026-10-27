@@ -182,7 +182,7 @@ impl Recorder {
         });
         let worker = shared.clone();
         std::thread::Builder::new()
-            .name("zterm-diagnostics".into())
+            .name("voytty-diagnostics".into())
             .spawn(move || run(worker, [key_receiver, detail_receiver], sink))?;
         Ok(Self(Some(Arc::new(Owner(shared)))))
     }

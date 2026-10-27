@@ -6,15 +6,15 @@ use std::path::Path;
 #[cfg(unix)]
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use zterm_client::progress::{ProgressHistory, ProgressObserver};
-use zterm_core::connection_progress::ConnectionStage;
+use voytty_client::progress::{ProgressHistory, ProgressObserver};
+use voytty_core::connection_progress::ConnectionStage;
 
-use zterm_core::terminal::TerminalSize;
-use zterm_core::{
+use voytty_core::terminal::TerminalSize;
+use voytty_core::{
     AuthGeneration, AuthorizationStatus, DeviceAlias, DeviceId, DeviceSummary, DomainErrorKind,
     Revision, SessionId, SessionName, SessionSelector,
 };
-use zterm_platform::user_state::UserPaths;
+use voytty_platform::user_state::UserPaths;
 
 use crate::bootstrap::BootstrapResult;
 #[cfg(unix)]
@@ -309,7 +309,7 @@ fn require_update_daemon_compatible(
     wire_major: u32,
     state_schema: u32,
 ) -> Result<(), DaemonError> {
-    let build = zterm_core::BuildIdentity::current();
+    let build = voytty_core::BuildIdentity::current();
     if version != build.version
         || wire_major != build.wire_major
         || state_schema != build.state_schema
@@ -348,7 +348,7 @@ async fn finish_update_startup<
     F: std::future::Future<Output = Result<DaemonReadiness, DaemonError>>,
 >(
     observed: Result<ObservedState, DaemonError>,
-    installed: &zterm_core::release::ReleaseManifest,
+    installed: &voytty_core::release::ReleaseManifest,
     progress: &mut impl FnMut(LifecycleStage),
     ensure: impl FnOnce() -> F,
 ) -> Result<bool, DaemonError> {
@@ -373,7 +373,7 @@ async fn finish_update_startup<
     }
     .await;
     result.map_err(|error| DaemonError::new(error.kind(), format!(
-        "Updated zterm to {}, but the daemon could not start: {}. Run zterm daemon restart to try again.",
+        "Updated voytty to {}, but the daemon could not start: {}. Run voytty daemon restart to try again.",
         installed.version, error)))
 }
 
@@ -433,7 +433,7 @@ impl fmt::Debug for LocalRuntime {
 impl LocalRuntime {
     /// Opens upload streams through this runtime's existing local daemon socket.
     #[cfg(unix)]
-    pub fn upload_connector(&self) -> Arc<dyn zterm_client::upload::UploadConnector> {
+    pub fn upload_connector(&self) -> Arc<dyn voytty_client::upload::UploadConnector> {
         crate::client::upload_connector(self.paths.socket())
     }
 
@@ -542,15 +542,15 @@ impl LocalRuntime {
     }
 
     #[cfg(unix)]
-    fn autostart_owner(&self) -> Result<zterm_platform::autostart::Autostart, DaemonError> {
-        zterm_platform::autostart::Autostart::current(&self.paths)
+    fn autostart_owner(&self) -> Result<voytty_platform::autostart::Autostart, DaemonError> {
+        voytty_platform::autostart::Autostart::current(&self.paths)
             .map_err(|detail| DaemonError::new(DomainErrorKind::UnsupportedPlatform, detail))
     }
 
     #[cfg(unix)]
     fn remove_autostart(&self) -> Result<(), DaemonError> {
-        // Unsupported hosts cannot have a native registration created by zterm.
-        if let Some(owner) = zterm_platform::autostart::Autostart::for_cleanup(&self.paths) {
+        // Unsupported hosts cannot have a native registration created by voytty.
+        if let Some(owner) = voytty_platform::autostart::Autostart::for_cleanup(&self.paths) {
             owner.remove_after_stop().map_err(autostart_error)?;
         }
         Ok(())
@@ -720,7 +720,7 @@ impl LocalRuntime {
                 "verified update candidate became unavailable before activation",
             )
         })?;
-        let activation = zterm_platform::user_state::activate_executable(
+        let activation = voytty_platform::user_state::activate_executable(
             executable,
             self.paths.uid(),
             |output| std::io::copy(&mut source, output).map(|_| ()),
@@ -762,7 +762,7 @@ impl LocalRuntime {
         )
         .await?;
         Ok(UpdateResult {
-            previous_version: zterm_core::BuildIdentity::current().version.to_owned(),
+            previous_version: voytty_core::BuildIdentity::current().version.to_owned(),
             installed_version: prepared.version().to_owned(),
             ended_session_names: ended,
             daemon_started,
@@ -775,7 +775,7 @@ impl LocalRuntime {
             self.launcher.executable(),
             self.paths.uid(),
         )?;
-        let build = zterm_core::BuildIdentity::current();
+        let build = voytty_core::BuildIdentity::current();
         Ok(UninstallPreflight {
             identity: self.identity_reset_preflight().await?,
             version: build.version.to_owned(),
@@ -794,7 +794,7 @@ impl LocalRuntime {
             let executable = self.launcher.executable();
             crate::distribution::validate_managed_executable(executable, self.paths.uid())?;
             let reset = self.reset_identity(expected_device_id, force).await?;
-            zterm_platform::user_state::remove_owned_executable(executable, self.paths.uid())
+            voytty_platform::user_state::remove_owned_executable(executable, self.paths.uid())
                 .map_err(|error| {
                     DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string())
                 })?;
@@ -1011,7 +1011,7 @@ impl LocalRuntime {
             name,
             working_directory,
             viewport,
-            zterm_core::terminal::TerminalColorProfile::default(),
+            voytty_core::terminal::TerminalColorProfile::default(),
         )
         .await
     }
@@ -1023,7 +1023,7 @@ impl LocalRuntime {
         name: &str,
         working_directory: Option<&Path>,
         viewport: Option<TerminalSize>,
-        base_colors: zterm_core::terminal::TerminalColorProfile,
+        base_colors: voytty_core::terminal::TerminalColorProfile,
     ) -> Result<CreatedSession, DaemonError> {
         let name = parse_session_name(name)?;
         let (client, target) = self.configured_session_target(target).await?;
@@ -1045,7 +1045,7 @@ impl LocalRuntime {
         self.attach_created_with_colors(
             created,
             viewport,
-            zterm_core::terminal::TerminalColorProfile::default(),
+            voytty_core::terminal::TerminalColorProfile::default(),
         )
         .await
     }
@@ -1055,7 +1055,7 @@ impl LocalRuntime {
         &self,
         created: &CreatedSession,
         viewport: Option<TerminalSize>,
-        base_colors: zterm_core::terminal::TerminalColorProfile,
+        base_colors: voytty_core::terminal::TerminalColorProfile,
     ) -> Result<PreparedTerminalView, DaemonError> {
         self.ensure_configured_daemon().await?;
         self.attach_resolved(
@@ -1112,7 +1112,7 @@ impl LocalRuntime {
             create_main,
             takeover,
             viewport,
-            zterm_core::terminal::TerminalColorProfile::default(),
+            voytty_core::terminal::TerminalColorProfile::default(),
         )
         .await
     }
@@ -1125,7 +1125,7 @@ impl LocalRuntime {
         create_main: bool,
         takeover: bool,
         viewport: Option<TerminalSize>,
-        base_colors: zterm_core::terminal::TerminalColorProfile,
+        base_colors: voytty_core::terminal::TerminalColorProfile,
     ) -> Result<PreparedTerminalView, DaemonError> {
         let (_, target) = self.configured_session_target(target).await?;
         let selector = selector.map(parse_session_selector).transpose()?;
@@ -1265,7 +1265,7 @@ impl LocalRuntime {
                 }
             }
             self.remove_autostart()?;
-            zterm_platform::user_state::remove_managed_state_root(&self.paths, &lifecycle)
+            voytty_platform::user_state::remove_managed_state_root(&self.paths, &lifecycle)
                 .map_err(|error| {
                     DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string())
                 })?;
@@ -1301,7 +1301,7 @@ impl LocalRuntime {
         create_main: bool,
         takeover: bool,
         viewport: Option<TerminalSize>,
-        base_colors: zterm_core::terminal::TerminalColorProfile,
+        base_colors: voytty_core::terminal::TerminalColorProfile,
     ) -> Result<PreparedTerminalView, DaemonError> {
         #[cfg(unix)]
         {
@@ -1481,7 +1481,7 @@ impl LocalRuntime {
 
     /// Returns a bounded recent log tail without starting a daemon.
     pub fn log_tail(&self, requested_lines: usize) -> Result<Vec<String>, DaemonError> {
-        self.logs(&zterm_diagnostics::Filter {
+        self.logs(&voytty_diagnostics::Filter {
             lines: requested_lines,
             ..Default::default()
         })
@@ -1491,42 +1491,42 @@ impl LocalRuntime {
     /// Reads a filtered bounded tail; never starts a daemon or creates paths.
     pub fn logs(
         &self,
-        filter: &zterm_diagnostics::Filter,
-    ) -> Result<zterm_diagnostics::Tail, DaemonError> {
+        filter: &voytty_diagnostics::Filter,
+    ) -> Result<voytty_diagnostics::Tail, DaemonError> {
         if filter.lines == 0 {
-            return Ok(zterm_diagnostics::Tail::default());
+            return Ok(voytty_diagnostics::Tail::default());
         }
-        let store = zterm_platform::diagnostics::Store::new(self.paths.clone());
+        let store = voytty_platform::diagnostics::Store::new(self.paths.clone());
         let mut snapshots = store
             .snapshots(
-                filter.include_debug || filter.level == Some(zterm_diagnostics::Level::Debug),
+                filter.include_debug || filter.level == Some(voytty_diagnostics::Level::Debug),
             )
             .map_err(log_error)?;
-        zterm_diagnostics::tail(&mut snapshots, filter).map_err(log_error)
+        voytty_diagnostics::tail(&mut snapshots, filter).map_err(log_error)
     }
 
     /// Observes or explicitly changes the finite local diagnostics interval.
     pub fn log_control(
         &self,
         enabled: Option<bool>,
-    ) -> Result<(zterm_diagnostics::Control, bool), DaemonError> {
-        use zterm_diagnostics::Sink;
+    ) -> Result<(voytty_diagnostics::Control, bool), DaemonError> {
+        use voytty_diagnostics::Sink;
         if !crate::diagnostics::configured(&self.paths) {
             return Err(not_setup_for_command());
         }
-        let store = zterm_platform::diagnostics::Store::new(self.paths.clone());
+        let store = voytty_platform::diagnostics::Store::new(self.paths.clone());
         if let Some(enabled) = enabled {
             store
                 .set_control(if enabled {
-                    zterm_diagnostics::Control::enabled(zterm_diagnostics::now_ms())
+                    voytty_diagnostics::Control::enabled(voytty_diagnostics::now_ms())
                 } else {
-                    zterm_diagnostics::Control::disabled()
+                    voytty_diagnostics::Control::disabled()
                 })
                 .map_err(log_error)?;
             let recorder = crate::diagnostics::recorder(&self.paths);
             if !enabled {
-                recorder.record(zterm_diagnostics::Event::new(
-                    zterm_diagnostics::Kind::DetailDisabled,
+                recorder.record(voytty_diagnostics::Event::new(
+                    voytty_diagnostics::Kind::DetailDisabled,
                 ));
             }
             let _ = recorder.flush(Duration::from_secs(2));
@@ -1542,8 +1542,8 @@ impl LocalRuntime {
         &self,
         output: &std::path::Path,
         include_debug: bool,
-    ) -> Result<zterm_diagnostics::ExportHeader, DaemonError> {
-        zterm_platform::diagnostics::Store::new(self.paths.clone())
+    ) -> Result<voytty_diagnostics::ExportHeader, DaemonError> {
+        voytty_platform::diagnostics::Store::new(self.paths.clone())
             .export(output, include_debug, 0)
             .map_err(log_error)
     }
@@ -1577,7 +1577,7 @@ impl LocalRuntime {
             Ok(ObservedState::NotConfigured) => DoctorCheck {
                 name: "setup",
                 ok: false,
-                detail: "zterm is not configured".to_owned(),
+                detail: "voytty is not configured".to_owned(),
             },
             Err(error) => DoctorCheck {
                 name: "setup",
@@ -1606,7 +1606,7 @@ impl LocalRuntime {
 fn not_setup_for_command() -> DaemonError {
     DaemonError::new(
         DomainErrorKind::NotSetup,
-        "zterm is not configured; run `zterm setup`",
+        "voytty is not configured; run `voytty setup`",
     )
 }
 
@@ -1731,7 +1731,7 @@ fn resolve_management_device<'a>(
 fn managed_root_exists(paths: &UserPaths) -> Result<bool, DaemonError> {
     match fs::symlink_metadata(paths.state_root()) {
         Ok(_) => {
-            zterm_platform::user_state::validate_directory(paths.state_root(), paths.uid())
+            voytty_platform::user_state::validate_directory(paths.state_root(), paths.uid())
                 .map_err(|error| {
                     DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string())
                 })?;
@@ -1760,7 +1760,7 @@ fn partial_public_identity(
 
 #[cfg(unix)]
 fn ensure_daemon_ownership_released(paths: &UserPaths) -> Result<(), DaemonError> {
-    use zterm_platform::user_state::{ExistingLockState, inspect_existing_lock};
+    use voytty_platform::user_state::{ExistingLockState, inspect_existing_lock};
 
     match inspect_existing_lock(paths.daemon_lock(), paths.uid())
         .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?
@@ -1773,7 +1773,7 @@ fn ensure_daemon_ownership_released(paths: &UserPaths) -> Result<(), DaemonError
             ));
         }
     }
-    if zterm_platform::local_unix::inspect_daemon_socket(paths)
+    if voytty_platform::local_unix::inspect_daemon_socket(paths)
         .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?
     {
         return Err(DaemonError::new(
@@ -1981,7 +1981,7 @@ fn inspect_state_paths(paths: &UserPaths, setup_complete: bool) -> DoctorCheck {
 }
 
 fn inspect_directory(path: &Path, uid: u32, failures: &mut Vec<String>) {
-    if let Err(error) = zterm_platform::user_state::validate_directory(path, uid) {
+    if let Err(error) = voytty_platform::user_state::validate_directory(path, uid) {
         failures.push(error.to_string());
     }
 }
@@ -2002,7 +2002,7 @@ fn inspect_required_file(path: &Path, uid: u32, failures: &mut Vec<String>) {
 fn inspect_optional_file(path: &Path, uid: u32, failures: &mut Vec<String>) {
     match fs::symlink_metadata(path) {
         Ok(_) => {
-            if let Err(error) = zterm_platform::user_state::validate_regular_file(path, uid) {
+            if let Err(error) = voytty_platform::user_state::validate_regular_file(path, uid) {
                 failures.push(error.to_string());
             }
         }
@@ -2014,17 +2014,17 @@ fn inspect_optional_file(path: &Path, uid: u32, failures: &mut Vec<String>) {
 fn inspect_local_ipc(paths: &UserPaths, daemon_running: bool) -> DoctorCheck {
     #[cfg(unix)]
     {
-        use zterm_platform::user_state::{ExistingLockState, inspect_existing_lock};
+        use voytty_platform::user_state::{ExistingLockState, inspect_existing_lock};
 
         let runtime = match fs::symlink_metadata(paths.runtime_dir()) {
             Ok(_) => {
-                zterm_platform::user_state::validate_directory(paths.runtime_dir(), paths.uid())
+                voytty_platform::user_state::validate_directory(paths.runtime_dir(), paths.uid())
                     .map_err(|error| error.to_string())
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound && !daemon_running => Ok(()),
             Err(error) => Err(format!("{}: {error}", paths.runtime_dir().display())),
         };
-        let socket = zterm_platform::local_unix::inspect_daemon_socket(paths)
+        let socket = voytty_platform::local_unix::inspect_daemon_socket(paths)
             .map_err(|error| error.to_string());
         let lock = inspect_existing_lock(paths.daemon_lock(), paths.uid())
             .map_err(|error| error.to_string());
@@ -2073,11 +2073,11 @@ fn inspect_local_ipc(paths: &UserPaths, daemon_running: bool) -> DoctorCheck {
 const fn lifecycle_limitation() -> &'static str {
     #[cfg(target_os = "linux")]
     {
-        "login autostart is opt-in via zterm daemon autostart; no linger is enabled; logout may end user processes"
+        "login autostart is opt-in via voytty daemon autostart; no linger is enabled; logout may end user processes"
     }
     #[cfg(not(target_os = "linux"))]
     {
-        "login autostart is opt-in via zterm daemon autostart; setup/restart also starts on demand"
+        "login autostart is opt-in via voytty daemon autostart; setup/restart also starts on demand"
     }
 }
 
@@ -2184,7 +2184,7 @@ mod tests {
         AddressServiceState, NetworkDiagnostic, NetworkObservation, NetworkState,
     };
     use crate::service::ProtocolStatus;
-    use zterm_core::{Capabilities, DeviceId};
+    use voytty_core::{Capabilities, DeviceId};
     #[test]
     fn distribution_lifecycle_requires_force_for_active_sessions() {
         #[cfg(unix)]
@@ -2263,17 +2263,17 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn committed_update_starts_configured_state_and_checks_installed_identity() {
-        use zterm_core::release::{ReleaseClassification, ReleaseManifest};
+        use voytty_core::release::{ReleaseClassification, ReleaseManifest};
         let installed = ReleaseManifest {
             schema: 1,
-            product: "zterm".into(),
+            product: "voytty".into(),
             version: "9.1.0".into(),
             tag: "v9.1.0".into(),
             classification: ReleaseClassification::Stable,
             source_commit: "fixture".into(),
             released_at: "fixture".into(),
-            wire_major: zterm_core::WIRE_MAJOR,
-            state_schema: zterm_core::STATE_SCHEMA_VERSION,
+            wire_major: voytty_core::WIRE_MAJOR,
+            state_schema: voytty_core::STATE_SCHEMA_VERSION,
             bootstrap_schema: 1,
             public_key_id: "fixture".into(),
             artifacts: Vec::new(),
@@ -2347,13 +2347,13 @@ mod tests {
         .await
         .expect_err("committed startup failure is partial completion");
         assert!(
-            failure.to_string().contains("Updated zterm to 9.1.0")
-                && failure.to_string().contains("zterm daemon restart")
+            failure.to_string().contains("Updated voytty to 9.1.0")
+                && failure.to_string().contains("voytty daemon restart")
         );
         for field in 0..3 {
             let mut wrong = ready.clone();
             match field {
-                0 => wrong.version = zterm_core::BuildIdentity::current().version.into(),
+                0 => wrong.version = voytty_core::BuildIdentity::current().version.into(),
                 1 => wrong.protocol.wire_major += 1,
                 _ => wrong.protocol.state_schema += 1,
             }
@@ -2370,7 +2370,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn update_rejects_every_incompatible_running_daemon_identity_field() {
-        let build = zterm_core::BuildIdentity::current();
+        let build = voytty_core::BuildIdentity::current();
         require_update_daemon_compatible(build.version, build.wire_major, build.state_schema)
             .expect("matching daemon identity");
 
@@ -2410,7 +2410,7 @@ mod tests {
         let device_id = DeviceId::from_array([0x52; 32]);
         let observed = Ok(ObservedState::Running(DaemonStatus {
             protocol: ProtocolStatus {
-                wire_major: zterm_core::WIRE_MAJOR,
+                wire_major: voytty_core::WIRE_MAJOR,
                 state_schema: 1,
                 capabilities: Capabilities::LOCAL_LIFECYCLE,
             },
@@ -2567,7 +2567,7 @@ mod tests {
     async fn identity_reset_uses_one_deadline_for_socket_and_daemon_lock_release() {
         use std::os::unix::fs::PermissionsExt;
 
-        use zterm_platform::user_state::FileLock;
+        use voytty_platform::user_state::FileLock;
 
         let state = crate::state_fixture::TestState::new();
         let paths = state.paths.clone();
@@ -2648,14 +2648,14 @@ mod tests {
         let paths = UserPaths::for_test(
             uid,
             home.clone(),
-            home.join(".zterm"),
+            home.join(".voytty"),
             temporary.path().join("runtime"),
         );
         let source = temporary.path().join("candidate");
         fs::write(&source, b"candidate executable").expect("candidate bytes");
         fs::set_permissions(&source, fs::Permissions::from_mode(0o700)).expect("candidate mode");
-        let executable = bin.join("zterm");
-        zterm_platform::user_state::install_executable(&source, &executable, uid)
+        let executable = bin.join("voytty");
+        voytty_platform::user_state::install_executable(&source, &executable, uid)
             .expect("owned development executable");
         paths
             .prepare_state_directories()

@@ -7,8 +7,8 @@ mod support;
 #[cfg(unix)]
 #[test]
 fn session_count_and_viewport_limits_fail_without_mutation() -> Result<(), String> {
-    use zterm_core::terminal::TerminalSize;
-    use zterm_core::{DomainErrorKind, ResourceLimits, SessionName, SessionSelector};
+    use voytty_core::terminal::TerminalSize;
+    use voytty_core::{DomainErrorKind, ResourceLimits, SessionName, SessionSelector};
 
     let fixture = support::Fixture::new(ResourceLimits::default())?;
     for index in 0..8 {
@@ -112,9 +112,9 @@ fn session_count_and_viewport_limits_fail_without_mutation() -> Result<(), Strin
 #[cfg(unix)]
 #[test]
 fn current_controller_resize_survives_an_in_flight_snapshot() -> Result<(), String> {
-    use zterm_core::terminal::TerminalSize;
-    use zterm_core::{ResourceLimits, SessionSelector};
-    use zterm_daemon::session::AttachmentUpdate;
+    use voytty_core::terminal::TerminalSize;
+    use voytty_core::{ResourceLimits, SessionSelector};
+    use voytty_daemon::session::AttachmentUpdate;
 
     let fixture = support::Fixture::new(ResourceLimits::default())?;
     let session = fixture.create(1, "resize-sync").map_err(support::display)?;

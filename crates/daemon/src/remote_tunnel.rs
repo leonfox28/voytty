@@ -12,8 +12,8 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
-use zterm_core::{DeviceId, DomainErrorKind};
-use zterm_proto::{
+use voytty_core::{DeviceId, DomainErrorKind};
+use voytty_proto::{
     DecodedFrame, FrameDecoder, LOCAL_SESSION_TUNNEL_VERSION, MAX_LOCAL_SESSION_TUNNEL_DATA_BYTES,
     WireKind, encode_message, v2,
 };

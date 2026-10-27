@@ -10,17 +10,17 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use tokio::sync::watch;
-use zterm_core::Revision;
-use zterm_core::terminal::{
+use voytty_core::Revision;
+use voytty_core::terminal::{
     TerminalHistoryWindowQuery, TerminalSize, TerminalSurfaceDeltaResult,
     TerminalSurfaceHistoryWindowResult, TerminalSurfaceSnapshot,
 };
 #[cfg(unix)]
-use zterm_core::terminal::{TerminalHostEffect, TerminalHostEffects};
-use zterm_platform::pty::{
+use voytty_core::terminal::{TerminalHostEffect, TerminalHostEffects};
+use voytty_platform::pty::{
     PtyChild, PtyChildInterrupt, PtyChildState, PtyError, PtyExitStatus, PtyIo, PtySession, PtySize,
 };
-use zterm_terminal::{TerminalCheckpoint, TerminalError, TerminalModel};
+use voytty_terminal::{TerminalCheckpoint, TerminalError, TerminalModel};
 
 /// Fixed resource limits for one retained terminal driver.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -146,7 +146,7 @@ struct TerminalEffectBrokerInner {
 #[cfg(unix)]
 #[derive(Default)]
 struct TerminalEffectBrokerState {
-    target: Option<zterm_core::AttachmentId>,
+    target: Option<voytty_core::AttachmentId>,
     pending: TerminalHostEffects,
 }
 
@@ -166,7 +166,7 @@ impl TerminalEffectBroker {
     /// prior controller.
     pub(crate) fn set_target(
         &self,
-        target: Option<zterm_core::AttachmentId>,
+        target: Option<voytty_core::AttachmentId>,
     ) -> Result<(), TerminalDriverError> {
         let mut state = lock(&self.inner.state, "terminal effect broker")?;
         if state.target != target {
@@ -210,7 +210,7 @@ impl TerminalEffectBroker {
     /// Takes only an effect bound to the requesting attachment.
     pub(crate) fn take_for(
         &self,
-        attachment_id: zterm_core::AttachmentId,
+        attachment_id: voytty_core::AttachmentId,
     ) -> Result<Option<TerminalHostEffect>, TerminalDriverError> {
         let mut state = lock(&self.inner.state, "terminal effect broker")?;
         if state.target == Some(attachment_id) {
@@ -346,7 +346,7 @@ impl TerminalDriver {
             ))
         } else {
             thread::Builder::new()
-                .name("zterm-terminal-model".into())
+                .name("voytty-terminal-model".into())
                 .spawn(move || {
                     loop {
                         let deadline = match lock(&model_shared.model, "terminal model") {
@@ -438,7 +438,7 @@ impl TerminalDriver {
             ))
         } else {
             thread::Builder::new()
-                .name("zterm-pty-reader".into())
+                .name("voytty-pty-reader".into())
                 .spawn(move || {
                     let mut buffer = vec![0_u8; config.read_chunk_bytes];
                     loop {
@@ -527,7 +527,7 @@ impl TerminalDriver {
     /// unrelated PTY output that arrived before acquiring the commit mutex.
     pub fn update_base_colors(
         &self,
-        base: zterm_core::terminal::TerminalColorProfile,
+        base: voytty_core::terminal::TerminalColorProfile,
     ) -> Result<Option<Revision>, TerminalDriverError> {
         let _commit = lock(&self.shared.commit, "terminal commit")?;
         let (update, changed, published) = {
@@ -559,7 +559,7 @@ impl TerminalDriver {
     /// Reconciles the sole controller eligible for future transient effects.
     pub(crate) fn set_effect_target(
         &self,
-        target: Option<zterm_core::AttachmentId>,
+        target: Option<voytty_core::AttachmentId>,
     ) -> Result<(), TerminalDriverError> {
         #[cfg(unix)]
         {
@@ -717,7 +717,7 @@ impl Drop for TerminalDriver {
         let ownership = self.ownership.clone();
         let reader = self.reader_thread.take();
         let model = self.model_thread.take();
-        spawn_background_reaper("zterm-terminal-reaper", move || {
+        spawn_background_reaper("voytty-terminal-reaper", move || {
             let child = cleanup_lock(&child).close_explicitly();
             queue.abort();
             if let Some(reader) = reader {
@@ -967,7 +967,7 @@ impl SharedTerminal {
     fn ingest(
         &self,
         bytes: &[u8],
-    ) -> Result<(zterm_core::terminal::TerminalUpdate, Revision), TerminalDriverError> {
+    ) -> Result<(voytty_core::terminal::TerminalUpdate, Revision), TerminalDriverError> {
         let mut model = lock(&self.model, "terminal model")?;
         let update =
             model.ingest_observing(bytes, |eligible| self.complete_history_read(eligible))?;
@@ -1280,7 +1280,7 @@ mod tests {
     use std::path::Path;
 
     #[cfg(unix)]
-    use zterm_platform::pty::{ExplicitPtyCommand, PtyHost};
+    use voytty_platform::pty::{ExplicitPtyCommand, PtyHost};
 
     #[test]
     fn zero_queue_limits_are_rejected() {
@@ -1307,10 +1307,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn notification_broker_preserves_order_and_retires_old_target_queues() {
-        use zterm_core::terminal::TerminalNotification;
+        use voytty_core::terminal::TerminalNotification;
         let broker = TerminalEffectBroker::new();
-        let first = zterm_core::AttachmentId::from_array([1; 16]);
-        let second = zterm_core::AttachmentId::from_array([2; 16]);
+        let first = voytty_core::AttachmentId::from_array([1; 16]);
+        let second = voytty_core::AttachmentId::from_array([2; 16]);
         let notification = |index| {
             TerminalHostEffect::Notification(
                 TerminalNotification::osc9(format!("event {index}")).expect("valid notification"),
@@ -1367,13 +1367,13 @@ mod tests {
     fn host_effect_broker_is_event_time_targeted_latest_only_and_non_replaying() {
         fn clipboard(text: &str) -> TerminalHostEffect {
             TerminalHostEffect::ClipboardWrite(
-                zterm_core::terminal::TerminalClipboardWrite::new(text.to_owned())
+                voytty_core::terminal::TerminalClipboardWrite::new(text.to_owned())
                     .expect("clipboard fixture"),
             )
         }
 
-        let first = zterm_core::AttachmentId::from_array([0x11; 16]);
-        let second = zterm_core::AttachmentId::from_array([0x22; 16]);
+        let first = voytty_core::AttachmentId::from_array([0x11; 16]);
+        let second = voytty_core::AttachmentId::from_array([0x22; 16]);
         let broker = TerminalEffectBroker::new();
         let wake = broker.subscribe();
 
@@ -1550,7 +1550,7 @@ mod tests {
 
     #[test]
     fn history_read_captures_completed_batch_before_next_partial_batch() {
-        use zterm_core::terminal::TerminalHistoryWindowAnchor;
+        use voytty_core::terminal::TerminalHistoryWindowAnchor;
 
         let model = TerminalModel::new(TerminalSize::new(2, 20), 4).expect("model");
         let shared = Arc::new(SharedTerminal::new(model));
@@ -1842,7 +1842,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn color_base_commits_cannot_overtake_a_query_blocked_on_pty_io() {
-        use zterm_core::terminal::{
+        use voytty_core::terminal::{
             COLOR_BACKGROUND, TerminalAppearance, TerminalColorProfile, TerminalColorValue,
         };
         let temporary = tempfile::tempdir().expect("color ordering fixture");

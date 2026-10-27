@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
-use zterm_client::{
+use voytty_client::{
     keyboard::{FunctionalKey, KeyCode, KeyEventKind, KeyInput},
     model::ResolvedSessionTarget,
     session::SessionClient,
@@ -28,7 +28,7 @@ use zterm_client::{
         TerminalViewEvent, TerminalViewRoute, TerminalViewTarget, TerminalViewTransportState,
     },
 };
-use zterm_core::{ResourceLimits, SessionId, SessionSelector, terminal::*};
+use voytty_core::{ResourceLimits, SessionId, SessionSelector, terminal::*};
 
 /// Measured grid; pixels, density and IME geometry stay in the Android View.
 #[derive(Clone, Copy, Debug, uniffi::Record)]
@@ -206,7 +206,7 @@ pub struct NativeNavigationStats {
 /// Immutable semantic source retained only while a frame is observed or selected.
 #[derive(Clone, uniffi::Object)]
 pub struct NativeFrameSource {
-    page: Arc<zterm_core::viewport_cache::CachedViewportWindow<TerminalSurfaceRow>>,
+    page: Arc<voytty_core::viewport_cache::CachedViewportWindow<TerminalSurfaceRow>>,
     offset: u64,
     input_epoch: u64,
     geometry_generation: u64,
@@ -558,7 +558,7 @@ impl NativeTerminal {
         modifiers: u8,
         paste: bool,
     ) -> Result<(), NativeError> {
-        if text.len() > zterm_client::input::RESUME_INPUT_BOUND
+        if text.len() > voytty_client::input::RESUME_INPUT_BOUND
             || (paste && text.len() > MAX_TERMINAL_CLIPBOARD_BYTES)
         {
             return Err(failure("resource_limit"));
@@ -752,7 +752,7 @@ impl NativeRuntime {
 impl NativeRuntime {
     async fn open_terminal(
         &self,
-        host: zterm_core::DeviceId,
+        host: voytty_core::DeviceId,
         session: Option<SessionId>,
         viewport: NativeViewport,
         dark: bool,
@@ -831,13 +831,13 @@ impl NativeRuntime {
 async fn run(
     session_id: SessionId,
     mut surface: AttachmentSurface,
-    mut reader: zterm_client::view::TerminalViewEventReader,
+    mut reader: voytty_client::view::TerminalViewEventReader,
     writer: TerminalViewCommandWriter,
     mut commands: mpsc::Receiver<Command>,
     frame: watch::Sender<NativeFrame>,
     cancel: CancellationToken,
     mut dark: bool,
-    upload_connector: Arc<dyn zterm_client::upload::UploadConnector>,
+    upload_connector: Arc<dyn voytty_client::upload::UploadConnector>,
     upload_input_generation: Arc<AtomicU64>,
     notifications: Arc<NotificationBridge>,
 ) {
@@ -862,7 +862,7 @@ async fn run(
                 let result = match result {
                     Ok(file) => {
                         operation.handle.inserting();
-                        writer.write_upload_input(operation.origin, zterm_client::upload::paste_bytes(&file, &surface.modes())).await.map_err(Into::into)
+                        writer.write_upload_input(operation.origin, voytty_client::upload::paste_bytes(&file, &surface.modes())).await.map_err(Into::into)
                     }
                     Err(error) => Err(error),
                 };
@@ -944,7 +944,7 @@ async fn run(
                     },
                     action @ (Action::Text { .. } | Action::Key { .. }) if active_upload.is_none() && command.upload_input_generation == upload_input_generation.load(Ordering::Acquire) && (state == "active" || healthy_resize || navigation.returning()) && command.input_epoch == input_epoch => {
                         let bytes = encode_action(action, surface.modes());
-                        if bytes.len() > zterm_client::input::RESUME_INPUT_BOUND { Err(failure("resource_limit")) }
+                        if bytes.len() > voytty_client::input::RESUME_INPUT_BOUND { Err(failure("resource_limit")) }
                         else if bytes.is_empty() { Ok(()) }
                         else if !navigation.live() {
                             match navigation.begin_return(&bytes) {
@@ -1033,17 +1033,18 @@ async fn run(
             _ => "transport_unavailable".to_owned(),
         });
         if let Some(code) = &error {
-            let mut event = zterm_diagnostics::Event::new(zterm_diagnostics::Kind::TerminalFailed)
-                .level(zterm_diagnostics::Level::Error)
-                .session(session_id)
-                .epoch(input_epoch)
-                .outcome(zterm_diagnostics::Outcome::Failed);
-            if let Some(kind) = zterm_core::DomainErrorKind::from_code(code) {
+            let mut event =
+                voytty_diagnostics::Event::new(voytty_diagnostics::Kind::TerminalFailed)
+                    .level(voytty_diagnostics::Level::Error)
+                    .session(session_id)
+                    .epoch(input_epoch)
+                    .outcome(voytty_diagnostics::Outcome::Failed);
+            if let Some(kind) = voytty_core::DomainErrorKind::from_code(code) {
                 event = event.error(kind);
             } else {
-                event = event.frontend_error(zterm_diagnostics::FrontendFailure::TerminalDriver);
+                event = event.frontend_error(voytty_diagnostics::FrontendFailure::TerminalDriver);
             }
-            zterm_diagnostics::record(event);
+            voytty_diagnostics::record(event);
             state = "closed";
             healthy_resize = false;
             navigation.disconnected();
@@ -1115,7 +1116,7 @@ fn encode_pointer(
     screen: ActiveScreen,
     modes: TerminalModes,
 ) -> Vec<u8> {
-    use zterm_client::mouse::MouseInput;
+    use voytty_client::mouse::MouseInput;
     let report = MouseInput {
         code: 0,
         column: column + 1,
@@ -1337,9 +1338,9 @@ fn project(
         cursor_column: surface.cursor.column,
         cursor_visible: surface.cursor.visible && state == "active",
         cursor_shape: match surface.cursor.presentation.shape {
-            zterm_core::terminal::TerminalCursorShape::Block => NativeCursorShape::Block,
-            zterm_core::terminal::TerminalCursorShape::Beam => NativeCursorShape::Beam,
-            zterm_core::terminal::TerminalCursorShape::Underline => NativeCursorShape::Underline,
+            voytty_core::terminal::TerminalCursorShape::Block => NativeCursorShape::Block,
+            voytty_core::terminal::TerminalCursorShape::Beam => NativeCursorShape::Beam,
+            voytty_core::terminal::TerminalCursorShape::Underline => NativeCursorShape::Underline,
         },
         cursor_blinking: surface.cursor.presentation.blinking,
         cursor_color: slot_color(&surface.colors, COLOR_CURSOR, dark),

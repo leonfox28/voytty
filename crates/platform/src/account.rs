@@ -3,7 +3,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// Effective Unix account used by the running zterm process.
+/// Effective Unix account used by the running voytty process.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectiveAccount {
     uid: u32,

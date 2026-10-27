@@ -7,7 +7,7 @@ fn main() {
     // candidates never leave the runner. `GITHUB_SHA` is ambient in ordinary
     // CI and therefore is not evidence that a binary is an official Release.
     let source_commit =
-        std::env::var("ZTERM_SOURCE_COMMIT").unwrap_or_else(|_| "development".to_owned());
+        std::env::var("VOYTTY_SOURCE_COMMIT").unwrap_or_else(|_| "development".to_owned());
     let classification = std::env::var("CARGO_PKG_VERSION").map_or("development", |version| {
         if version.contains('-') {
             "prerelease"
@@ -16,8 +16,8 @@ fn main() {
         }
     });
 
-    println!("cargo:rerun-if-env-changed=ZTERM_SOURCE_COMMIT");
-    println!("cargo:rustc-env=ZTERM_BUILD_TARGET={target}");
-    println!("cargo:rustc-env=ZTERM_SOURCE_COMMIT={source_commit}");
-    println!("cargo:rustc-env=ZTERM_RELEASE_CLASSIFICATION={classification}");
+    println!("cargo:rerun-if-env-changed=VOYTTY_SOURCE_COMMIT");
+    println!("cargo:rustc-env=VOYTTY_BUILD_TARGET={target}");
+    println!("cargo:rustc-env=VOYTTY_SOURCE_COMMIT={source_commit}");
+    println!("cargo:rustc-env=VOYTTY_RELEASE_CLASSIFICATION={classification}");
 }
