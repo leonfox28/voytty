@@ -31,10 +31,10 @@ upgrade is an explicit repository change and must rerun every quality gate.
 ## Product version
 
 The root `[workspace.package].version` is the single lockstep product version,
-and all six voytty product crates inherit it with `version.workspace = true`;
+and all public voytty product crates inherit it with `version.workspace = true`;
 do not assign a component-specific version to a crate. A release preparation
 changes this one value, refreshes `Cargo.lock`, and advances the CLI, daemon,
-protocol, platform libraries, apps, and Relay wrapper as one product.
+protocol, platform libraries, and Relay wrapper as one product.
 
 `tests/relay/handshake-probe` is deliberately outside the root workspace. It is
 an internal acceptance tool rather than a shipped voytty component, so its
@@ -142,9 +142,7 @@ glibc builder, Docker/QEMU execution, a protected signing secret, final signed
 installers, GitHub attestation, or immutable publication; GitHub Actions owns
 those boundaries and the recipes print that distinction.
 
-`ci-unix` also runs `ci-askama`, the upstream library/config tests for the
-temporary UniFFI template-parser backport. Its provenance and removal condition
-are recorded in [the vendor note](../vendor/askama_derive/VOYTTY.md).
+The UniFFI bridge and its parser-backport tests now belong to `voytty-app`.
 
 The terminal-identity integration test uses the real account's login shell.
 It waits for Bash/Zsh's bracketed-paste mode, or the default Bash `$`/`#` prompt
@@ -152,22 +150,13 @@ at the live cursor for older Bash, before sending its first command. Custom Bash
 prompts without those suffixes need bracketed paste enabled for this fixture.
 This test precondition does not restrict product shell support.
 
-Run `just android-check` when Android or its inputs change: `apps/android`,
-`crates/android`, shared `client/core/proto/diagnostics` code, patched Iroh/noq,
-UniFFI, Cargo dependencies, or Android build tools. Directory names alone do not
-define the Android dependency boundary.
-
-For iOS or shared mobile bridge/client changes, also run `just ios-device-build`
-and `just ios-check <simulator-uuid>` on Apple Silicon macOS with Xcode. CI uses
-`just ios-check auto` with an available iPhone simulator. Simulator and unsigned
-cross-build evidence do not prove signed-device behavior. See [iOS](ios.md) for
-setup, architecture and disposable-host acceptance.
-The opt-in `just ios-ui-check <simulator-uuid> <fixture-json>` covers native
-pickers, keyboard routing, notifications/export, confirmed takeover and real
-transport interruption. It requires a paired disposable host, its marked root,
-daemon PID and an existing Session to restore. It never uses the user's daemon.
-Targeted `ios-ui-{files,photos,services,recovery,reconnect,connection,navigation,deletion,sessions,settings}-check` recipes use the
-same runner. iOS build recipes reject overlapping writers to generated resources.
+Run `just android-check` and `just mobile-core-check ios` when shared
+`client/core/proto/diagnostics`, Iroh/noq, or Cargo dependencies change. These
+recipes compile the public client for mobile targets without a private checkout.
+They do not replace application runtime tests. For shared changes, also update
+the pin in `voytty-app` and run its `just android-check`, `just ios-device-build`
+and `just ios-check <simulator-uuid>` before accepting the integration. Report
+unavailable platform evidence accurately. See [the split boundary](mobile-repository.md).
 
 CI uses the same repository profiles:
 
@@ -176,7 +165,7 @@ CI uses the same repository profiles:
 | Policy and portable checks | `just ci-policy` |
 | Three Unix hosts (full CI) | `just ci-unix <docs>` on the matching host |
 | Dependency policy | `just ci-dependencies` |
-| iOS device compilation and simulator runtime | `just ios-device-build`, `just ios-check auto` |
+| Shared Android/iOS client compilation | `just mobile-core-check android`, `just mobile-core-check ios` |
 | Docker/QEMU relay bundle | `just ci-relay` on Docker-capable Linux |
 | Three native candidates (full CI; uploaded only by main) | `tools/release/build-native.sh <output-directory>` with explicit source identity on the native/pinned builder |
 
@@ -210,23 +199,8 @@ the last saved entry until the key version is bumped. Incremental compilation is
 large test fixtures and product release outputs are not cached. Measure restore/save
 and test durations together before changing this policy.
 
-The Android job caches pinned cargo-ndk and Gradle's `modules-2` dependency
-downloads, and restores the Cargo download cache shared with the Rust jobs.
-Its compiled Rust cache covers the host bindgen build plus the arm64 release
-dependencies (`target/{debug,release,aarch64-linux-android/release}`). Only PRs
-restore it; main builds the APK candidate cold, then trims and saves for later
-PRs when the lockfile key is new. A local cold/restored comparison on
-2026-10-10 compiled 630 versus 19 crates and produced a byte-identical
-`libvoytty_android.so`.
-
-The Android job also enables Gradle's task-output build cache. Only PRs restore
-`~/.gradle/caches/build-cache-1`; main looks up the key without downloading it,
-builds cold and saves at most 1 GiB after all checks pass and Gradle stops. Keys
-include the toolchain/build configuration and source inputs; Gradle additionally
-checks each task's content-based inputs before reusing an output. JVM `Test`
-tasks and all `lint*` tasks explicitly reject cached results. The custom Rust
-and build-identity tasks remain non-cacheable, so compilation can be reused
-without replacing verification or current-source native generation.
+Android app/Gradle and iOS application jobs, caches and test recipes moved to
+`voytty-app`; their historical measurements remain in ci-release-optimization.md.
 
 The independent `target/noq-tests` and `target/iroh-tests` roots also cache only
 third-party `debug/{deps,build,.fingerprint}` outputs, keyed by their own manifest
@@ -257,7 +231,7 @@ merge commit keeps its own exact-SHA run and candidate even when another merge
 follows quickly. Merge only after the stable `CI gate`
 is green. A lightweight job compares the complete tested PR merge tree with
 its exact base using a NUL-delimited Git diff, including deletions and both rename
-paths. Only the documentation allowlist above can skip Rust, Android, relay and
+paths. Only the documentation allowlist above can skip Rust, shared mobile compilation, relay and
 native jobs. Missing history, unknown paths or classification errors select full
 checks. Policy and dependency jobs always run. `CI gate` always runs and verifies
 all job results against the explicit classification; failed, cancelled, missing
@@ -266,7 +240,7 @@ or accidentally skipped required jobs cannot pass.
 All other PRs build and check the three native candidates without uploading
 them; the `CI gate` requires their success. The resulting `main`
 push runs the full integration graph, uploads all three exact-SHA native
-candidates, and runs the Android APK job and one unsigned assembly. Tag publication
+candidates, and runs one unsigned desktop assembly. Tag publication
 reuses that candidate instead of compiling the product again.
 
 The deterministic two-file release-version commit is the narrow exception to

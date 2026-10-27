@@ -7,12 +7,6 @@ from pathlib import Path
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS = ROOT / "apps/android/app/src/main/assets/licenses"
-COPIES = {
-    "LICENSE": "Voytty-PolyForm-Noncommercial-1.0.0.txt",
-    "NOTICE": "Voytty-NOTICE.txt",
-    "COMMERCIAL-LICENSE.md": "Voytty-Commercial-License.txt",
-}
 LICENSE_ID = "PolyForm-Noncommercial-1.0.0"
 LICENSE_SHA256 = "ffcca38841adb694b6f380647e15f17c446a4d1656fed51a1e2041d064c94cc8"
 
@@ -33,14 +27,7 @@ def main() -> None:
     probe = tomllib.loads((ROOT / "tests/relay/handshake-probe/Cargo.toml").read_text())
     if probe["package"].get("license") != LICENSE_ID:
         raise SystemExit("the isolated first-party relay probe must declare the project license")
-    for source, destination in COPIES.items():
-        expected = (ROOT / source).read_bytes()
-        target = ASSETS / destination
-        if args.command == "sync":
-            target.write_bytes(expected)
-        elif not target.is_file() or target.read_bytes() != expected:
-            raise SystemExit(f"{target.relative_to(ROOT)} is stale; run just licensing-sync")
-    print(f"project license metadata and mobile copies {args.command} verified")
+    print(f"project license metadata {args.command} verified")
 
 
 if __name__ == "__main__":

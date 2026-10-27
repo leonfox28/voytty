@@ -31,10 +31,10 @@ represented as an unconditional SPDX `OR` alternative.
 
 The CLI embeds the project notice and both license texts in `voytty --license`,
 which runs before configuration, diagnostics, or daemon startup. This keeps
-the existing single-binary archive and installer contract. Android and iOS
-bundle the same texts and expose them under Licenses. `just licensing-sync`
-refreshes the mobile copies; `just licensing-check`, also run by `ci-policy`,
-rejects drift and checks package metadata. Original third-party notices remain
+the existing single-binary archive and installer contract. Android and iOS in the private `voytty-app` repository bundle the same texts
+and expose them under Licenses. That repository owns `just licensing-sync`
+and copy-drift checks; this repository's `just licensing-check` validates the
+canonical license and package metadata. Original third-party notices remain
 separate from the project notice.
 
 The App Store app uses Apple's Standard EULA; the commercial-use document is

@@ -35,9 +35,6 @@ const INSTALLER_NAME: &str = "voytty-install.sh";
 const SBOM_NAME: &str = "voytty-sbom.spdx.json";
 const CHECKSUMS_NAME: &str = "SHA256SUMS";
 const CHECKSUMS_SIGNATURE_NAME: &str = "SHA256SUMS.sig";
-use voytty_core::release::android::{
-    APK_NAME as ANDROID_APK_NAME, AndroidMetadata, METADATA_NAME as ANDROID_METADATA_NAME,
-};
 const MAX_INSTALLER_BYTES: u64 = 256 * 1024;
 const MAX_SBOM_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 256 * 1024 * 1024;
@@ -229,10 +226,6 @@ pub fn prepare(
             &output.join(&artifact.filename),
         )?;
     }
-    for filename in [ANDROID_APK_NAME, ANDROID_METADATA_NAME] {
-        regular_file_metadata(&input.join(filename), "Android candidate")?;
-        copy_new(&input.join(filename), &output.join(filename))?;
-    }
     write_new(&output.join(MANIFEST_NAME), &raw_manifest, 0o644)?;
     write_new(&output.join(INSTALLER_NAME), installer.as_bytes(), 0o755)?;
     write_new(&output.join(SBOM_NAME), &sbom, 0o644)?;
@@ -292,14 +285,6 @@ fn replace_token(output: &mut String, token: &str, value: &str) -> Result<()> {
 /// Signs the exact prepared manifest and produces the final checksum inventory.
 pub fn sign(directory: &Path) -> Result<()> {
     verify(directory, false)?;
-    let android: Value = serde_json::from_slice(&read_bounded(
-        &directory.join(ANDROID_METADATA_NAME),
-        MAX_RELEASE_MANIFEST_BYTES as u64,
-    )?)?;
-    ensure!(
-        android["signed"] == true,
-        "APK must be platform-signed before release signing"
-    );
     let manifest = read_bounded(
         &directory.join(MANIFEST_NAME),
         MAX_RELEASE_MANIFEST_BYTES as u64,
@@ -411,7 +396,6 @@ pub fn verify(directory: &Path, signed: bool) -> Result<()> {
         "generated installer does not match the release manifest"
     );
     verify_sbom(directory, &manifest)?;
-    verify_android(directory, &manifest, signed)?;
     if signed {
         let expected_checksums = render_checksums(directory)?;
         let checksums = read_bounded(&directory.join(CHECKSUMS_NAME), MAX_INSTALLER_BYTES)?;
@@ -422,33 +406,6 @@ pub fn verify(directory: &Path, signed: bool) -> Result<()> {
         let signature = read_bounded(&directory.join(CHECKSUMS_SIGNATURE_NAME), 64)?;
         verify_checksums_signature(&checksums, &signature, &official_release_public_key()?)?;
     }
-    Ok(())
-}
-
-// Android tooling inspects APK package, embedded identity, signature and all ELF
-// alignments before this boundary. Here every downstream job verifies the exact
-// same bytes and their relationship to the authenticated native release source.
-fn verify_android(directory: &Path, manifest: &ReleaseManifest, signed: bool) -> Result<()> {
-    let raw = read_bounded(
-        &directory.join(ANDROID_METADATA_NAME),
-        MAX_RELEASE_MANIFEST_BYTES as u64,
-    )?;
-    let metadata = AndroidMetadata::parse(&raw, manifest, signed)
-        .context("Android release metadata is invalid")?;
-    // Publisher policy is exact for this source tree; installed runtimes must
-    // still accept a future release that raises its target or minimum SDK.
-    ensure!(
-        metadata.min_sdk == 26 && metadata.target_sdk == 36,
-        "Android SDK policy mismatch"
-    );
-    let (length, digest) = digest_file(
-        &directory.join(ANDROID_APK_NAME),
-        MAX_RELEASE_ARTIFACT_BYTES,
-    )?;
-    ensure!(
-        length > 0 && metadata.length == length && metadata.sha256 == digest,
-        "Android APK does not match its release metadata"
-    );
     Ok(())
 }
 
@@ -513,8 +470,6 @@ fn expected_inventory(signed: bool) -> Result<BTreeSet<String>> {
     names.insert(MANIFEST_NAME.to_owned());
     names.insert(INSTALLER_NAME.to_owned());
     names.insert(SBOM_NAME.to_owned());
-    names.insert(ANDROID_APK_NAME.to_owned());
-    names.insert(ANDROID_METADATA_NAME.to_owned());
     if signed {
         names.insert(SIGNATURE_NAME.to_owned());
         names.insert(CHECKSUMS_NAME.to_owned());
@@ -598,11 +553,6 @@ fn generate_sbom(manifest: &ReleaseManifest) -> Result<Vec<u8>> {
         let license = package["license"].as_str().unwrap_or("NOASSERTION");
         packages.push((name.to_owned(), version.to_owned(), license.to_owned()));
     }
-    // Cargo metadata owns Rust dependencies; the checked Gradle lock owns the
-    // Android runtime graph. Do not label Maven license metadata as Cargo data.
-    let gradle_lock = fs::read_to_string(repository_root.join("apps/android/app/gradle.lockfile"))
-        .context("Android dependency lock is unavailable for the SBOM")?;
-    packages.extend(android_runtime_packages(&gradle_lock)?);
     packages.sort();
     let spdx_packages = packages
         .iter()
@@ -642,29 +592,6 @@ fn generate_sbom(manifest: &ReleaseManifest) -> Result<Vec<u8>> {
         "SPDX SBOM exceeds its size bound"
     );
     Ok(encoded)
-}
-
-fn android_runtime_packages(lock: &str) -> Result<Vec<(String, String, String)>> {
-    lock.lines()
-        .filter_map(|line| line.split_once('='))
-        .filter(|(_, configurations)| {
-            configurations
-                .split(',')
-                .any(|name| name == "releaseRuntimeClasspath")
-        })
-        .map(|(coordinate, _)| {
-            let parts = coordinate.split(':').collect::<Vec<_>>();
-            ensure!(
-                parts.len() == 3,
-                "Android runtime dependency coordinate is invalid"
-            );
-            Ok((
-                format!("{}:{}", parts[0], parts[1]),
-                parts[2].to_owned(),
-                "NOASSERTION".to_owned(),
-            ))
-        })
-        .collect()
 }
 
 fn verify_sbom(directory: &Path, manifest: &ReleaseManifest) -> Result<()> {
@@ -874,19 +801,6 @@ mod tests {
             )
             .expect("identity fixture");
         }
-        let apk = b"synthetic unsigned APK payload";
-        fs::write(input.join(ANDROID_APK_NAME), apk).expect("APK fixture");
-        let metadata = json!({"schema": 1, "product": "voytty", "version": manifest.version,
-            "source_commit": manifest.source_commit, "package": "com.voytty.app",
-            "abi": "arm64-v8a", "min_sdk": 26, "target_sdk": 36, "version_code": 1,
-            "certificate_sha256": voytty_core::release::android::CERTIFICATE.trim(), "signed": false,
-            "length": apk.len(), "sha256": sha256_hex(apk)});
-        fs::write(
-            input.join(ANDROID_METADATA_NAME),
-            serde_json::to_vec(&metadata).expect("Android metadata JSON"),
-        )
-        .expect("Android metadata fixture");
-
         let assemble = |output: &Path| {
             prepare(
                 &input,
@@ -913,7 +827,11 @@ mod tests {
             "existing output must not be replaced"
         );
 
-        fs::write(first.join(ANDROID_APK_NAME), b"modified payload").expect("tamper APK");
+        fs::write(
+            first.join(&manifest.artifacts[0].filename),
+            b"modified payload",
+        )
+        .expect("tamper native archive");
         assert!(verify(&first, false).is_err());
         fs::write(second.join(INSTALLER_NAME), b"#!/bin/sh\nexit 0\n").expect("tamper installer");
         assert!(verify(&second, false).is_err());
@@ -1000,13 +918,13 @@ mod tests {
     #[test]
     fn complete_inventory_signature_rejects_modified_checksums() {
         let pair = Ed25519KeyPair::from_seed_unchecked(&[7_u8; 32]).expect("fixture key");
-        let checksums = b"abc  voytty-android-arm64.apk\n";
+        let checksums = b"abc  voytty-aarch64-apple-darwin.tar.gz\n";
         let signature = pair.sign(checksums);
         verify_checksums_signature(checksums, signature.as_ref(), pair.public_key().as_ref())
             .expect("authentic inventory");
         assert!(
             verify_checksums_signature(
-                b"def  voytty-android-arm64.apk\n",
+                b"def  voytty-aarch64-apple-darwin.tar.gz\n",
                 signature.as_ref(),
                 pair.public_key().as_ref()
             )
@@ -1016,54 +934,20 @@ mod tests {
     }
 
     #[test]
-    fn android_metadata_binds_the_apk_and_native_release_source() {
-        let directory = tempfile::tempdir().expect("fixture");
-        let manifest = fixture_manifest();
-        let apk = b"fixture APK bytes";
-        fs::write(directory.path().join(ANDROID_APK_NAME), apk).expect("APK");
-        let mut metadata = json!({"schema": 1, "product": "voytty", "version": manifest.version,
-            "source_commit": manifest.source_commit, "package": "com.voytty.app",
-            "abi": "arm64-v8a", "min_sdk": 26, "target_sdk": 36, "version_code": 102699,
-            "certificate_sha256": voytty_core::release::android::CERTIFICATE.trim(), "signed": false,
-            "length": apk.len(), "sha256": sha256_hex(apk)});
-        let write = |value: &Value| {
-            fs::write(
-                directory.path().join(ANDROID_METADATA_NAME),
-                serde_json::to_vec(value).expect("metadata JSON"),
-            )
-            .expect("metadata")
-        };
-        write(&metadata);
-        verify_android(directory.path(), &manifest, false).expect("unsigned candidate");
-        assert!(verify_android(directory.path(), &manifest, true).is_err());
-        metadata["signed"] = json!(true);
-        write(&metadata);
-        verify_android(directory.path(), &manifest, true).expect("signed candidate");
-        metadata["source_commit"] = json!("0".repeat(40));
-        write(&metadata);
-        assert!(verify_android(directory.path(), &manifest, true).is_err());
-        metadata["source_commit"] = json!(manifest.source_commit);
-        write(&metadata);
-        fs::write(directory.path().join(ANDROID_APK_NAME), b"other APK").expect("tampered APK");
-        assert!(verify_android(directory.path(), &manifest, true).is_err());
+    fn desktop_inventory_excludes_mobile_publication() {
         let inventory = expected_inventory(true).expect("inventory");
-        assert!(inventory.contains(ANDROID_APK_NAME));
-        assert!(inventory.contains(ANDROID_METADATA_NAME));
+        assert_eq!(inventory.len(), 9);
         assert!(inventory.contains(CHECKSUMS_SIGNATURE_NAME));
-    }
-
-    #[test]
-    fn android_sbom_uses_the_locked_release_runtime_graph() {
-        let packages = android_runtime_packages("# lock\na.b:runtime:1.2=debugRuntimeClasspath,releaseRuntimeClasspath\na.b:test:2.3=debugUnitTestRuntimeClasspath\nempty=releaseCompileClasspath\n").expect("lock");
-        assert_eq!(
-            packages,
-            vec![(
-                "a.b:runtime".to_owned(),
-                "1.2".to_owned(),
-                "NOASSERTION".to_owned()
-            )]
-        );
-        assert!(android_runtime_packages("invalid=releaseRuntimeClasspath").is_err());
+        assert!(!inventory.contains("voytty-android-arm64.apk"));
+        assert!(!inventory.contains("voytty-android.json"));
+        let directory = tempfile::tempdir().expect("inventory fixture");
+        for name in &inventory {
+            fs::write(directory.path().join(name), b"fixture").expect("asset");
+        }
+        ensure_inventory(directory.path(), true).expect("desktop inventory");
+        fs::write(directory.path().join("voytty-android-arm64.apk"), b"APK")
+            .expect("unexpected mobile artifact");
+        assert!(ensure_inventory(directory.path(), true).is_err());
     }
 
     fn fixture_manifest() -> ReleaseManifest {
