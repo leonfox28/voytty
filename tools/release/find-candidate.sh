@@ -20,7 +20,7 @@ verified_run=$(gh api \
     -H 'Accept: application/vnd.github+json' \
     -H 'X-GitHub-Api-Version: 2022-11-28' \
     "repos/$repository/actions/runs/$run_id" \
-    --jq ". | select(.event == \"push\" and .head_branch == \"main\"
+    --jq ". | select((.event == \"push\" or .event == \"workflow_dispatch\") and .head_branch == \"main\"
         and .head_sha == \"$commit\" and .status == \"completed\"
         and .conclusion == \"success\" and .path == \".github/workflows/ci.yml\")
         | .id")
@@ -37,6 +37,6 @@ artifact_id=$(printf '%s\n' "$artifact_pages" | jq -r "[.[].artifacts[]
             and ((.digest // \"\") | test(\"^sha256:[0-9a-f]{64}$\")))]
         | max_by(.id) | .id // empty")
 case "$artifact_id" in
-    ''|*[!0-9]*) fail "exact candidate is missing, expired, or ambiguous; rerun main CI for $commit before tagging" ;;
+    ''|*[!0-9]*) fail "exact candidate is missing, expired, or ambiguous; run just full-check for $commit before tagging" ;;
 esac
 printf '%s\n' "$artifact_id"

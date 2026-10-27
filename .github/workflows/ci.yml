@@ -6,14 +6,19 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact source expected by the full-check caller (optional for UI dispatch)
+        type: string
+        required: false
 
 permissions:
   contents: read
 
-# A newer PR head supersedes the older run; every main commit keeps its own
-# exact-SHA evidence and release candidate.
+# PRs check affected code; ordinary main pushes are quick. Explicit full runs
+# retain exact-SHA candidates and are never cancelled by a later PR or push.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -26,16 +31,23 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      full: ${{ steps.scope.outputs.full }}
+      plan: ${{ steps.scope.outputs.plan }}
+      rust: ${{ steps.scope.outputs.rust }}
+      transport: ${{ steps.scope.outputs.transport }}
+      mobile: ${{ steps.scope.outputs.mobile }}
+      relay: ${{ steps.scope.outputs.relay }}
+      native: ${{ steps.scope.outputs.native }}
+      candidate: ${{ steps.scope.outputs.candidate }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 2
-      - name: Default to full checks unless only allowlisted documentation changed
+      - name: Select affected checks, defaulting to full on unknown inputs
         id: scope
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: python3 tools/ci/workflow-policy.py classify
 
   policy:
@@ -72,7 +84,7 @@ jobs:
 
   rust:
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
+    if: needs.changes.outputs.rust == 'true'
     name: Rust / ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
@@ -124,6 +136,7 @@ jobs:
           restore-keys: |
             ci-compiled-v3-rust-1.98.0-nodebug-${{ runner.os }}-${{ runner.arch }}-
       - name: Restore noq test dependencies
+        if: needs.changes.outputs.transport == 'true'
         id: compiled-noq
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
@@ -135,6 +148,7 @@ jobs:
           restore-keys: |
             ci-compiled-noq-v1-rust-1.98.0-nodebug-${{ runner.os }}-${{ runner.arch }}-
       - name: Restore iroh test dependencies
+        if: needs.changes.outputs.transport == 'true'
         id: compiled-iroh
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
@@ -148,12 +162,12 @@ jobs:
       - uses: ./.github/actions/setup-ci-tools
         with:
           profile: rust
-      - name: Run full Unix platform evidence
+      - name: Run selected Unix checks
         shell: bash
-        run: just ci-unix "${{ matrix.docs }}"
+        run: just ci-unix "${{ matrix.docs }}" "${{ needs.changes.outputs.transport }}"
       - name: Bound the main compiled dependency cache
         id: trim
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.compiled.outputs.cache-hit != 'true'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.compiled.outputs.cache-hit != 'true'
         run: sh tools/ci/trim-rust-cache.sh
       - name: Save main compiled dependencies
         if: steps.trim.outputs.cacheable == 'true'
@@ -166,7 +180,7 @@ jobs:
           key: ${{ steps.compiled.outputs.cache-primary-key }}
       - name: Bound the main noq test dependency cache
         id: trim-noq
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.compiled-noq.outputs.cache-hit != 'true'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.compiled-noq.outputs.cache-hit != 'true'
         env:
           VOYTTY_CACHE_MANIFEST_PATH: vendor/noq-proto/Cargo.toml
           VOYTTY_CACHE_TARGET_DIR: target/noq-tests
@@ -182,7 +196,7 @@ jobs:
           key: ${{ steps.compiled-noq.outputs.cache-primary-key }}
       - name: Bound the main iroh test dependency cache
         id: trim-iroh
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.compiled-iroh.outputs.cache-hit != 'true'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.compiled-iroh.outputs.cache-hit != 'true'
         env:
           VOYTTY_CACHE_MANIFEST_PATH: vendor/iroh/Cargo.toml
           VOYTTY_CACHE_TARGET_DIR: target/iroh-tests
@@ -198,14 +212,13 @@ jobs:
           key: ${{ steps.compiled-iroh.outputs.cache-primary-key }}
       - name: Explain reproduction on failure
         if: failure()
-        run: echo 'Reproduce on the matching Unix host with just ci-unix ${{ matrix.docs }}.' >> "$GITHUB_STEP_SUMMARY"
+        run: echo 'Reproduce on the matching Unix host with just ci-unix ${{ matrix.docs }} ${{ needs.changes.outputs.transport }}.' >> "$GITHUB_STEP_SUMMARY"
 
-  # Every event builds and floor-checks the shipped binaries. Only main uploads
-  # them: these builds embed a source commit, so they pass the official
-  # distribution check, and unreviewed PR binaries must not leave the runner.
+  # Build/floor-check candidates only for affected build inputs or full checks.
+  # Only explicit full checks on reviewed main may upload source-identified bytes.
   candidates-macos:
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
+    if: needs.changes.outputs.native == 'true'
     name: Release candidate / ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -255,7 +268,7 @@ jobs:
       - name: Run the candidate CLI without arguments
         run: release-input/voytty-${{ matrix.target }}
       - name: Upload the main native candidate and identity
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: native-${{ matrix.target }}
@@ -266,7 +279,7 @@ jobs:
           retention-days: 7
       - name: Bound the cold main native dependency cache
         id: trim-native
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.compiled-native.outputs.cache-hit != 'true'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.compiled-native.outputs.cache-hit != 'true'
         run: sh tools/ci/trim-rust-cache.sh release
       - name: Save cold main native dependencies for PR checks
         if: steps.trim-native.outputs.cacheable == 'true'
@@ -283,7 +296,7 @@ jobs:
 
   candidates-linux:
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
+    if: needs.changes.outputs.native == 'true'
     name: Release candidate / ${{ matrix.target }} / glibc 2.28
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
@@ -350,7 +363,7 @@ jobs:
       - name: Run the candidate CLI without arguments
         run: release-input/voytty-${{ matrix.target }}
       - name: Upload the main native candidate and identity
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: native-${{ matrix.target }}
@@ -361,7 +374,7 @@ jobs:
           retention-days: 7
       - name: Bound the cold main native dependency cache
         id: trim-native
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.compiled-native.outputs.cache-hit != 'true'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.compiled-native.outputs.cache-hit != 'true'
         run: sh tools/ci/trim-rust-cache.sh release
       - name: Save cold main native dependencies for PR checks
         if: steps.trim-native.outputs.cacheable == 'true'
@@ -406,7 +419,7 @@ jobs:
 
   relay:
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
+    if: needs.changes.outputs.relay == 'true'
     name: Official relay bundle
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -442,7 +455,7 @@ jobs:
 
   mobile-core:
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
+    if: needs.changes.outputs.mobile == 'true'
     name: Shared client / ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -475,8 +488,9 @@ jobs:
 
   candidate:
     name: Assemble the exact release candidate
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs:
+      - changes
       - candidates-macos
       - candidates-linux
     runs-on: ubuntu-24.04

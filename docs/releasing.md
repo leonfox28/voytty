@@ -11,7 +11,7 @@ do not enforce the presence, number, or support policy of other platforms.
 ```text
 reviewed feature branch + version commit in one PR
   -> PR CI -> merge the exact reviewed head
-  -> exact-SHA main CI + three native builds + verified unsigned candidate
+  -> explicit exact-SHA full main CI + cold native builds + unsigned candidate
   -> annotated vVERSION tag -> select that main candidate by artifact ID
   -> protected signing -> three final installer proofs -> immutable Release
 ```
@@ -59,8 +59,9 @@ just release 0.2.0 42
 
 This command is an explicit request to merge and publish PR 42. It requires the
 local clean HEAD to equal the open PR head and contain the requested version,
-waits for required checks, merges with `--match-head-commit`, waits for CI on the
-returned main merge SHA, and publishes from a private detached worktree. It
+waits for required PR checks, merges with `--match-head-commit`, and uses a
+private detached worktree to request/rejoin full validation for that exact main
+merge SHA before publishing. It
 preserves the caller's branch and removes only its own clean temporary worktree.
 The normal repository PR/protection rules still apply; no admin bypass is used.
 
@@ -77,37 +78,39 @@ just release-publish 0.2.0
 ```
 
 Before a new tag is pushed, this checks version, enforced main protection,
-Release vacancy, completed successful exact-SHA `ci.yml` main-push evidence,
-and an unexpired candidate with a server digest. If main has advanced beyond the
+Release vacancy, completed successful exact-SHA full `ci.yml` evidence on main,
+and an unexpired candidate with a server digest. It requests or rejoins that full
+validation before tagging; the routine quick main check is insufficient. If main has advanced beyond the
 reviewed merge, it stops before tagging instead of including unreviewed changes.
 A retained local annotated tag may be pushed only if it already names that exact
 source; remote tags and Release assets are never replaced.
 
 ## Build once, publish the verified bytes
 
-Main CI runs the normal test/policy graph and builds the three shipped
-native binaries. Linux uses the pinned glibc 2.28 builder; macOS declares the
-13.0 deployment floor. The candidate jobs explicitly embed the exact source SHA,
-self-check, and run the CLI without arguments. Non-documentation PR CI runs the same three native
-jobs so floor or build breakage fails before merge, but never uploads them:
-a source-committed binary passes the official distribution check that guards
-`update` and `uninstall`. Other PR and development builds retain their
-development identity. PR native checks may reuse main's trimmed third-party
-compilation cache; main native publication candidates remain cold
-builds. The Rust workspace suite also assembles a complete synthetic unsigned
-inventory, verifies reproducible assets and rejects mixed-source or modified
-inputs without signing or uploading them.
+Ordinary PRs run affected owners; routine main pushes do not build candidates.
+`just full-check` explicitly dispatches the complete graph on clean exact main,
+without publishing. The dispatch carries the expected SHA and rejects a moved
+main. Release commands reuse an existing full run for that SHA or request one;
+a failed run stops publication and is never automatically retried.
+
+The full run builds all three shipped native binaries: Linux uses the pinned
+glibc 2.28 builder and macOS declares the 13.0 deployment floor. These jobs embed
+the exact source SHA, self-check and run the CLI without arguments. PRs changing
+build/release inputs also run those packaging checks, but never upload binaries.
+Main full-validation candidates remain cold builds; PR packaging checks may use
+trimmed dependency caches. The Rust suite retains synthetic unsigned assembly,
+reproducibility, mixed-source and tampered-input tests.
 
 One Ubuntu job creates deterministic archives, the manifest, installer and Rust SBOM,
 verifies the unsigned inventory, and ShellChecks the generated installer. The
 candidate uses the source commit timestamp and is uploaded as
-`release-candidate-SHA-ATTEMPT`, retained for seven days. The main `CI gate`
-requires this job to succeed.
+`release-candidate-SHA-ATTEMPT`, retained for seven days. The full-validation `CI gate`
+requires this job to succeed; the ordinary main gate cannot supply a candidate.
 
 A failed-job rerun may reuse successful native jobs from an earlier attempt.
 Intermediate per-target uploads may therefore be replaced within that same CI
 run; the assembled candidate always receives a new immutable artifact ID. The
-lookup chooses the newest retained assembly from the **exact successful main
+lookup chooses the newest retained assembly from the **exact successful full main
 run**, never a PR run or another commit. Tag validation fixes that artifact ID,
 and the downloader treats digest mismatches as errors.
 
@@ -142,8 +145,8 @@ against an old mixed inventory. See [repository boundaries](mobile-repository.md
   recovery checkpoint.
 - Failed PR/main checks stop the operator. Fix the owning failure; no tag is
   pushed. Failed-job reruns can retain the same successful candidate.
-- An expired/deleted candidate fails before a new tag. Rerun main CI for the
-  exact source, then retry; publication never silently compiles a replacement.
+- An expired/deleted candidate fails before a new tag. Run `just full-check` for the
+  exact current main source, then retry; publication never silently compiles a replacement.
 - An interrupted tag push is reconciled against the exact annotated source.
   An existing remote tag rejoins the same `release.yml` run.
 - Before draft creation, a failed release job can be rerun for the same tag.

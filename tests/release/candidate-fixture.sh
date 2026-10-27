@@ -24,6 +24,7 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --jq) query=$2; shift ;;
         --slurp) slurp=true ;;
+        *'/actions/workflows/ci.yml/runs') source="$CANDIDATE_FIXTURE/runs.json" ;;
         *'/artifacts?'*) source="$CANDIDATE_FIXTURE/artifacts.json" ;;
     esac
     shift
@@ -48,12 +49,29 @@ jq -n --arg commit "$commit" '[1, 2] | .[] | {artifacts: [{
     workflow_run: {id: 123, head_branch: "main", head_sha: $commit}
 }]}' >"$fixture/artifacts.json"
 
+# The full dispatch must be discoverable alongside historical push evidence;
+# newer PR, wrong-source and wrong-branch successes must not be selected.
+jq -n --arg commit "$commit" '{workflow_runs: [
+    {id: 1, event: "push", head_branch: "main", head_sha: $commit, created_at: "2026-01-01"},
+    {id: 123, event: "workflow_dispatch", head_branch: "main", head_sha: $commit, created_at: "2026-01-02"},
+    {id: 900, event: "pull_request", head_branch: "main", head_sha: $commit, created_at: "2026-01-03"},
+    {id: 901, event: "workflow_dispatch", head_branch: "topic", head_sha: $commit, created_at: "2026-01-04"},
+    {id: 902, event: "workflow_dispatch", head_branch: "main", head_sha: ("f" * 40), created_at: "2026-01-05"}
+] | map(. + {status: "completed", conclusion: "success", html_url: ("https://example.test/runs/" + (.id | tostring))})}' >"$fixture/runs.json"
+green=$(CANDIDATE_FIXTURE="$fixture" PATH="$fixture/bin:$PATH" \
+    sh "$repo_root/tools/release/find-green-main-ci.sh" "$commit")
+[ "$green" = '123 https://example.test/runs/123' ] || fail "exact full main validation lookup chose unrelated evidence"
+
 lookup() {
     CANDIDATE_FIXTURE="$fixture" PATH="$fixture/bin:$PATH" \
         sh "$repo_root/tools/release/find-candidate.sh" 123 "$commit"
 }
 
 [ "$(lookup)" = 102 ] || fail "failed-job retry did not reuse the newest successful assembly"
+
+jq '.event = "workflow_dispatch"' "$fixture/run.json" >"$fixture/dispatch.json"
+mv "$fixture/dispatch.json" "$fixture/run.json"
+[ "$(lookup)" = 102 ] || fail "exact full-dispatch candidate was rejected"
 
 cp "$fixture/artifacts.json" "$fixture/valid.json"
 jq '.artifacts |= map(.expired = true)' "$fixture/valid.json" >"$fixture/artifacts.json"
@@ -68,6 +86,10 @@ fi
 jq '.artifacts |= map(.digest = null)' "$fixture/valid.json" >"$fixture/artifacts.json"
 if lookup >"$fixture/stdout" 2>"$fixture/stderr"; then
     fail "candidate without a server digest was accepted"
+fi
+printf '%s\n' '{"artifacts":[]}' >"$fixture/artifacts.json"
+if lookup >"$fixture/stdout" 2>"$fixture/stderr"; then
+    fail "quick CI without a candidate was accepted"
 fi
 cp "$fixture/valid.json" "$fixture/artifacts.json"
 jq '.event = "pull_request" | .head_branch = "feature"' \
