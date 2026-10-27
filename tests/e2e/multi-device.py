@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BASE = Path(os.environ.get("VOYTTY_MULTI_DEVICE_ROOT")
             or Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
             / "voytty-verification/multi-device")
-PACKAGE = "io.github.leonfox28.voytty.dev"
+PACKAGE = "com.voytty.app.dev"
 RUNNER = PACKAGE + ".test/androidx.test.runner.AndroidJUnitRunner"
 ACCOUNT = {"A": "voytty-a", "B": "voytty-b"}
 CORE_SCENARIOS = {"local", "fresh-pair", "cold", "first-existing", "detach", "takeover",
@@ -599,7 +599,7 @@ class Android:
         self.log = (self.output / ("android-" + self.token + ".log")).open("w")
         self.process = subprocess.Popen([str(SDK / "platform-tools/adb"), "-s", self.lab.env["serial"],
             "shell", "am", "instrument", "-w", "-r", "-e", "multiDevice", self.token,
-            "-e", "class", "io.github.leonfox28.voytty.MultiDeviceTest", RUNNER], stdout=self.log, stderr=subprocess.STDOUT)
+            "-e", "class", "com.voytty.app.MultiDeviceTest", RUNNER], stdout=self.log, stderr=subprocess.STDOUT)
         def ready():
             if self.process.poll() is not None:
                 raise RuntimeError("Android bridge exited; inspect instrumentation log")

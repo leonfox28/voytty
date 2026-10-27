@@ -877,7 +877,7 @@ mod tests {
         let apk = b"synthetic unsigned APK payload";
         fs::write(input.join(ANDROID_APK_NAME), apk).expect("APK fixture");
         let metadata = json!({"schema": 1, "product": "voytty", "version": manifest.version,
-            "source_commit": manifest.source_commit, "package": "io.github.leonfox28.voytty",
+            "source_commit": manifest.source_commit, "package": "com.voytty.app",
             "abi": "arm64-v8a", "min_sdk": 26, "target_sdk": 36, "version_code": 1,
             "certificate_sha256": voytty_core::release::android::CERTIFICATE.trim(), "signed": false,
             "length": apk.len(), "sha256": sha256_hex(apk)});
@@ -1022,7 +1022,7 @@ mod tests {
         let apk = b"fixture APK bytes";
         fs::write(directory.path().join(ANDROID_APK_NAME), apk).expect("APK");
         let mut metadata = json!({"schema": 1, "product": "voytty", "version": manifest.version,
-            "source_commit": manifest.source_commit, "package": "io.github.leonfox28.voytty",
+            "source_commit": manifest.source_commit, "package": "com.voytty.app",
             "abi": "arm64-v8a", "min_sdk": 26, "target_sdk": 36, "version_code": 102699,
             "certificate_sha256": voytty_core::release::android::CERTIFICATE.trim(), "signed": false,
             "length": apk.len(), "sha256": sha256_hex(apk)});

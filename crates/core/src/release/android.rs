@@ -17,7 +17,7 @@ pub const APK_NAME: &str = "voytty-android-arm64.apk";
 /// Fixed Android metadata name in the official release inventory.
 pub const METADATA_NAME: &str = "voytty-android.json";
 /// Official Android package (development variants cannot replace it).
-pub const PACKAGE: &str = "io.github.leonfox28.voytty";
+pub const PACKAGE: &str = "com.voytty.app";
 /// Reviewed Android signing certificate digest.
 pub const CERTIFICATE: &str = include_str!("../../../../release/android-certificate.sha256");
 

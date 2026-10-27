@@ -181,7 +181,7 @@ def main() -> None:
                     run(*command[:-1], "build-for-testing")
                     runner = BUILD_ROOT / "ios/Build/Products/Debug-iphonesimulator/VoyttyUITests-Runner.app"
                     run("xcrun", "simctl", "install", args.simulator, str(runner))
-                    run("xcrun", "simctl", "privacy", args.simulator, "grant", "photos", "io.github.leonfox28.voytty.uitests.xctrunner")
+                    run("xcrun", "simctl", "privacy", args.simulator, "grant", "photos", "com.voytty.app.uitests.xctrunner")
                     command[-1] = "test-without-building"
                 run_ui(command, args.simulator, fixture, keyboard=args.ui_scope == "all")
         else:

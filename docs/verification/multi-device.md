@@ -900,7 +900,7 @@ Android 基础 instrumentation 为 **41 通过、4 条件跳过**，前台服务
 ## 运行器、判据与隔离
 
 [运行器](../../tests/e2e/multi-device.py) 使用真实 Linux PTY 和
-[Android instrumentation](../../apps/android/app/src/androidTest/java/io/github/leonfox28/voytty/MultiDeviceTest.kt)
+[Android instrumentation](../../apps/android/app/src/androidTest/java/com/voytty/app/MultiDeviceTest.kt)
 的私有阶段信号，调用真实 Application repository、Activity、输入、resize 和上传控制器。
 它不是 UI 点击覆盖率测试。
 

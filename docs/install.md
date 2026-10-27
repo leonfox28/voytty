@@ -11,7 +11,7 @@ updates are intentionally absent.
 
 voytty is a fresh installation, not an in-place update of zterm. The CLI is
 `voytty`, native state lives in `~/.voytty`, and Android/iOS application IDs
-start with `io.github.leonfox28.voytty`. Pairing tickets use `voytty-pair-v1:`;
+start with `com.voytty.app`. Pairing tickets use `voytty-pair-v1:`;
 both ends must run voytty and be paired again. Existing zterm identities,
 configuration, Sessions and mobile data are not imported or deleted.
 
@@ -26,6 +26,12 @@ require a voytty Release; they cannot install or update from those historical
 assets. Until the first voytty Release is published, build from this source
 tree. Historical version examples elsewhere in these docs describe the old
 release process, not renamed copies of those immutable assets.
+
+Early voytty development builds used `io.github.leonfox28.voytty` (and `.dev`)
+on Android and iOS. The domain-based IDs are now `com.voytty.app` and
+`com.voytty.app.dev`. These install as separate apps and do not import the old
+mobile identity, saved hosts or settings; pair the new app again. Existing
+development installations can remain installed until no longer needed.
 
 ## Install
 
@@ -286,7 +292,7 @@ immutable assets.
 
 Download `voytty-android-arm64.apk` from the selected GitHub Release and allow your
 browser/file manager to install it. Android 8.0+ and arm64 are required. The
-package is `io.github.leonfox28.voytty`; updates preserve its pairing/settings data
+package is `com.voytty.app`; updates preserve its pairing/settings data
 using the existing certificate. `voytty-android.json` records source, versionCode,
 certificate and digest. The detached `SHA256SUMS.sig` authenticates the complete
 Release inventory with the same reviewed Ed25519 key as the native manifest.

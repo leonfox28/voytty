@@ -18,7 +18,7 @@ def main():
     if not args.serial.startswith("emulator-") or not args.host_name.startswith("presentation-"):
         parser.error("use an explicit emulator and a disposable presentation host")
     adb = [args.adb, "-s", args.serial]
-    package = "io.github.leonfox28.voytty.dev"
+    package = "com.voytty.app.dev"
 
     def call(*command, check=True):
         return subprocess.run(adb + list(command), capture_output=True, text=True,
@@ -38,7 +38,7 @@ def main():
         test = subprocess.Popen(adb + [
             "shell", "am", "instrument", "-w", "-r",
             "-e", "networkInterruption", "1", "-e", "hostName", args.host_name,
-            "-e", "class", "io.github.leonfox28.voytty.NetworkInterruptionTest",
+            "-e", "class", "com.voytty.app.NetworkInterruptionTest",
             package + ".test/androidx.test.runner.AndroidJUnitRunner",
         ], stdout=log, stderr=subprocess.STDOUT)
 

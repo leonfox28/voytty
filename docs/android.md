@@ -204,14 +204,14 @@ acceptance. See the Android task's research evidence for actual runtime results.
 
 | Build | Application ID | Launcher label |
 | --- | --- | --- |
-| Release | `io.github.leonfox28.voytty` | voytty |
-| Debug | `io.github.leonfox28.voytty.dev` | voytty Dev |
+| Release | `com.voytty.app` | voytty |
+| Debug | `com.voytty.app.dev` | voytty Dev |
 
 Both variants can be installed together. Their identities, paired hosts and
 preferences are independent, so pair each variant separately. `just android-build`
 and `just android-install <serial>` build/install the development variant.
 Its instrumentation runner is
-`io.github.leonfox28.voytty.dev.test/androidx.test.runner.AndroidJUnitRunner`.
+`com.voytty.app.dev.test/androidx.test.runner.AndroidJUnitRunner`.
 The Kotlin namespace is shared by the sources and does not identify the installed app.
 
 Older debug builds used the release application ID. They remain a separate

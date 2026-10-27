@@ -45,8 +45,8 @@ parallel device cloning so the explicit destination is also the visible device.
 **Device → Keyboard → Toggle Software Keyboard** shows the on-screen keyboard;
 use its globe button to switch between English and Chinese Pinyin.
 
-Debug uses `io.github.leonfox28.voytty.dev` / **voytty Dev**; release uses
-`io.github.leonfox28.voytty` / **voytty**. Their identities and saved hosts are
+Debug uses `com.voytty.app.dev` / **voytty Dev**; release uses
+`com.voytty.app` / **voytty**. Their identities and saved hosts are
 independent. Product version comes from the root Cargo workspace; build number 1
 is only a development placeholder until an iOS distribution workflow is added.
 

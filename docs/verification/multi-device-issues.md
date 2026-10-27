@@ -630,7 +630,7 @@ Linux 快速 unlink / rebind 会复用 inode 和时间戳，单靠这两者识�
 仅把提升移至 `onStartCommand` 的中间方案仍出现 4/20 次崩溃，已保留失败。
 最终实现保留已提交的启动，每次 `onStartCommand` 先提升，再按最新状态自行停止；销毁期间的新前台请求在销毁后重新评估，
 失败或系统停止不触发后台重启。
-代码：[BackgroundConnection.kt](../../apps/android/app/src/main/java/io/github/leonfox28/voytty/BackgroundConnection.kt)。
+代码：[BackgroundConnection.kt](../../apps/android/app/src/main/java/com/voytty/app/BackgroundConnection.kt)。
 同一主线程轮次“启动后立即取消”的最小复现修正前崩溃；通知允许／拒绝共 4 项回归通过。
 真实 `android-takeover-final-02` 的 Linux → Android 10/10 通过、无同类崩溃；另一方向有 1 项初连失败。
 证据 `checks/android-pending-start-before.log`、`checks/android-pending-start-after.json`。
@@ -740,8 +740,8 @@ P20 / P21 的真实 `attachment-shutdown-regression-01` 为 39/40 通过；另 1
 现在分离 `sessionListError`，以连接 epoch、主机和查询序号限制结果归属；退役的必要查询以取消结束。
 重试只读列表；已确认成功的重命名／删除先更新已知状态，后续读取失败不改报修改失败。
 当前必要查询失败和精确 Session 缺失仍报错，不新建同名替代会话。
-代码：[AppRepository.kt](../../apps/android/app/src/main/java/io/github/leonfox28/voytty/AppRepository.kt)、
-[TerminalScreen.kt](../../apps/android/app/src/main/java/io/github/leonfox28/voytty/TerminalScreen.kt)。
+代码：[AppRepository.kt](../../apps/android/app/src/main/java/com/voytty/app/AppRepository.kt)、
+[TerminalScreen.kt](../../apps/android/app/src/main/java/com/voytty/app/TerminalScreen.kt)。
 最初 3 项中 2 失败，修正后 6 项通过；新增必要查询退役复现从 6 通过／1 失败到 7/7。
 两项 UI 检查通过，证据 `checks/ordered-fixes/session-refresh-before/`、
 `checks/ordered-fixes/retired-initial-before-01.log`、`checks/ordered-fixes/retired-initial-after-01.log`。
@@ -960,7 +960,7 @@ TCP 转发 4.1 秒，保持生产默认 RTT 和五秒请求期限，旧代码 5.
 抛出 `EMFILE`，保留的旧状态被运行器继续读取，直到 60 秒恢复超时。这次现场不能
 归类为“快照未送达”：它暴露了产品资源泄漏和 T32 的失效观察问题。
 
-根因在 [AppDiagnostics.kt](../../apps/android/app/src/main/java/io/github/leonfox28/voytty/AppDiagnostics.kt)：
+根因在 [AppDiagnostics.kt](../../apps/android/app/src/main/java/com/voytty/app/AppDiagnostics.kt)：
 通过 `Os.open` 获得的描述符被传给普通 Java 文件流，`.use` 只关闭借用流，没有释放
 原始描述符。Android 的 [输入流说明](https://android.googlesource.com/platform/prebuilts/fullsdk/sources/+/refs/heads/androidx-constraintlayout-release/android-35/java/io/FileInputStream.java)
 和 [输出流说明](https://android.googlesource.com/platform/prebuilts/fullsdk/sources/+/refs/heads/androidx-transition-release/android-34/java/io/FileOutputStream.java)
@@ -971,7 +971,7 @@ TCP 转发 4.1 秒，保持生产默认 RTT 和五秒请求期限，旧代码 5.
 复制后的描述符，并在 `finally` 中关闭原描述符。正常返回、规范化的提前返回、
 导出失败及快照收集失败都释放句柄；存储额度、显式十五分钟窗口和网络期限不变。
 
-三项新增 [Android 回归](../../apps/android/app/src/androidTest/java/io/github/leonfox28/voytty/DiagnosticsTest.kt)
+三项新增 [Android 回归](../../apps/android/app/src/androidTest/java/com/voytty/app/DiagnosticsTest.kt)
 修正前全部失败：128 轮存储操作遗留 **775** 个句柄，导出分支额外遗留 **32** 个，
 收集失败额外遗留 **8** 个；修正后全部通过，完整诊断测试 **7/7**。测试只统计随机
 夹具目录的描述符，避免后台网络活动影响计数；首版夹具未考虑 Android 路径别名，
@@ -1536,7 +1536,7 @@ QUIC 对持久重置密钥、CID 不复用及重置 oracle 的约束见
 | 编号 | 问题与已实施方案 | 证据／范围 |
 | --- | --- | --- |
 | T01 | PTY 扩展 CSI 解析污染画面、重复关闭描述符、VM 重启后仅凭复用 PID 判进程；分别修正解析、所有权清理与进程身份核对 | 早期 `smoke-01` 至 `smoke-06`；`test_split_extension_queries_do_not_corrupt_terminal_cells`，历史过程保留夹具失败 |
-| T02 | Android mailbox 发布顺序与读取时点竞争；修正阶段信号发布，使用私有目录和明确 serial | [MultiDeviceTest.kt](../../apps/android/app/src/androidTest/java/io/github/leonfox28/voytty/MultiDeviceTest.kt)、历史过程 |
+| T02 | Android mailbox 发布顺序与读取时点竞争；修正阶段信号发布，使用私有目录和明确 serial | [MultiDeviceTest.kt](../../apps/android/app/src/androidTest/java/com/voytty/app/MultiDeviceTest.kt)、历史过程 |
 | T03 | 仅 TIOCSWINSZ 不触发 SSH 远端 resize；底层 Active 也可能早于终端输入栅栏开放 | 显式 SIGWINCH 通知所属 SSH 子进程，并等待真实 PTY 输入呈现；恢复后仍在原绝对期限只发送一次 nonce；`checks/coordinator-19.log` |
 | T04 | 重启夹具混淆正常 guest reboot 与强杀模拟器；命名会话恢复缺少错误回退对照，上传故障时机不准确 | 区分故障类型，加入独立 `main` 对照，修正上传故障阶段；原 `extended-01` 39 通过／41 失败保留 |
 | T05 | Android 打开主机失败后仍继续 select，可能掩盖第一次错误 | 首次失败立即保留并结束该行，不以额外选择请求替代；`checks/android-open-before.log`、`checks/coordinator-13.log` |
