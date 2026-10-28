@@ -41,9 +41,15 @@ function Test-FixtureCertificate([string]$Thumbprint) {
     } finally { $store.Dispose() }
 }
 function Expect-Rejection([scriptblock]$Action, [string]$Message) {
+    $previousExitCode = 0
+    if (Test-Path -LiteralPath Variable:\LASTEXITCODE) { $previousExitCode = $LASTEXITCODE }
     $rejected = $false
     try { & $Action } catch { $rejected = $true }
     if (-not $rejected) { throw $Message }
+    # GitHub's PowerShell wrapper exits with LASTEXITCODE. A deliberately rejected
+    # native verifier must not turn a successful assertion into a failed job;
+    # preserve any failure that was already present before this expected one.
+    $global:LASTEXITCODE = $previousExitCode
 }
 try {
     if ($FixtureOnly) {
@@ -98,6 +104,18 @@ keyUsage = critical,digitalSignature,keyEncipherment,keyCertSign
         try {
             if ($client.GetStringAsync($base + '/health.txt').GetAwaiter().GetResult() -cne 'voytty HTTPS fixture') { throw 'HTTPS fixture response mismatch' }
         } finally { $client.Dispose() }
+        foreach ($baseline in @(0, 17)) {
+            $global:LASTEXITCODE = $baseline
+            $script:observedNativeCode = $null
+            Expect-Rejection {
+                & $env:ComSpec /d /c 'exit 23'
+                $script:observedNativeCode = $LASTEXITCODE
+                throw 'Expected native fixture rejection'
+            } 'Expected rejection was not observed'
+            if ($script:observedNativeCode -ne 23 -or $LASTEXITCODE -ne $baseline) { throw 'Expected native rejection changed the caller exit status' }
+        }
+        $global:LASTEXITCODE = 0
+        Write-Output 'Expected native rejection preserves the caller exit status.'
         Write-Output 'Windows HTTPS fixture acceptance passed with ordinary TLS validation.'
         return
     }

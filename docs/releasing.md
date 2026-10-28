@@ -180,18 +180,24 @@ After inspecting and authorizing the original release evidence, explicitly run:
 
 ```bash
 gh workflow run release-resume-signed.yml --ref main \
-  -f tag=v1.0.0 -f run_id=40647210683 -f artifact_id=12797742664
+  -f tag=v1.0.0 -f run_id=40663066202 -f artifact_id=12804772639
 ```
 
-These IDs identify the first voytty release's Windows fixture timeout. The owner
-requires the original annotated source, successful protected signing and Unix
-installer jobs, terminal Windows failures, skipped publication, and the original
-unexpired signed artifact with a server digest. Cancelled Windows jobs require
+These IDs identify the signed v1.0.0 inventory whose Windows fixture leaked the
+expected signature-rejection exit status after all assertions passed. The fixture
+now restores the caller's previous native exit status after an expected rejection;
+its standalone CI check covers both successful and already-failed caller states.
+The owner requires the original annotated source, successful protected signing
+and Unix installer jobs, terminal Windows failures, skipped publication, and the
+original unexpired signed artifact with a server digest. Cancelled Windows jobs require
 GitHub's job-timeout annotation; manual cancellation is not a substitute.
 
-The subsequent recovery run `40654018909` exposed a PowerShell 5.1 type error in
-that frozen installer. This specific signed inventory cannot be published;
-repairing product source requires a new candidate, not fixture-only recovery.
+The earlier original run `40647210683` and recovery run `40654018909` exposed a
+PowerShell 5.1 type error in that earlier frozen installer. That inventory cannot
+be published; repairing product source requires a new candidate, not fixture-only
+recovery. The unpublished v1.0.0 tag was rebuilt with explicit maintainer
+authorization after that product fix. The current signed inventory above and
+its annotated tag remain unchanged during fixture-only recovery.
 
 The original frozen verifier authenticates the retained inventory and generates
 fixture-only installers. All five native installer proofs run again on those
