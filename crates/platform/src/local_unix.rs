@@ -431,6 +431,11 @@ fn peer_uid<F: std::os::fd::AsFd>(_stream: &F) -> Result<u32, LocalPlatformError
     Err(LocalPlatformError::UnsupportedPlatform)
 }
 
+/// Native listener owned before entering the daemon runtime.
+pub type Listener = std::os::unix::net::UnixListener;
+/// Asynchronous listener for the daemon runtime.
+pub type AsyncListener = tokio::net::UnixListener;
+
 #[cfg(test)]
 mod tests {
     use super::*;

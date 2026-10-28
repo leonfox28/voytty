@@ -14,6 +14,7 @@ const DIRECTORY_MODE: u32 = 0o700;
 const FILE_MODE: u32 = 0o600;
 #[cfg(unix)]
 const EXECUTABLE_MODE: u32 = 0o700;
+#[cfg(unix)]
 const MAX_SOCKET_PATH_BYTES: usize = 100;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -52,8 +53,11 @@ impl UserPaths {
     #[must_use]
     pub fn for_account(account: &EffectiveAccount) -> Self {
         let state_root = account.home().join(".voytty");
+        #[cfg(unix)]
         let runtime_dir =
             runtime_candidate(account.uid()).unwrap_or_else(|| runtime_fallback(account.uid()));
+        #[cfg(not(unix))]
+        let runtime_dir = account.home().join(".voytty-run");
         Self::from_roots(
             account.uid(),
             account.home().to_path_buf(),
@@ -67,7 +71,12 @@ impl UserPaths {
     #[doc(hidden)]
     #[must_use]
     pub fn for_test(uid: u32, home: PathBuf, state_root: PathBuf, runtime_dir: PathBuf) -> Self {
-        Self::from_roots(uid, home, PathBuf::from("/bin/sh"), state_root, runtime_dir)
+        #[cfg(unix)]
+        let shell = PathBuf::from("/bin/sh");
+        #[cfg(not(unix))]
+        let shell = EffectiveAccount::current()
+            .map_or_else(|_| PathBuf::new(), |account| account.shell().to_path_buf());
+        Self::from_roots(uid, home, shell, state_root, runtime_dir)
     }
 
     fn from_roots(
@@ -187,6 +196,7 @@ impl UserPaths {
 
     /// Creates and validates the runtime socket directory.
     pub fn prepare_runtime_directory(&self) -> Result<(), PathError> {
+        #[cfg(unix)]
         if socket_path_bytes(&self.socket) > MAX_SOCKET_PATH_BYTES {
             return Err(PathError::SocketPathTooLong(self.socket.clone()));
         }
@@ -197,7 +207,7 @@ impl UserPaths {
 /// Managed filesystem trust-boundary failure.
 #[derive(Debug)]
 pub enum PathError {
-    /// Platform does not expose the required Unix ownership/mode boundary.
+    /// Platform does not expose a supported account security boundary.
     UnsupportedPlatform,
     /// Managed path is not absolute.
     NotAbsolute(PathBuf),
@@ -447,7 +457,11 @@ impl ExecutableActivation {
             .target
             .parent()
             .ok_or_else(|| PathError::NotAbsolute(self.target.clone()))?;
+        #[cfg(unix)]
         fs::remove_file(&self.backup).map_err(|error| io_error(&self.backup, error))?;
+        #[cfg(windows)]
+        crate::windows_security::remove_retired_executable(&self.backup)
+            .map_err(|error| io_error(&self.backup, error))?;
         sync_directory(parent)
     }
 
@@ -457,6 +471,19 @@ impl ExecutableActivation {
             .target
             .parent()
             .ok_or_else(|| PathError::NotAbsolute(self.target.clone()))?;
+        #[cfg(windows)]
+        {
+            let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let retired = parent.join(format!(".voytty.failed-{}-{sequence}", std::process::id()));
+            fs::rename(&self.target, &retired).map_err(|error| io_error(&self.target, error))?;
+            if let Err(error) = fs::rename(&self.backup, &self.target) {
+                let _ = fs::rename(&retired, &self.target);
+                return Err(io_error(&self.target, error));
+            }
+            crate::windows_security::remove_retired_executable(&retired)
+                .map_err(|error| io_error(&retired, error))?;
+        }
+        #[cfg(not(windows))]
         fs::rename(&self.backup, &self.target).map_err(|error| io_error(&self.target, error))?;
         sync_directory(parent)
     }
@@ -496,7 +523,12 @@ pub fn validate_owned_executable(path: &Path, uid: u32) -> Result<(), PathError>
         }
         Ok(())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let _ = uid;
+        crate::windows_security::validate(path).map_err(|e| io_error(path, e))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = uid;
         Err(PathError::UnsupportedPlatform)
@@ -530,12 +562,21 @@ pub fn activate_executable(
     }
     drop(file);
 
-    fs::hard_link(target, &backup).map_err(|error| {
+    #[cfg(unix)]
+    let retain = fs::hard_link(target, &backup);
+    #[cfg(windows)]
+    let retain = fs::rename(target, &backup);
+    #[cfg(not(any(unix, windows)))]
+    let retain = Err(io::Error::from(io::ErrorKind::Unsupported));
+    retain.map_err(|error| {
         let _ = fs::remove_file(&staged);
         io_error(target, error)
     })?;
     if let Err(error) = fs::rename(&staged, target) {
+        #[cfg(unix)]
         let _ = fs::remove_file(&backup);
+        #[cfg(windows)]
+        fs::rename(&backup, target).map_err(|restore| io_error(target, restore))?;
         let _ = fs::remove_file(&staged);
         return Err(io_error(target, error));
     }
@@ -594,7 +635,16 @@ pub fn remove_owned_executable(path: &Path, uid: u32) -> Result<(), PathError> {
     let parent = path
         .parent()
         .ok_or_else(|| PathError::NotAbsolute(path.to_path_buf()))?;
+    #[cfg(unix)]
     fs::remove_file(path).map_err(|error| io_error(path, error))?;
+    #[cfg(windows)]
+    {
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let retired = parent.join(format!(".voytty.retired-{}-{sequence}", std::process::id()));
+        fs::rename(path, &retired).map_err(|error| io_error(path, error))?;
+        crate::windows_security::remove_retired_executable(&retired)
+            .map_err(|error| io_error(&retired, error))?;
+    }
     sync_directory(parent)
 }
 
@@ -832,7 +882,16 @@ pub(crate) fn create_or_validate_directory(path: &Path, uid: u32) -> Result<(), 
                 }
                 validate_node(path, uid, ManagedType::Directory)
             }
-            #[cfg(not(unix))]
+            #[cfg(windows)]
+            {
+                match crate::windows_security::create_directory(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(io_error(path, error)),
+                }
+                validate_node(path, uid, ManagedType::Directory)
+            }
+            #[cfg(not(any(unix, windows)))]
             {
                 let _ = uid;
                 Err(PathError::UnsupportedPlatform)
@@ -872,11 +931,16 @@ fn create_new_executable(path: &Path) -> Result<File, PathError> {
             .mode(EXECUTABLE_MODE)
             .custom_flags(nix::libc::O_NOFOLLOW);
     }
-    options.open(path).map_err(|error| io_error(path, error))
+    let file = options.open(path).map_err(|error| io_error(path, error))?;
+    #[cfg(windows)]
+    crate::windows_security::protect_new_file(path).map_err(|error| io_error(path, error))?;
+    Ok(file)
 }
 
 fn validate_executable_parent(path: &Path) -> Result<(), PathError> {
     ensure_absolute(path)?;
+    #[cfg(windows)]
+    crate::windows_security::validate_parent(path).map_err(|error| io_error(path, error))?;
     let metadata = fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
     if metadata.file_type().is_symlink() {
         return Err(PathError::Symlink(path.to_path_buf()));
@@ -893,11 +957,24 @@ fn configure_secure_open(options: &mut OpenOptions) {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(FILE_MODE).custom_flags(nix::libc::O_NOFOLLOW);
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    #[cfg(not(any(unix, windows)))]
     let _ = options;
 }
 
-fn sync_directory(path: &Path) -> Result<(), PathError> {
+pub(crate) fn sync_directory(path: &Path) -> Result<(), PathError> {
+    // Windows does not support FlushFileBuffers on directory handles. Every
+    // managed file is flushed before its atomic same-volume rename.
+    #[cfg(windows)]
+    {
+        let _ = path;
+        Ok(())
+    }
+    #[cfg(not(windows))]
     File::open(path)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| io_error(path, error))
@@ -951,7 +1028,12 @@ fn validate_node(path: &Path, uid: u32, expected_type: ManagedType) -> Result<()
         }
         Ok(())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let _ = uid;
+        crate::windows_security::validate(path).map_err(|e| io_error(path, e))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = uid;
         Err(PathError::UnsupportedPlatform)
@@ -966,6 +1048,7 @@ fn ensure_absolute(path: &Path) -> Result<(), PathError> {
     }
 }
 
+#[cfg(unix)]
 fn runtime_candidate(uid: u32) -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     let candidate = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
@@ -988,10 +1071,12 @@ fn runtime_candidate(uid: u32) -> Option<PathBuf> {
     })
 }
 
+#[cfg(unix)]
 fn runtime_fallback(uid: u32) -> PathBuf {
     PathBuf::from(format!("/tmp/voytty-{uid}"))
 }
 
+#[cfg(unix)]
 fn validate_runtime_base(path: &Path, uid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -1020,6 +1105,7 @@ fn validate_runtime_base(path: &Path, uid: u32) -> bool {
     }
 }
 
+#[cfg(unix)]
 fn socket_path_bytes(path: &Path) -> usize {
     #[cfg(unix)]
     {
@@ -1549,6 +1635,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[cfg(unix)]
     fn runtime_fallback_and_socket_length_are_explicit() {
         use nix::unistd::Uid;
         use std::os::unix::fs::PermissionsExt;

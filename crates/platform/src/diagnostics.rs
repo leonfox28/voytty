@@ -107,7 +107,7 @@ impl Store {
     }
     /// Marks the exact newly bound socket as using coordinated runtime rotation.
     /// The caller must already own the daemon lifetime lock.
-    pub fn register_daemon(&self, _lock: &crate::local_unix::DaemonLock) -> io::Result<()> {
+    pub fn register_daemon(&self, _lock: &crate::local::DaemonLock) -> io::Result<()> {
         let signature = self.socket_signature()?;
         // Keep the ownership proof before attempting IO: the worker retries
         // persistence after a competing writer or damaged control document.
@@ -137,17 +137,35 @@ impl Store {
         Ok(())
     }
     fn socket_signature(&self) -> io::Result<Option<[i64; 4]>> {
+        #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
-        if !crate::local_unix::inspect_daemon_socket(&self.paths).map_err(io::Error::other)? {
+        if !crate::local::inspect_daemon_socket(&self.paths).map_err(io::Error::other)? {
             return Ok(None);
         }
-        let metadata = fs::symlink_metadata(self.paths.socket())?;
-        Ok(Some([
-            metadata.dev() as i64,
-            metadata.ino() as i64,
-            metadata.ctime(),
-            metadata.ctime_nsec(),
-        ]))
+        #[cfg(unix)]
+        {
+            let metadata = fs::symlink_metadata(self.paths.socket())?;
+            Ok(Some([
+                metadata.dev() as i64,
+                metadata.ino() as i64,
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+            ]))
+        }
+        #[cfg(windows)]
+        {
+            let bytes = fs::read(self.paths.socket())?;
+            let nonce: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| io::Error::other("invalid daemon marker"))?;
+            Ok(Some(std::array::from_fn(|i| {
+                i64::from_le_bytes(
+                    nonce[i * 8..i * 8 + 8]
+                        .try_into()
+                        .expect("eight-byte nonce chunk"),
+                )
+            })))
+        }
     }
     /// A live old daemon prevents safe rotation until its normal replacement.
     pub fn retention_pending(&self) -> io::Result<bool> {
@@ -356,7 +374,7 @@ fn exists(path: &Path) -> io::Result<bool> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::sync::Arc;
@@ -524,7 +542,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod process_tests {
     use super::*;
     use std::sync::Arc;
@@ -620,11 +638,11 @@ mod process_tests {
         let temp = tempfile::tempdir().expect("private root");
         let paths = paths(temp.path());
         paths.prepare_state_directories().expect("paths");
-        let daemon = crate::local_unix::DaemonLock::try_acquire(&paths)
+        let daemon = crate::local::DaemonLock::try_acquire(&paths)
             .expect("daemon lock")
             .expect("exclusive");
         let (_listener, _ownership) =
-            crate::local_unix::bind_owned_daemon_socket(&paths, &daemon).expect("old socket");
+            crate::local::bind_owned_daemon_socket(&paths, &daemon).expect("old socket");
         let store = Store {
             limit: 8192,
             ..Store::new(paths.clone())
@@ -657,11 +675,11 @@ mod process_tests {
         let temp = tempfile::tempdir().expect("private root");
         let paths = paths(temp.path());
         paths.prepare_state_directories().expect("paths");
-        let daemon = crate::local_unix::DaemonLock::try_acquire(&paths)
+        let daemon = crate::local::DaemonLock::try_acquire(&paths)
             .expect("daemon lock")
             .expect("exclusive");
         let (_listener, _ownership) =
-            crate::local_unix::bind_owned_daemon_socket(&paths, &daemon).expect("socket");
+            crate::local::bind_owned_daemon_socket(&paths, &daemon).expect("socket");
         let store = Store {
             limit: 8192,
             ..Store::new(paths.clone())
@@ -715,7 +733,7 @@ mod process_tests {
 
         fs::rename(paths.socket(), temp.path().join("prior.sock")).expect("old incarnation");
         let (_replacement, _ownership) =
-            crate::local_unix::bind_owned_daemon_socket(&paths, &daemon).expect("replacement");
+            crate::local::bind_owned_daemon_socket(&paths, &daemon).expect("replacement");
         fs::remove_file(paths.logs().join("diagnostics.json")).expect("unregistered replacement");
         worker
             .append(false, b"legacy replacement\n")

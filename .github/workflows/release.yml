@@ -140,6 +140,8 @@ jobs:
           mkdir fixture
           target/release/voytty-release-tool \
             render-test-installer release-output fixture/voytty-install-test.sh
+          target/release/voytty-release-tool \
+            render-test-installer release-output fixture/voytty-install-test.ps1
 
       - name: Upload the signed exact inventory
         id: signed
@@ -156,7 +158,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: installer-fixture-${{ github.ref_name }}-${{ github.run_attempt }}
-          path: fixture/voytty-install-test.sh
+          path: fixture/
           if-no-files-found: error
           retention-days: 7
 
@@ -177,6 +179,10 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
     steps:
       - name: Check out the exact existing tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -197,14 +203,21 @@ jobs:
           path: fixture
 
       - name: Check installer POSIX syntax
+        if: runner.os != 'Windows'
         run: |
           sh -n install/install.sh tests/release/installer-fixture.sh \
             fixture/voytty-install-test.sh
 
       - name: Exercise authenticated install and smallest preflight negatives
+        if: runner.os != 'Windows'
         run: >-
           sh tests/release/installer-fixture.sh
           "$PWD/release-output" "$PWD/fixture/voytty-install-test.sh"
+
+      - name: Exercise authenticated Windows install and negatives
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: tests/release/installer-windows.ps1 -ReleaseDirectory release-output -TestInstaller fixture/voytty-install-test.ps1
 
   publish:
     name: Create, verify, attest, and publish the immutable Release
@@ -291,10 +304,13 @@ jobs:
             release-output/voytty-release.json \
             release-output/voytty-release.json.sig \
             release-output/voytty-install.sh \
+            release-output/voytty-install.ps1 \
             release-output/voytty-sbom.spdx.json \
             release-output/voytty-aarch64-apple-darwin.tar.gz \
             release-output/voytty-aarch64-unknown-linux-gnu.tar.gz \
-            release-output/voytty-x86_64-unknown-linux-gnu.tar.gz
+            release-output/voytty-x86_64-unknown-linux-gnu.tar.gz \
+            release-output/voytty-x86_64-pc-windows-msvc.tar.gz \
+            release-output/voytty-aarch64-pc-windows-msvc.tar.gz
 
       - name: Download and verify the draft asset round-trip
         env:

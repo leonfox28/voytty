@@ -117,6 +117,30 @@ class RecoveryTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             recovery.validate_evidence(self.selection, records)
 
+    def test_windows_inventory_requires_both_native_installer_jobs(self):
+        records = copy.deepcopy(self.records)
+        records["release"]["assets"].append({
+            "id": 99, "name": "voytty-v0.1.35-x86_64-pc-windows-msvc.tar.gz",
+            "size": 1, "state": "uploaded", "digest": "sha256:" + "a" * 64,
+        })
+        with self.assertRaisesRegex(ValueError, "missing successful evidence"):
+            recovery.validate_evidence(self.selection, records)
+        records["jobs"] += [{"name": name, "status": "completed", "conclusion": "success"}
+                            for name in recovery.WINDOWS_INSTALLER_JOBS]
+        recovery.validate_evidence(self.selection, records)
+        for name in recovery.WINDOWS_INSTALLER_JOBS:
+            for conclusion in ("failure", "skipped", "cancelled"):
+                changed = copy.deepcopy(records)
+                next(job for job in changed["jobs"] if job["name"] == name)["conclusion"] = conclusion
+                with self.subTest(name=name, conclusion=conclusion), self.assertRaises(ValueError):
+                    recovery.validate_evidence(self.selection, changed)
+
+    def test_every_original_installer_must_pass_even_for_historical_drafts(self):
+        self.records["jobs"].append({"name": "Install x86_64-apple-darwin from local HTTPS",
+                                     "status": "completed", "conclusion": "failure"})
+        with self.assertRaisesRegex(ValueError, "missing successful evidence"):
+            recovery.validate_evidence(self.selection, self.records)
+
     def test_asset_replacement_incomplete_and_corrupt_inventory_are_rejected(self):
         for field, value in (("id", 100), ("digest", "sha256:" + "f" * 64),
                              ("state", "starter"), ("name", "../escape")):

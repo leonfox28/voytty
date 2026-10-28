@@ -3,7 +3,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// Effective Unix account used by the running voytty process.
+/// Effective operating-system account used by the running voytty process.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectiveAccount {
     uid: u32,
@@ -14,7 +14,7 @@ pub struct EffectiveAccount {
 }
 
 impl EffectiveAccount {
-    /// Looks up the effective UID in the operating-system account database.
+    /// Looks up the effective Unix account or Windows process-token SID/profile.
     pub fn current() -> Result<Self, AccountError> {
         #[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
         {
@@ -35,7 +35,29 @@ impl EffectiveAccount {
             })
         }
 
-        #[cfg(not(all(unix, not(any(target_os = "android", target_os = "redox")))))]
+        #[cfg(windows)]
+        {
+            let lookup = |error: std::io::Error| AccountError::Lookup {
+                uid: 0,
+                detail: error.to_string(),
+            };
+            let name = crate::windows_security::sid().map_err(lookup)?;
+            let home = dirs::home_dir().ok_or(AccountError::NotFound { uid: 0 })?;
+            let system =
+                winsafe::GetSystemDirectory().map_err(|e| lookup(std::io::Error::other(e)))?;
+            Ok(Self {
+                uid: 0,
+                gid: 0,
+                name,
+                home,
+                shell: PathBuf::from(system).join("WindowsPowerShell/v1.0/powershell.exe"),
+            })
+        }
+
+        #[cfg(not(any(
+            windows,
+            all(unix, not(any(target_os = "android", target_os = "redox")))
+        )))]
         {
             Err(AccountError::UnsupportedPlatform)
         }

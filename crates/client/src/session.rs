@@ -1,4 +1,9 @@
 //! One route-neutral attachment protocol and recovery owner.
+#[cfg(all(test, unix))]
+pub(crate) use tokio::net::{UnixListener as TestListener, UnixStream as TestStream};
+#[cfg(all(test, windows))]
+pub(crate) use voytty_platform::local::{AsyncListener as TestListener, Stream as TestStream};
+
 use crate::protocol::mutate_response;
 use crate::protocol::{
     DEFAULT_DEADLINE, decode_response, malformed, resolved_target_wire, resource_error,
@@ -742,9 +747,9 @@ impl SessionClient {
         target: ResolvedSessionTarget,
         session_id: SessionId,
         attachment_id: AttachmentId,
-    ) -> (Self, tokio::net::UnixStream) {
+    ) -> (Self, TestStream) {
         let (stream, peer) =
-            tokio::net::UnixStream::pair().expect("test-private terminal driver Unix stream pair");
+            TestStream::pair().expect("test-private terminal driver Unix stream pair");
         (
             Self {
                 color_sequence: Default::default(),
@@ -2325,8 +2330,7 @@ mod tests {
             SessionId::from_array([1; 16]),
             AttachmentId::from_array([2; 16]),
         );
-        let (stream, replacement_peer) =
-            tokio::net::UnixStream::pair().expect("tunnel sideband fixture");
+        let (stream, replacement_peer) = TestStream::pair().expect("tunnel sideband fixture");
         drop(peer);
         let mut peer = replacement_peer;
         client.transport = tunnel_transport(stream);
@@ -2426,7 +2430,7 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + 'a>> {
             Box::pin(async move {
                 self.calls.fetch_add(1, Ordering::AcqRel);
-                let listener = tokio::net::UnixListener::bind(&self.socket).map_err(|error| {
+                let listener = TestListener::bind(&self.socket).map_err(|error| {
                     DaemonError::new(
                         DomainErrorKind::DaemonStartTimeout,
                         format!("unable to bind replacement viewer-daemon fixture: {error}"),
@@ -2652,7 +2656,7 @@ mod tests {
         )
     }
 
-    fn tunnel_transport(stream: tokio::net::UnixStream) -> AttachmentTransport {
+    fn tunnel_transport(stream: TestStream) -> AttachmentTransport {
         AttachmentTransport::new(UnixAttachmentTransport::tunnel_after_first(stream, None))
     }
 
@@ -2661,7 +2665,7 @@ mod tests {
     }
 
     async fn read_tunneled_session_command(
-        stream: &mut tokio::net::UnixStream,
+        stream: &mut TestStream,
         decoder: &mut FrameDecoder,
         queued: &mut VecDeque<DecodedFrame>,
     ) -> DecodedFrame {
@@ -2686,7 +2690,7 @@ mod tests {
     }
 
     async fn serve_replacement_tunnel_once(
-        listener: tokio::net::UnixListener,
+        listener: TestListener,
         target: DeviceId,
         new_attachment: AttachmentId,
     ) -> v2::TerminalAttachRequest {
@@ -2698,7 +2702,7 @@ mod tests {
     }
 
     async fn serve_replacement_tunnel_stream(
-        stream: &mut tokio::net::UnixStream,
+        stream: &mut TestStream,
         target: DeviceId,
         new_attachment: AttachmentId,
     ) -> v2::TerminalAttachRequest {
@@ -2838,7 +2842,7 @@ mod tests {
         );
 
         let (client_stream, mut daemon_stream) =
-            tokio::net::UnixStream::pair().expect("create same-process tunnel fixture");
+            TestStream::pair().expect("create same-process tunnel fixture");
         let mut transport = tunnel_transport(client_stream);
         let mut envelopes = tunnel_envelope(
             WireKind::LocalSessionTunnelData,
@@ -2898,7 +2902,7 @@ mod tests {
     #[tokio::test]
     async fn tunnel_adapter_rejects_zero_data_and_incomplete_inner_eof() {
         let (client_stream, mut daemon_stream) =
-            tokio::net::UnixStream::pair().expect("create zero-data tunnel fixture");
+            TestStream::pair().expect("create zero-data tunnel fixture");
         let mut transport = tunnel_transport(client_stream);
         daemon_stream
             .write_all(&tunnel_envelope(
@@ -2914,7 +2918,7 @@ mod tests {
         assert_eq!(error.kind(), DomainErrorKind::MalformedFrame);
 
         let (client_stream, mut daemon_stream) =
-            tokio::net::UnixStream::pair().expect("create incomplete-inner tunnel fixture");
+            TestStream::pair().expect("create incomplete-inner tunnel fixture");
         let mut transport = tunnel_transport(client_stream);
         let incomplete_inner = encode_message(
             WireKind::TerminalSyncRequired,
@@ -2953,7 +2957,7 @@ mod tests {
         assert_eq!(error.kind(), DomainErrorKind::MalformedFrame);
 
         let (client_stream, mut daemon_stream) =
-            tokio::net::UnixStream::pair().expect("create interrupted-inner tunnel fixture");
+            TestStream::pair().expect("create interrupted-inner tunnel fixture");
         let mut transport = tunnel_transport(client_stream);
         let mut envelopes = tunnel_envelope(
             WireKind::LocalSessionTunnelData,
@@ -2985,7 +2989,7 @@ mod tests {
     #[tokio::test]
     async fn tunnel_adapter_rejects_data_after_half_close() {
         let (client_stream, mut daemon_stream) =
-            tokio::net::UnixStream::pair().expect("create half-close tunnel fixture");
+            TestStream::pair().expect("create half-close tunnel fixture");
         let mut transport = tunnel_transport(client_stream);
         let mut envelopes = tunnel_envelope(
             WireKind::LocalSessionTunnelHalfClose,
@@ -3023,7 +3027,7 @@ mod tests {
         );
         drop(stale_direct_target);
         let (tunnel_stream, mut tunnel_daemon) =
-            tokio::net::UnixStream::pair().expect("create paired tunnel stream");
+            TestStream::pair().expect("create paired tunnel stream");
         tunneled.transport = tunnel_transport(tunnel_stream);
         tunneled.resume_view_id = Some(ResumeViewId::from_array([0x38; ResumeViewId::LENGTH]));
 
@@ -3212,9 +3216,9 @@ mod tests {
         );
         drop((stale_first_peer, stale_second_peer));
         let (first_stream, mut first_daemon) =
-            tokio::net::UnixStream::pair().expect("create first peer-loss tunnel");
+            TestStream::pair().expect("create first peer-loss tunnel");
         let (second_stream, mut second_daemon) =
-            tokio::net::UnixStream::pair().expect("create second peer-loss tunnel");
+            TestStream::pair().expect("create second peer-loss tunnel");
         first.transport = tunnel_transport(first_stream);
         second.transport = tunnel_transport(second_stream);
         first.resume_view_id = Some(first_view);
@@ -3276,7 +3280,7 @@ mod tests {
     async fn reconnecting_frontends_resume_independently_through_one_viewer_listener() {
         let temporary = tempfile::tempdir().expect("create multi-resume fixture directory");
         let socket = temporary.path().join("viewer.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).expect("bind viewer IPC listener");
+        let listener = TestListener::bind(&socket).expect("bind viewer IPC listener");
         let target_device = DeviceId::from_array([0x40; DeviceId::LENGTH]);
         let first_session = SessionId::from_array([0x41; SessionId::LENGTH]);
         let second_session = SessionId::from_array([0x42; SessionId::LENGTH]);
@@ -3478,8 +3482,7 @@ mod tests {
                     rtt_ms: Some(3),
                 },
             ));
-            let (mut client, mut daemon) =
-                tokio::net::UnixStream::pair().expect("tunnel progress fixture");
+            let (mut client, mut daemon) = TestStream::pair().expect("tunnel progress fixture");
             let send = async {
                 for chunk in bytes.chunks(chunk_size) {
                     daemon
@@ -3526,7 +3529,7 @@ mod tests {
         )
         .expect("encode Opened envelope");
         let (mut client_stream, mut daemon_stream) =
-            tokio::net::UnixStream::pair().expect("create interrupted-Open fixture");
+            TestStream::pair().expect("create interrupted-Open fixture");
         daemon_stream
             .write_all(&opened[..1])
             .await
@@ -3551,7 +3554,7 @@ mod tests {
             &v2::LocalSessionTunnelData { bytes: vec![0x01] },
         );
         let (client_stream, mut daemon_stream) =
-            tokio::net::UnixStream::pair().expect("create interrupted-envelope fixture");
+            TestStream::pair().expect("create interrupted-envelope fixture");
         let mut transport = tunnel_transport(client_stream);
         daemon_stream
             .write_all(&data[..1])
@@ -3576,7 +3579,7 @@ mod tests {
     async fn reconnect_checkpoint_fixture() {
         let temporary = tempfile::tempdir().expect("create reconnect fixture directory");
         let socket = temporary.path().join("daemon.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).expect("bind reconnect fixture IPC");
+        let listener = TestListener::bind(&socket).expect("bind reconnect fixture IPC");
         let target_device = DeviceId::from_array([0x51; DeviceId::LENGTH]);
         let session_id = SessionId::from_array([0x52; SessionId::LENGTH]);
         let old_attachment = AttachmentId::from_array([0x53; AttachmentId::LENGTH]);
@@ -4406,7 +4409,7 @@ mod tests {
     async fn local_attachment_discards_stale_pre_snapshot_transport_states() {
         let temporary = tempfile::tempdir().expect("temporary socket root");
         let socket_path = temporary.path().join("terminal.sock");
-        let listener = tokio::net::UnixListener::bind(&socket_path).expect("local listener");
+        let listener = TestListener::bind(&socket_path).expect("local listener");
         let session_id = SessionId::from_array([0x94; SessionId::LENGTH]);
         let attachment_id = AttachmentId::from_array([0x95; AttachmentId::LENGTH]);
         let server = tokio::spawn(async move {
@@ -4618,7 +4621,7 @@ mod tests {
     async fn run_fake_initial_state_stall(create_main: bool) -> DaemonError {
         let temporary = tempfile::tempdir().expect("temporary initial-state stall fixture");
         let socket = temporary.path().join("initial-state-stall.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).expect("bind fake local daemon");
+        let listener = TestListener::bind(&socket).expect("bind fake local daemon");
         let attachment_id = AttachmentId::from_array([0x9b; AttachmentId::LENGTH]);
         let (state_written_sender, state_written_receiver) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
@@ -4707,7 +4710,7 @@ mod tests {
     ) -> Result<SessionClient, DaemonError> {
         let temporary = tempfile::tempdir().expect("temporary create-main fixture");
         let socket = temporary.path().join("create-main.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).expect("bind fake local daemon");
+        let listener = TestListener::bind(&socket).expect("bind fake local daemon");
         let expected_target = target.device_id();
         let (submitted_tx, submitted_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();

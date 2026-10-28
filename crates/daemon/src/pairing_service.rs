@@ -29,9 +29,9 @@ use voytty_core::{
 use voytty_proto::{WireKind, v2};
 use zeroize::{Zeroize, Zeroizing};
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use crate::pairing::controller_transcript;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use voytty_core::{PAIR_PROTOCOL_VERSION, PairChallenge, PairNonce};
 
 use crate::authorization::AuthorizationRegistry;
@@ -911,7 +911,7 @@ impl PairingServiceInner {
         result
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn inject_authorize_fault(&self, fault: AuthorizeFault) {
         mutex_lock(&self.authorize_faults).push_back(fault);
     }

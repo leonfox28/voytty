@@ -8,7 +8,7 @@ pub async fn run_terminal(
     request: TerminalRequest,
     runtime: &LocalRuntime,
 ) -> Result<(), CliError> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         let context = match &request.kind {
             super::TerminalRequestKind::Attach {
@@ -25,7 +25,7 @@ pub async fn run_terminal(
                 None => error,
             })
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (request, runtime);
         Err(CliError::Daemon(voytty_daemon::error::DaemonError::new(
@@ -35,29 +35,35 @@ pub async fn run_terminal(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod unix {
     use std::collections::VecDeque;
     use std::future::Future;
     use std::io::{self, IsTerminal, Write};
+    #[cfg(unix)]
     use std::os::fd::{AsFd, OwnedFd};
+    #[cfg(windows)]
+    use std::os::windows::io::AsHandle as AsFd;
     use std::panic::AssertUnwindSafe;
     use std::sync::Arc;
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     use std::sync::mpsc::{Receiver as TestReceiver, SyncSender as TestSender, sync_channel};
     use std::thread::JoinHandle;
     use std::time::{Duration, Instant};
 
     use futures_util::FutureExt;
+    #[cfg(unix)]
     use nix::sys::termios::{SetArg, Termios, cfmakeraw, tcgetattr, tcsetattr};
+    #[cfg(unix)]
     use rustix::event::{PollFd, PollFlags, poll};
+    #[cfg(unix)]
     use tokio::signal::unix::{Signal, SignalKind, signal};
     use tokio::sync::{mpsc, watch};
     use voytty_client::progress::{ProgressFailure, ProgressHistory, ProgressObserver};
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     use voytty_core::Revision;
     use voytty_core::terminal::{
         ActiveScreen, TerminalHistoryWindowAnchor, TerminalHistoryWindowQuery, TerminalModes,
@@ -65,7 +71,7 @@ mod unix {
         TerminalSurfaceDelta, TerminalSurfaceHistoryWindowResult, TerminalSurfaceRow,
         TerminalSurfaceSnapshot, TerminalViewportDisposition,
     };
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     use voytty_core::terminal::{
         TerminalCell, TerminalColor, TerminalCursor, TerminalStyle, TerminalSurface,
         TerminalSurfaceHistoryWindowFrame, TerminalSurfaceRowPatch,
@@ -89,6 +95,8 @@ mod unix {
         include!("terminal_ui/startup.rs");
     }
     use startup::{InactivePresentation, StartupProgress};
+    #[cfg(windows)]
+    include!("terminal_ui/windows_console.rs");
 
     mod host_colors {
         include!("terminal_ui/host_colors.rs");
@@ -126,7 +134,7 @@ mod unix {
     }
 
     use ansi_presenter::DesktopPresenter;
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     use ansi_presenter::semantic_dirty_runs;
     use attachment_surface::AttachmentSurface;
     use composition::{
@@ -137,6 +145,7 @@ mod unix {
     use selection::{SelectionController, SelectionSourceIdentity};
 
     const STDIN_CHANNEL_CAPACITY: usize = 8;
+    #[cfg(unix)]
     const STDIN_CHUNK_BYTES: usize = 4 * 1024;
     const CONTROL_PREFIX_TIMEOUT: Duration = Duration::from_secs(1);
     const DETACH_TIMEOUT: Duration = Duration::from_secs(2);
@@ -776,7 +785,7 @@ mod unix {
             && input_codec.paste_in_progress()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     const fn input_epoch_is_current(observed: u64, current: u64) -> bool {
         observed == current
     }
@@ -869,6 +878,7 @@ mod unix {
         hangup: Signal,
     }
 
+    #[cfg(unix)]
     impl TerminalSignals {
         fn install() -> Result<Self, CliError> {
             Ok(Self {
@@ -1030,6 +1040,7 @@ mod unix {
         CliError::Io(format!("{operation}: {error}"))
     }
 
+    #[cfg(unix)]
     fn terminal_size(terminal: &impl AsFd) -> Result<TerminalSize, CliError> {
         let size = rustix::termios::tcgetwinsize(terminal)
             .map_err(|error| terminal_io("read terminal viewport", error.into()))?;
@@ -1065,6 +1076,7 @@ mod unix {
         }
     }
 
+    #[cfg(unix)]
     struct TerminalGuard {
         input: OwnedFd,
         output: OwnedFd,
@@ -1073,6 +1085,7 @@ mod unix {
         appearance_owned: Arc<std::sync::atomic::AtomicBool>,
     }
 
+    #[cfg(unix)]
     impl TerminalGuard {
         fn enter(input: &impl AsFd, output: &impl AsFd) -> Result<Self, CliError> {
             let input = duplicate_cloexec(input, "duplicate terminal stdin")?;
@@ -1122,12 +1135,14 @@ mod unix {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for TerminalGuard {
         fn drop(&mut self) {
             let _ = self.restore();
         }
     }
 
+    #[cfg(unix)]
     fn tcgetattr_retry(fd: &impl AsFd) -> Result<Termios, nix::errno::Errno> {
         loop {
             match tcgetattr(fd) {
@@ -1137,6 +1152,7 @@ mod unix {
         }
     }
 
+    #[cfg(unix)]
     fn tcsetattr_retry(
         fd: &impl AsFd,
         action: SetArg,
@@ -1150,6 +1166,7 @@ mod unix {
         }
     }
 
+    #[cfg(unix)]
     fn write_all_fd(fd: &impl AsFd, mut bytes: &[u8]) -> io::Result<()> {
         while !bytes.is_empty() {
             match rustix::io::write(fd, bytes) {
@@ -1162,10 +1179,12 @@ mod unix {
         Ok(())
     }
 
+    #[cfg(unix)]
     fn duplicate_cloexec(fd: &impl AsFd, operation: &'static str) -> Result<OwnedFd, CliError> {
         rustix::io::fcntl_dupfd_cloexec(fd, 0).map_err(|error| terminal_io(operation, error.into()))
     }
 
+    #[cfg(unix)]
     fn cancellation_pipe() -> Result<(OwnedFd, OwnedFd), CliError> {
         #[cfg(target_os = "linux")]
         {
@@ -1188,7 +1207,7 @@ mod unix {
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(unix, not(target_os = "linux")))]
     fn set_cloexec(fd: &impl AsFd, operation: &'static str) -> Result<(), CliError> {
         let flags =
             rustix::io::fcntl_getfd(fd).map_err(|error| terminal_io(operation, error.into()))?;
@@ -1241,25 +1260,25 @@ mod unix {
         Error(String),
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     struct StdinReaderTestGate {
         observed: TestSender<()>,
         release: TestReceiver<()>,
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     struct StdinReaderTestControl {
         observed: TestReceiver<()>,
         release: TestSender<()>,
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     #[derive(Clone)]
     struct StdinReaderTestSeam {
         gates: Arc<Mutex<VecDeque<StdinReaderTestGate>>>,
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     impl StdinReaderTestSeam {
         fn with_gates(count: usize) -> (Self, Vec<StdinReaderTestControl>) {
             let mut gates = VecDeque::with_capacity(count);
@@ -1299,24 +1318,26 @@ mod unix {
         }
     }
 
+    #[cfg(unix)]
     struct StdinPump {
         receiver: Option<mpsc::Receiver<StdinEvent>>,
         retained: VecDeque<StdinEvent>,
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         sender_for_test: mpsc::Sender<StdinEvent>,
         _cancellation_read_guard: OwnedFd,
         cancellation_write: Option<OwnedFd>,
         handle: Option<JoinHandle<Result<Option<StdinEvent>, String>>>,
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         reader_test_seam: Option<StdinReaderTestSeam>,
     }
 
+    #[cfg(unix)]
     impl StdinPump {
         fn start(input: &impl AsFd, input_epoch: InputEpoch) -> Result<Self, CliError> {
             Self::start_inner(
                 input,
                 input_epoch,
-                #[cfg(test)]
+                #[cfg(all(test, unix))]
                 None,
             )
         }
@@ -1324,7 +1345,7 @@ mod unix {
         fn start_inner(
             input: &impl AsFd,
             input_epoch: InputEpoch,
-            #[cfg(test)] reader_test_seam: Option<StdinReaderTestSeam>,
+            #[cfg(all(test, unix))] reader_test_seam: Option<StdinReaderTestSeam>,
         ) -> Result<Self, CliError> {
             let fd = duplicate_cloexec(input, "duplicate terminal stdin reader")?;
             let (cancellation_read_guard, cancellation_write) = cancellation_pipe()?;
@@ -1333,9 +1354,9 @@ mod unix {
                 "duplicate terminal stdin cancellation reader",
             )?;
             let (sender, receiver) = mpsc::channel(STDIN_CHANNEL_CAPACITY);
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             let sender_for_test = sender.clone();
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             let thread_reader_test_seam = reader_test_seam.clone();
             let handle = std::thread::Builder::new()
                 .name("voytty-cli-stdin".to_owned())
@@ -1345,7 +1366,7 @@ mod unix {
                         cancellation_read,
                         sender,
                         input_epoch,
-                        #[cfg(test)]
+                        #[cfg(all(test, unix))]
                         thread_reader_test_seam,
                     )
                 })
@@ -1353,17 +1374,17 @@ mod unix {
             Ok(Self {
                 receiver: Some(receiver),
                 retained: VecDeque::new(),
-                #[cfg(test)]
+                #[cfg(all(test, unix))]
                 sender_for_test,
                 _cancellation_read_guard: cancellation_read_guard,
                 cancellation_write: Some(cancellation_write),
                 handle: Some(handle),
-                #[cfg(test)]
+                #[cfg(all(test, unix))]
                 reader_test_seam,
             })
         }
 
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         fn start_with_test_seam(
             input: &impl AsFd,
             input_epoch: InputEpoch,
@@ -1390,7 +1411,7 @@ mod unix {
             current_input_epoch: &mut u64,
             prefix: &mut CommandMode,
         ) -> Result<(), CliError> {
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             let reader_test_seam = self.reader_test_seam.clone();
 
             let mut retained = self.stop_reader()?;
@@ -1463,7 +1484,7 @@ mod unix {
             let mut replacement = Self::start_inner(
                 input,
                 input_epoch.clone(),
-                #[cfg(test)]
+                #[cfg(all(test, unix))]
                 reader_test_seam,
             )?;
             replacement.retained = retained;
@@ -1519,18 +1540,20 @@ mod unix {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for StdinPump {
         fn drop(&mut self) {
             let _ = self.shutdown();
         }
     }
 
+    #[cfg(unix)]
     fn stdin_reader(
         input: OwnedFd,
         cancellation: OwnedFd,
         sender: mpsc::Sender<StdinEvent>,
         input_epoch: InputEpoch,
-        #[cfg(test)] reader_test_seam: Option<StdinReaderTestSeam>,
+        #[cfg(all(test, unix))] reader_test_seam: Option<StdinReaderTestSeam>,
     ) -> Result<Option<StdinEvent>, String> {
         loop {
             let mut descriptors = [
@@ -1553,7 +1576,7 @@ mod unix {
             if !input_events.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
                 continue;
             }
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             if let Some(reader_test_seam) = &reader_test_seam {
                 reader_test_seam.after_readable_poll()?;
             }
@@ -3710,12 +3733,12 @@ mod unix {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     mod outer_terminal {
         include!("../tests/support/outer_terminal.rs");
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     mod tests {
         use std::fs::File;
         use std::io::Read;
@@ -3729,8 +3752,10 @@ mod unix {
         use nix::fcntl::{FcntlArg, OFlag, fcntl};
         use nix::pty::openpty;
         use nix::sys::signal::{Signal as NixSignal, kill};
+        #[cfg(unix)]
         use nix::sys::termios::tcgetattr;
         #[cfg(target_os = "macos")]
+        #[cfg(unix)]
         use nix::sys::termios::{LocalFlags, cfgetispeed, cfgetospeed};
         use nix::unistd::Pid;
 

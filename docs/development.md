@@ -138,10 +138,10 @@ Android/iOS cross targets, Docker and the glibc/macOS packaging floors.
 | Changed inputs | PR checks in addition to policy/dependencies |
 | --- | --- |
 | README, AGENTS, Markdown under docs (except executable `docs/relay.md`) | None |
-| CLI, daemon, platform, terminal Rust | Three supported Unix Rust hosts |
-| Shared client/core/proto/diagnostics or protocol schemas | Unix Rust plus Android/iOS shared-client compilation |
+| CLI, daemon, platform, terminal Rust | Three supported Unix Rust hosts and both Windows architectures |
+| Shared client/core/proto/diagnostics or protocol schemas | Unix/Windows Rust plus Android/iOS shared-client compilation |
 | Relay deployment/probe or `docs/relay.md` | Relay contracts and Docker runtime |
-| Release tools, installers, native build inputs | Rust and three native packaging/floor checks |
+| Release tools, installers, native build inputs | Rust and five native packaging/floor checks |
 | Cargo/toolchain, vendor, CI, unknown inputs or unavailable diff history | All owners |
 
 Patched Iroh/noq suites run for broad dependency/vendor changes and explicit full
@@ -175,10 +175,9 @@ failed runs are never automatically retried. When publication is requested,
 `just release` / `just release-publish` rejoin an existing exact full run or start
 one before tagging; see [release operations](releasing.md).
 
-Full validation retains the three Unix hosts, Android/iOS shared compilation,
+Full validation covers three Unix hosts, native Windows x86-64/ARM64, Android/iOS shared compilation,
 patched transport suites, dependency policy, Relay runtime, native packaging
-floors, CLI smoke and unsigned installer/manifest verification. macOS Intel and
-Windows remain paused. Cross-platform runtime evidence cannot be inferred from
+floors, CLI smoke and unsigned installer/manifest verification. macOS Intel remains paused. Cross-platform runtime evidence cannot be inferred from
 a local macOS pass.
 
 Shared changes need app integration too: update the pin in `voytty-app` and run
@@ -196,7 +195,7 @@ no incremental CI builds and exclusion of product binaries remain unchanged.
 Do not weaken tests or introduce automatic retries to obtain a green run.
 
 Local/hosted owners remain shared `justfile` recipes: `ci-policy`,
-`ci-dependencies`, `ci-unix <docs> <transport>`, `ci-relay`, and
+`ci-dependencies`, `ci-unix <docs> <transport>`, `ci-windows <transport>`, `ci-relay`, and
 `mobile-core-check <android|ios>`. `just check` composes the complete current-host
 profiles; it is useful before broad infrastructure work, not mandatory after each
 ordinary change. The installer, signing, final native installer proofs and
@@ -232,3 +231,19 @@ but do not eliminate GitHub-hosted queueing.
 side-effect free. Never use real `~/.voytty` for mutation tests; inject
 task-private `UserPaths` through the library harnesses. Local readiness must
 remain independent of Iroh, DNS, Relay, and Internet access.
+
+## Windows development
+
+Use the native MSVC Rust 1.98.0 toolchain, Visual Studio C++ build tools and Windows
+SDK, Git, PowerShell 5.1 or later, and `just` 1.42.4. ARM64 builds also require
+Clang (ring's ARM64 Windows C backend). The native runners are `windows-2025`
+(x86-64) and `windows-11-arm` (ARM64). Do not substitute an x64 emulation build
+for ARM64 evidence. Windows targets statically link the CRT.
+
+`just ci-windows` owns script syntax, workspace Clippy/tests, CLI smoke, and the
+selected patched transport tests. `just windows-build` owns native PE architecture
+and embedded source identity checks; it requires `RELEASE_TARGET`,
+`VOYTTY_SOURCE_COMMIT`, and `SOURCE_DATE_EPOCH`. Both CI matrices use these recipes.
+Existing Unix PTY/signal fixtures stay on Unix; Windows adds private ACL/pipe,
+ConPTY and detached daemon fixtures. Shared attachment/recovery tests run on both.
+See [Windows architecture and evidence](windows.md).

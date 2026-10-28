@@ -20,6 +20,10 @@ REQUIRED_JOBS = {
     "Install aarch64-unknown-linux-gnu from local HTTPS",
     "Install x86_64-unknown-linux-gnu from local HTTPS",
 }
+WINDOWS_INSTALLER_JOBS = {
+    f"Install {target} from local HTTPS"
+    for target in ("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc")
+}
 PUBLISH_JOB = "Create, verify, attest, and publish the immutable Release"
 
 
@@ -74,7 +78,17 @@ def validate_evidence(selection, records):
     require(annotated["sha"] == reference["object"]["sha"]
             and annotated["object"]["type"] == "commit" and annotated["object"]["sha"] == commit,
             "annotated tag does not identify the original source")
-    for name in REQUIRED_JOBS:
+    inventory = assets(release)
+    # Historical drafts predate Windows. Every installer in the original run
+    # must pass; Windows inventories additionally require both native jobs.
+    # The frozen verifier still enforces the exact signed target inventory.
+    required = REQUIRED_JOBS | {
+        job["name"] for job in jobs
+        if job["name"].startswith("Install ") and job["name"].endswith(" from local HTTPS")
+    }
+    if any("-pc-windows-msvc" in asset["name"] for asset in inventory):
+        required |= WINDOWS_INSTALLER_JOBS
+    for name in required:
         matching = [job for job in jobs if job["name"] == name]
         require(len(matching) == 1 and matching[0]["status"] == "completed"
                 and matching[0]["conclusion"] == "success", f"missing successful evidence: {name}")
@@ -92,7 +106,7 @@ def validate_evidence(selection, records):
             and release["target_commitish"] == commit and release["draft"] is True
             and release["immutable"] is False, "release is not the original unpublished draft")
     return {**selection, "source_commit": commit, "tag_object": annotated["sha"],
-            "prerelease": release["prerelease"], "assets": assets(release)}
+            "prerelease": release["prerelease"], "assets": inventory}
 
 
 def inspect(selection):

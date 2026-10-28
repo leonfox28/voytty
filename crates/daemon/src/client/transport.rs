@@ -1,6 +1,8 @@
 //! Direct and opaque-tunnel byte transport for one attachment epoch.
 use std::{collections::VecDeque, path::Path, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(unix)]
+use tokio::net::UnixStream as LocalStream;
 use voytty_client::progress::{LocalProgressDecoder, ProgressObserver};
 use voytty_client::transport::{
     AttachmentConnector, AttachmentIo, AttachmentTransport, AttachmentTransportItem,
@@ -14,6 +16,8 @@ use voytty_client::{
 };
 use voytty_core::DomainErrorKind;
 use voytty_core::connection_progress::ConnectionStage;
+#[cfg(windows)]
+use voytty_platform::local::Stream as LocalStream;
 use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
 use zeroize::Zeroizing;
 
@@ -21,12 +25,12 @@ use zeroize::Zeroizing;
 #[allow(missing_docs)]
 pub(super) enum UnixAttachmentTransport {
     Direct {
-        stream: tokio::net::UnixStream,
+        stream: LocalStream,
         decoder: FrameDecoder,
         queued: VecDeque<DecodedFrame>,
     },
     Tunnel {
-        stream: tokio::net::UnixStream,
+        stream: LocalStream,
         remote_capabilities: voytty_core::Capabilities,
         decoder: TunnelDecoder,
     },
@@ -52,9 +56,7 @@ impl UnixAttachmentTransport {
         progress: &ProgressObserver,
     ) -> Result<Self, DaemonError> {
         progress.report(ConnectionStage::OpeningLocalChannel);
-        let mut stream = tokio::net::UnixStream::connect(socket)
-            .await
-            .map_err(connect_error)?;
+        let mut stream = LocalStream::connect(socket).await.map_err(connect_error)?;
         let Some(target_device_id) = target.device_id() else {
             progress.report(ConnectionStage::SessionChannelReady);
             return Ok(Self::Direct {
@@ -152,10 +154,7 @@ impl UnixAttachmentTransport {
 
     #[cfg(test)]
     #[allow(dead_code)] // Used by the shared client's included desktop-adapter fixtures.
-    pub(super) fn tunnel_after_first(
-        stream: tokio::net::UnixStream,
-        first: Option<FirstFrame>,
-    ) -> Self {
+    pub(super) fn tunnel_after_first(stream: LocalStream, first: Option<FirstFrame>) -> Self {
         let decoder = first.map_or_else(TunnelDecoder::default, |first| TunnelDecoder {
             envelope_decoder: first.decoder,
             queued_envelopes: first.queued,
@@ -369,7 +368,7 @@ fn tunnel_closed(reason: v2::LocalSessionTunnelCloseReason) -> DaemonError {
 
 /// Reads a tunnel Open result, retaining coalesced envelope bytes.
 pub(super) async fn read_tunnel_first(
-    stream: &mut tokio::net::UnixStream,
+    stream: &mut LocalStream,
     progress: ProgressObserver,
 ) -> Result<FirstFrame, DaemonError> {
     let mut progress = LocalProgressDecoder::new(1, progress);
@@ -437,7 +436,7 @@ async fn read_tunnel_frame_parts<R: tokio::io::AsyncRead + Unpin>(
 
 /// Reads one local frame while preserving partial and coalesced bytes.
 pub(super) async fn read_frame_parts(
-    stream: &mut tokio::net::UnixStream,
+    stream: &mut LocalStream,
     decoder: &mut FrameDecoder,
     queued: &mut VecDeque<DecodedFrame>,
 ) -> Result<DecodedFrame, DaemonError> {
@@ -556,7 +555,7 @@ impl voytty_client::upload::UploadConnector for UnixAttachmentConnector {
                     "file upload requires a remote session",
                 ));
             };
-            let (reader, writer) = stream.into_split();
+            let (reader, writer) = tokio::io::split(stream);
             Ok(voytty_client::upload::UploadConnection {
                 capabilities: remote_capabilities,
                 reader: Box::new(TunnelUploadReader { reader, decoder }),
@@ -567,7 +566,7 @@ impl voytty_client::upload::UploadConnector for UnixAttachmentConnector {
 }
 
 struct TunnelUploadReader {
-    reader: tokio::net::unix::OwnedReadHalf,
+    reader: tokio::io::ReadHalf<LocalStream>,
     decoder: TunnelDecoder,
 }
 impl voytty_client::upload::UploadReader for TunnelUploadReader {
@@ -583,7 +582,7 @@ impl voytty_client::upload::UploadReader for TunnelUploadReader {
         })
     }
 }
-struct TunnelUploadWriter(tokio::net::unix::OwnedWriteHalf);
+struct TunnelUploadWriter(tokio::io::WriteHalf<LocalStream>);
 impl voytty_client::upload::UploadWriter for TunnelUploadWriter {
     fn write<'a>(&'a mut self, bytes: &'a [u8]) -> TransportFuture<'a, Result<(), DaemonError>> {
         Box::pin(write_tunnel_bytes(&mut self.0, bytes))

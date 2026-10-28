@@ -15,7 +15,7 @@ use voytty_core::terminal::{
     TerminalHistoryWindowQuery, TerminalSize, TerminalSurfaceDeltaResult,
     TerminalSurfaceHistoryWindowResult, TerminalSurfaceSnapshot,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use voytty_core::terminal::{TerminalHostEffect, TerminalHostEffects};
 use voytty_platform::pty::{
     PtyChild, PtyChildInterrupt, PtyChildState, PtyError, PtyExitStatus, PtyIo, PtySession, PtySize,
@@ -121,7 +121,7 @@ pub struct TerminalDriver {
     interrupt: PtyChildInterrupt,
     ownership: TerminalDriverOwnership,
     shared: Arc<SharedTerminal>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     effects: TerminalEffectBroker,
     queue: Arc<ByteQueue>,
     reader_thread: Option<JoinHandle<()>>,
@@ -131,26 +131,26 @@ pub struct TerminalDriver {
 
 /// Bounded terminal host-effect broker whose target is linearized with
 /// controller transitions by the Session actor.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone)]
 pub(crate) struct TerminalEffectBroker {
     inner: Arc<TerminalEffectBrokerInner>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct TerminalEffectBrokerInner {
     state: Mutex<TerminalEffectBrokerState>,
     wake: watch::Sender<()>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Default)]
 struct TerminalEffectBrokerState {
     target: Option<voytty_core::AttachmentId>,
     pending: TerminalHostEffects,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl TerminalEffectBroker {
     fn new() -> Self {
         let (wake, _) = watch::channel(());
@@ -193,7 +193,7 @@ impl TerminalEffectBroker {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn publish_for_test(
         &self,
         effect: TerminalHostEffect,
@@ -233,7 +233,7 @@ pub(crate) struct TerminalDriverInterrupt {
 }
 
 impl TerminalDriverInterrupt {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn with_child_cleanup_blocked_for_test(&self, blocked: impl FnOnce()) {
         let _child = cleanup_lock(&self.child);
         blocked();
@@ -288,7 +288,7 @@ impl TerminalDriverOwnership {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn is_released(&self) -> bool {
         *cleanup_lock(&self.inner.released)
     }
@@ -327,14 +327,14 @@ impl TerminalDriver {
         let interrupt = parts.interrupt;
         let ownership = TerminalDriverOwnership::new();
         let shared = Arc::new(SharedTerminal::new(model));
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let effects = TerminalEffectBroker::new();
         let queue = Arc::new(ByteQueue::new(config.byte_channel_capacity));
 
         let model_queue = Arc::clone(&queue);
         let model_shared = Arc::clone(&shared);
         let model_io = Arc::clone(&io);
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let model_effects = effects.clone();
         #[cfg(test)]
         let inject_model_failure = failure == Some(StartFailureInjection::ModelThread);
@@ -403,7 +403,7 @@ impl TerminalDriver {
                                 return;
                             }
                         }
-                        #[cfg(unix)]
+                        #[cfg(any(unix, windows))]
                         {
                             if let Err(error) = model_effects.publish(update.host_effects) {
                                 model_queue.complete();
@@ -479,7 +479,7 @@ impl TerminalDriver {
             interrupt,
             ownership,
             shared,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             effects,
             queue,
             reader_thread: Some(reader_thread),
@@ -494,7 +494,7 @@ impl TerminalDriver {
         self.shared.attachments.fetch_add(1, Ordering::AcqRel);
         TerminalAttachment {
             shared: Arc::clone(&self.shared),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             effects: self.effects.clone(),
             checkpoint: None,
             alive: Arc::new(AtomicBool::new(true)),
@@ -561,11 +561,11 @@ impl TerminalDriver {
         &self,
         target: Option<voytty_core::AttachmentId>,
     ) -> Result<(), TerminalDriverError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.effects.set_target(target)
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = target;
             Ok(())
@@ -737,7 +737,7 @@ impl Drop for TerminalDriver {
 /// Latest-only terminal view owned by one UI or transport attachment.
 pub struct TerminalAttachment {
     shared: Arc<SharedTerminal>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     effects: TerminalEffectBroker,
     checkpoint: Option<TerminalCheckpoint>,
     alive: Arc<AtomicBool>,
@@ -757,7 +757,7 @@ impl TerminalAttachment {
     }
 
     /// Returns a cloneable broker handle without exposing the terminal model.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[must_use]
     pub(crate) fn effect_broker(&self) -> TerminalEffectBroker {
         self.effects.clone()
@@ -1510,7 +1510,7 @@ mod tests {
         shared.attachments.store(1, Ordering::Release);
         let mut attachment = TerminalAttachment {
             shared: Arc::clone(&shared),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             effects: TerminalEffectBroker::new(),
             checkpoint: None,
             alive: Arc::new(AtomicBool::new(true)),
@@ -1557,7 +1557,7 @@ mod tests {
         shared.attachments.store(1, Ordering::Release);
         let mut attachment = TerminalAttachment {
             shared: Arc::clone(&shared),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             effects: TerminalEffectBroker::new(),
             checkpoint: None,
             alive: Arc::new(AtomicBool::new(true)),

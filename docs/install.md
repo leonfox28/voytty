@@ -2,14 +2,48 @@
 
 voytty's official native channel is one signed GitHub Release per lockstep Cargo
 version. It supports Apple Silicon macOS 13 or newer, plus arm64 and
-x86_64 GNU/Linux with glibc 2.28 or newer. Windows, Alpine/musl, and NixOS are
-not supported by this installer. Intel macOS is no longer published; its
+x86_64 GNU/Linux with glibc 2.28 or newer, and native Windows x86-64/ARM64.
+Alpine/musl and NixOS are not supported by this installer. Intel macOS is no longer published; its
 historical Releases remain available. Package-manager channels and background
 updates are intentionally absent.
 
 The installer requires `curl` and either `sha256sum` or `shasum`. Linux needs a
 64-bit userspace, not only a 64-bit kernel. On Apple Silicon, a terminal running
 through Rosetta still selects the native arm64 binary.
+
+## Windows
+
+The Windows bootstrap selects the operating system's native architecture, including
+ARM64 when invoked from an emulated x64 shell. It requires PowerShell 5.1 or newer,
+Windows `tar.exe`, and ConPTY (Windows 10 version 1809 or newer). Native CI runs on
+Windows Server 2025 x64 and Windows 11 ARM64; it does not establish runtime evidence
+for every older Windows build. See [Windows support](windows.md).
+
+After a Release containing Windows assets is published, download and inspect the
+bootstrap, then run it in PowerShell:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/leonfox28/voytty/main/install/install.ps1 -OutFile voytty-install.ps1
+Get-Content .\voytty-install.ps1
+& .\voytty-install.ps1
+# Optional: -Version vX.Y.Z -InstallDir 'C:\Users\me\bin' -NoPath
+```
+
+The default destination is `%LOCALAPPDATA%\voytty\bin\voytty.exe`. Installation
+adds this directory to the current PowerShell process's PATH unless `-NoPath` is
+supplied and prints guidance for future terminals; it does not change the registry
+PATH. No administrator privileges, setup or daemon startup are required. Existing
+executables are never overwritten. Manifest/signature and archive hashes, exact
+lengths, the single-file archive inventory and native binary identity are verified.
+Downloads allow only HTTPS redirects (at most five), 30 seconds without data and
+bounded total time/bytes. Unlike the POSIX downloader, this installer does not
+retry failed transfers automatically.
+
+`voytty setup`, `connect`, Session commands, pairing, `update`, `uninstall` and
+explicit `daemon autostart` work through the same command surface. Windows hosts
+start Windows PowerShell with the account profile as their default shell. Private
+state uses the account SID and protected ACLs; see [Windows support](windows.md)
+for paths, console behavior and executable replacement.
 
 ## Transition from zterm
 

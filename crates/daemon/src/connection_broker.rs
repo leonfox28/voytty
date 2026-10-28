@@ -2,10 +2,10 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::future::Future;
 use std::future::pending;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::pin::Pin;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -182,7 +182,7 @@ pub struct ConnectionBroker {
 }
 
 /// Boxed future returned by the narrow inbound normal-service callback.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) type RemoteServiceHandlerFuture =
     Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + 'static>>;
 
@@ -191,7 +191,7 @@ pub(crate) type RemoteServiceHandlerFuture =
 /// The callback cannot reach Endpoint, candidate, route, profile, or peer-slot
 /// state. It receives only the owned stream, verified peer identity, accepted
 /// receiver generation, and the first-frame deadline.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) trait RemoteServiceHandler: Send + Sync + 'static {
     fn handle_service_stream(
         &self,
@@ -202,7 +202,7 @@ pub(crate) trait RemoteServiceHandler: Send + Sync + 'static {
 
 /// Owned Iroh halves and receiver-owned authorization identity for one
 /// inbound normal service stream.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) struct InboundAuthenticatedStream {
     send: SendStream,
     recv: RecvStream,
@@ -210,7 +210,7 @@ pub(crate) struct InboundAuthenticatedStream {
     accepted_generation: AuthGeneration,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl fmt::Debug for InboundAuthenticatedStream {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -221,7 +221,7 @@ impl fmt::Debug for InboundAuthenticatedStream {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl InboundAuthenticatedStream {
     #[must_use]
     pub(crate) const fn remote_device_id(&self) -> DeviceId {
@@ -239,12 +239,12 @@ impl InboundAuthenticatedStream {
 }
 
 #[derive(Default)]
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct RemoteServiceHandlerSlot {
     handler: OnceLock<Arc<dyn RemoteServiceHandler>>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl RemoteServiceHandlerSlot {
     fn install(&self, handler: Arc<dyn RemoteServiceHandler>) -> Result<(), DaemonError> {
         self.handler.set(handler).map_err(|_| {
@@ -268,7 +268,7 @@ impl fmt::Debug for ConnectionBroker {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut debug = formatter.debug_struct("ConnectionBroker");
         debug.field("local_device_id", &self.inner.identity.device_id());
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         debug.field(
             "service_handler_installed",
             &self.inner.service_handler.is_installed(),
@@ -290,7 +290,7 @@ struct BrokerInner {
     observer: NetworkObserver,
     lifecycle: BrokerLifecycle,
     pairing: PairHandshakeAdmission,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     service_handler: RemoteServiceHandlerSlot,
     test_routes: Mutex<BTreeMap<DeviceId, EndpointAddr>>,
 }
@@ -485,7 +485,7 @@ pub struct ConnectionDemand {
 }
 
 /// Address-free selected-path status for one currently promoted connection.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SelectedPathObservation {
     pub(crate) path: PathKind,
@@ -496,13 +496,13 @@ pub(crate) struct SelectedPathObservation {
 /// service stream. Keeping this handle with the stream prevents a later
 /// primary replacement from changing the path reported for an already-open
 /// epoch.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone)]
 pub(crate) struct SelectedCandidateObserver {
     candidate: Arc<Candidate>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl SelectedCandidateObserver {
     /// Observes only the selected path class and its current RTT estimate.
     /// Remote addresses and relay URLs never cross this boundary.
@@ -697,7 +697,7 @@ pub struct AuthenticatedBiStream {
     remote: DeviceId,
     remote_generation: AuthGeneration,
     candidate: ConnectionCandidateKey,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     candidate_observer: SelectedCandidateObserver,
     purpose: StreamPurpose,
     _stream_permit: OwnedSemaphorePermit,
@@ -718,7 +718,7 @@ impl fmt::Debug for AuthenticatedBiStream {
 
 impl AuthenticatedBiStream {
     /// Handshake capabilities of the exact candidate selected for this stream.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub fn remote_capabilities(&self) -> voytty_core::Capabilities {
         self.candidate_observer
             .candidate
@@ -746,13 +746,13 @@ impl AuthenticatedBiStream {
     }
 
     /// Cloneable observations tied to the candidate that opened this stream.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn candidate_observer(&self) -> SelectedCandidateObserver {
         self.candidate_observer.clone()
     }
 
     /// Transport connection of the candidate that opened this stream.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn connection(&self) -> &Connection {
         &self.candidate_observer.candidate.connection
     }
@@ -1098,7 +1098,7 @@ impl ConnectionBroker {
                 observer,
                 lifecycle: BrokerLifecycle::default(),
                 pairing,
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 service_handler: RemoteServiceHandlerSlot::default(),
                 test_routes: Mutex::new(BTreeMap::new()),
             }),
@@ -1112,7 +1112,7 @@ impl ConnectionBroker {
     }
 
     /// Installs the single inbound normal-service owner before Endpoint spawn.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn install_remote_service_handler(
         &self,
         handler: Arc<dyn RemoteServiceHandler>,
@@ -1576,7 +1576,7 @@ impl ConnectionBroker {
 impl ConnectionDemand {
     /// Dials this demand's peer without Hello for the request that `until`
     /// bounds. Progress is left to the dial that adopts it.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn dial_replacement(&self, until: Instant) -> ReplacementTransport {
         let broker = self.broker.clone();
         let slot = Arc::clone(&self.slot);
@@ -1814,7 +1814,7 @@ impl ConnectionDemand {
                         remote: self.slot.remote,
                         remote_generation: generation,
                         candidate: candidate.key,
-                        #[cfg(unix)]
+                        #[cfg(any(unix, windows))]
                         candidate_observer: SelectedCandidateObserver {
                             candidate: Arc::clone(&candidate),
                         },
@@ -2550,7 +2550,7 @@ impl ConnectionBroker {
             }
         };
         let deadline = Instant::now() + self.inner.limits.first_frame_deadline;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if let Some(handler) = self.inner.service_handler.get() {
             if self.inner.lifecycle.is_quiescing() {
                 reject_stream(&mut send, &mut recv, b"transport stopping");
@@ -2577,7 +2577,7 @@ impl ConnectionBroker {
             }
             return;
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         let _ = accepted_generation;
 
         // Isolated M5-M6 composition intentionally retains the typed fallback.
@@ -3535,7 +3535,7 @@ fn bounded_u32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn round_rtt_millis(rtt: Duration) -> u32 {
     let rounded = rtt.as_nanos().saturating_add(500_000) / 1_000_000;
     u32::try_from(rounded).unwrap_or(u32::MAX)
@@ -3557,10 +3557,10 @@ mod tests {
     use crate::network::NetworkReporter;
     use crate::store::DeviceAuthorization;
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     struct NoopRemoteServiceHandler;
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     impl RemoteServiceHandler for NoopRemoteServiceHandler {
         fn handle_service_stream(
             &self,
@@ -3621,7 +3621,7 @@ mod tests {
         assert_eq!(owners.retired.len(), 1);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn selected_path_rtt_rounds_to_nearest_millisecond_and_clamps() {
         assert_eq!(round_rtt_millis(Duration::from_micros(499)), 0);
@@ -3802,7 +3802,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn remote_service_handler_installs_once_without_transport_ownership() {
         let slot = RemoteServiceHandlerSlot::default();
         assert!(!slot.is_installed());

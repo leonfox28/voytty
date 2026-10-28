@@ -716,7 +716,7 @@ mod tests {
             WireKind::LocalSessionTunnelHalfClose,
             &v2::LocalSessionTunnelHalfClose {},
         ));
-        let (local_daemon, mut frontend) = tokio::net::UnixStream::pair().expect("Unix pair");
+        let (local_daemon, mut frontend) = tokio::io::duplex(65_536);
         let (remote_daemon, mut target) = duplex(4096);
         let mut task = tokio::spawn(pump_tunnel(
             local_daemon,
@@ -753,7 +753,7 @@ mod tests {
             WireKind::LocalSessionTunnelHalfClose,
             &v2::LocalSessionTunnelHalfClose {},
         ));
-        let (local_daemon, mut frontend) = tokio::net::UnixStream::pair().expect("Unix pair");
+        let (local_daemon, mut frontend) = tokio::io::duplex(65_536);
         let (remote_daemon, mut target) = duplex(4096);
         let task = tokio::spawn(pump_tunnel(
             local_daemon,

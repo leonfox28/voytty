@@ -12,8 +12,12 @@ use iroh::endpoint::{Connection, RecvStream, SendStream, presets};
 use iroh::{Endpoint, RelayMode, tls::CaTlsConfig};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+#[cfg(unix)]
+use tokio::net::UnixListener as TestListener;
 use voytty_client::handshake::{read_one_frame, write_handshake_message};
 use voytty_core::{AuthGeneration, Capabilities, ConnectionWelcome, DeviceAlias, TransportLimits};
+#[cfg(windows)]
+use voytty_platform::local::AsyncListener as TestListener;
 use voytty_platform::user_state::UserPaths;
 use voytty_proto::{WireKind, encode_message, v2};
 
@@ -116,7 +120,9 @@ impl Fixture {
         let home = state.path().join("home");
         std::fs::create_dir(&home).expect("home");
         let paths = UserPaths::for_test(
-            nix::unistd::Uid::effective().as_raw(),
+            voytty_platform::account::EffectiveAccount::current()
+                .expect("current account")
+                .uid(),
             home.clone(),
             home.join(".voytty"),
             state.path().join("run"),
@@ -312,7 +318,7 @@ impl Fixture {
         tokio::task::JoinHandle<Result<(), DaemonError>>,
     ) {
         let socket = self._state.path().join("tunnel.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).expect("tunnel listener");
+        let listener = TestListener::bind(&socket).expect("tunnel listener");
         let broker = self.broker.clone();
         let remote = self.remote;
         let server = tokio::spawn(async move {

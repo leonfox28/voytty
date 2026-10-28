@@ -1,12 +1,12 @@
 //! Typed frontend commands and events above the single Session client owner.
 use crate::error::ClientError as DaemonError;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::{
     protocol::{is_attachment_command_stream_closed, is_attachment_stream_closed_without_event},
     session::{LocalAttachmentEvent, SessionClient},
 };
 use std::fmt;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::{
     sync::{
         Arc, Mutex,
@@ -18,19 +18,19 @@ use voytty_core::terminal::{
     TerminalClipboardWrite, TerminalHistoryWindowQuery, TerminalNotification, TerminalSize,
     TerminalSurfaceDelta, TerminalSurfaceHistoryWindowResult, TerminalSurfaceSnapshot,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use voytty_core::terminal::{TerminalHostEffect, TerminalHostEffects};
 use voytty_core::{AttachmentId, DomainErrorKind, Revision, SessionId};
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn unsupported_command_platform() -> DaemonError {
     DaemonError::new(
         DomainErrorKind::UnsupportedPlatform,
-        "terminal views require Unix",
+        "terminal views require a supported desktop platform",
     )
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const TERMINAL_DRIVER_CAPACITY: usize = 8;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const TERMINAL_CLOSURE_CORRELATION_WINDOW: Duration = Duration::from_millis(100);
 
 /// Replacement state consumed by the one CLI compositor.
@@ -266,7 +266,7 @@ pub struct PreparedTerminalView {
     initial_snapshot: TerminalViewSnapshot,
     takeover: bool,
     target: TerminalViewTarget,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     client: SessionClient,
 }
 
@@ -284,7 +284,7 @@ impl fmt::Debug for PreparedTerminalView {
 }
 
 impl PreparedTerminalView {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     /// Takes ownership of a validated initial attachment, pending display acknowledgement.
     pub fn new(
         mut client: SessionClient,
@@ -339,7 +339,7 @@ impl PreparedTerminalView {
     /// A requested takeover is initiated before the driver starts, so the same
     /// owner retains its daemon-issued operation lease, response correlation,
     /// decoder, and socket for the complete transition.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn acknowledge_initial(mut self) -> Result<TerminalViewIo, DaemonError> {
         self.client
             .snapshot_applied(self.initial_snapshot.revision)
@@ -362,8 +362,8 @@ impl PreparedTerminalView {
         ))
     }
 
-    /// Current non-Unix milestone has no raw terminal implementation.
-    #[cfg(not(unix))]
+    /// Unsupported targets have no raw terminal implementation.
+    #[cfg(not(any(unix, windows)))]
     pub async fn acknowledge_initial(self) -> Result<TerminalViewIo, DaemonError> {
         let _ = self;
         Err(unsupported_command_platform())
@@ -394,13 +394,13 @@ impl TerminalViewIo {
 
 /// Bounded event side of one frontend-owned terminal driver.
 pub struct TerminalViewEventReader {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     receiver: tokio::sync::mpsc::Receiver<Result<TerminalViewEvent, DaemonError>>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     deferred_visual: Option<TerminalViewEvent>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     effects: Arc<TerminalEffectSlot>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     effect_wakeup: tokio::sync::watch::Receiver<()>,
 }
 
@@ -415,7 +415,7 @@ impl fmt::Debug for TerminalViewEventReader {
 impl TerminalViewEventReader {
     /// Waits for the next typed event; active reads have no synthetic timeout.
     pub async fn read_event(&mut self) -> Result<Option<TerminalViewEvent>, DaemonError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             if let Some(event) = self.deferred_visual.take() {
                 return Ok(Some(event));
@@ -444,14 +444,14 @@ impl TerminalViewEventReader {
                     }
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             Err(unsupported_command_platform())
         }
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn view_host_effect(effect: TerminalHostEffect) -> TerminalViewEvent {
     match effect {
         TerminalHostEffect::ClipboardWrite(write) => TerminalViewEvent::ClipboardWrite(write),
@@ -461,13 +461,13 @@ fn view_host_effect(effect: TerminalHostEffect) -> TerminalViewEvent {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct TerminalEffectSlot {
     pending: Mutex<TerminalHostEffects>,
     wake: tokio::sync::watch::Sender<()>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl TerminalEffectSlot {
     fn new() -> (Arc<Self>, tokio::sync::watch::Receiver<()>) {
         let (wake, receiver) = tokio::sync::watch::channel(());
@@ -519,11 +519,11 @@ impl TerminalEffectSlot {
 /// Cloneable typed command side of one frontend-owned terminal driver.
 #[derive(Clone)]
 pub struct TerminalViewCommandWriter {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     sender: tokio::sync::mpsc::Sender<PendingTerminalCommand>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     terminal_outcome_queued: tokio::sync::watch::Receiver<bool>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     applied_revision: Arc<AtomicU64>,
 }
 
@@ -537,7 +537,7 @@ impl fmt::Debug for TerminalViewCommandWriter {
 
 impl TerminalViewCommandWriter {
     /// Captures the current resolved upload destination at the terminal driver.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn upload_origin(&self) -> Result<crate::upload::UploadOrigin, DaemonError> {
         let (reply, result) = tokio::sync::oneshot::channel();
         self.submit(TerminalDriverCommand::UploadOrigin { reply })
@@ -548,7 +548,7 @@ impl TerminalViewCommandWriter {
     }
 
     /// Writes a completed upload's paste only if the original attachment still owns this driver.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn write_upload_input(
         &self,
         origin: crate::upload::UploadOrigin,
@@ -561,21 +561,21 @@ impl TerminalViewCommandWriter {
     /// Records the exact revision successfully installed by the frontend.
     /// This is local state for remote resume and sends no Session frame.
     pub fn revision_applied(&self, revision: Revision) {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         self.applied_revision
             .fetch_max(revision.get(), Ordering::AcqRel);
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         let _ = revision;
     }
 
     /// Acknowledges an exactly flushed replacement snapshot or resume delta.
     pub async fn snapshot_applied(&self, revision: Revision) -> Result<(), DaemonError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.submit(TerminalDriverCommand::SnapshotApplied { revision })
                 .await
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = revision;
             Err(unsupported_command_platform())
@@ -584,11 +584,11 @@ impl TerminalViewCommandWriter {
 
     /// Sends ordinary controller input. Callers must gate this on `Active`.
     pub async fn write_input(&self, bytes: Vec<u8>) -> Result<(), DaemonError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.submit(TerminalDriverCommand::Input { bytes }).await
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = bytes;
             Err(unsupported_command_platform())
@@ -597,11 +597,11 @@ impl TerminalViewCommandWriter {
 
     /// Sends the latest validated viewport. Callers coalesce while non-active.
     pub async fn resize(&self, size: TerminalSize) -> Result<(), DaemonError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.submit(TerminalDriverCommand::Resize { size }).await
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = size;
             Err(unsupported_command_platform())
@@ -613,11 +613,11 @@ impl TerminalViewCommandWriter {
         &self,
         profile: voytty_core::terminal::TerminalColorProfile,
     ) -> Result<(), DaemonError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.submit(TerminalDriverCommand::Colors { profile }).await
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = profile;
             Err(unsupported_command_platform())
@@ -626,12 +626,12 @@ impl TerminalViewCommandWriter {
 
     /// Requests a full replacement after a revision gap.
     pub async fn request_sync(&self, known_revision: Revision) -> Result<(), DaemonError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.submit(TerminalDriverCommand::RequestSync { known_revision })
                 .await
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = known_revision;
             Err(unsupported_command_platform())
@@ -643,12 +643,12 @@ impl TerminalViewCommandWriter {
         &self,
         query: TerminalHistoryWindowQuery,
     ) -> Result<(), DaemonError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.submit(TerminalDriverCommand::RequestHistoryWindow { query })
                 .await
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = query;
             Err(unsupported_command_platform())
@@ -657,17 +657,17 @@ impl TerminalViewCommandWriter {
 
     /// Detaches this view while leaving the Session and PTY running.
     pub async fn detach(&self) -> Result<(), DaemonError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.submit(TerminalDriverCommand::Detach).await
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             Err(unsupported_command_platform())
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn submit(&self, command: TerminalDriverCommand) -> Result<(), DaemonError> {
         let deadline = crate::protocol::control_deadline();
         let (response, receiver) = tokio::sync::oneshot::channel();
@@ -689,7 +689,7 @@ impl TerminalViewCommandWriter {
         .unwrap_or_else(|_| Err(crate::protocol::control_timeout()))
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn correlate_terminal_outcome(&self) -> Result<(), DaemonError> {
         let mut queued = self.terminal_outcome_queued.clone();
         if *queued.borrow_and_update() {
@@ -702,14 +702,14 @@ impl TerminalViewCommandWriter {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct PendingTerminalCommand {
     command: TerminalDriverCommand,
     deadline: tokio::time::Instant,
     response: tokio::sync::oneshot::Sender<Result<(), DaemonError>>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 enum TerminalDriverCommand {
     UploadOrigin {
         reply: tokio::sync::oneshot::Sender<Result<crate::upload::UploadOrigin, DaemonError>>,
@@ -739,14 +739,14 @@ enum TerminalDriverCommand {
     Detach,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct TerminalDriverInitial {
     state: TerminalViewTransportState,
     route: TerminalViewRoute,
     takeover: bool,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn spawn_terminal_driver(
     client: SessionClient,
     initial_state: TerminalViewTransportState,
@@ -785,7 +785,7 @@ fn spawn_terminal_driver(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn run_terminal_driver(
     mut client: SessionClient,
     mut commands: tokio::sync::mpsc::Receiver<PendingTerminalCommand>,
@@ -915,7 +915,7 @@ async fn run_terminal_driver(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[allow(clippy::too_many_arguments)]
 async fn apply_terminal_driver_command(
     command: Option<PendingTerminalCommand>,
@@ -957,7 +957,7 @@ async fn apply_terminal_driver_command(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn correlate_terminal_command_closure(
     client: &mut SessionClient,
     pending: &mut std::collections::VecDeque<Result<TerminalViewEvent, DaemonError>>,
@@ -993,7 +993,7 @@ async fn correlate_terminal_command_closure(
     let _ = response.send(Ok(()));
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn terminal_command_outcome_unavailable() -> DaemonError {
     DaemonError::new(
         DomainErrorKind::DaemonStopped,
@@ -1001,7 +1001,7 @@ fn terminal_command_outcome_unavailable() -> DaemonError {
     )
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn queue_local_attachment_event(
     event: Result<LocalAttachmentEvent, DaemonError>,
     pending: &mut std::collections::VecDeque<Result<TerminalViewEvent, DaemonError>>,
@@ -1084,7 +1084,7 @@ fn queue_local_attachment_event(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn handle_terminal_driver_command(
     command: Option<PendingTerminalCommand>,
     client: &mut SessionClient,
@@ -1175,7 +1175,7 @@ async fn handle_terminal_driver_command(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 enum TerminalDriverCommandResult {
     Continue,
     SnapshotApplied,
@@ -1185,7 +1185,7 @@ enum TerminalDriverCommandResult {
     Stop,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn local_event_requires_synchronizing(event: &LocalAttachmentEvent) -> bool {
     matches!(
         event,
@@ -1195,7 +1195,7 @@ fn local_event_requires_synchronizing(event: &LocalAttachmentEvent) -> bool {
     )
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn terminal_event_from_local(
     event: LocalAttachmentEvent,
     route: TerminalViewRoute,
@@ -1279,7 +1279,7 @@ fn terminal_event_from_local(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn terminal_transport_state_from_wire(
     value: i32,
 ) -> Result<TerminalViewTransportState, DaemonError> {
@@ -1302,7 +1302,7 @@ fn terminal_transport_state_from_wire(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn terminal_protocol_error(detail: &'static str) -> DaemonError {
     DaemonError::new(DomainErrorKind::MalformedFrame, detail)
 }
@@ -1310,18 +1310,18 @@ fn terminal_protocol_error(detail: &'static str) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use crate::model::ResolvedSessionTarget;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use std::collections::VecDeque;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use voytty_core::DeviceId;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn upload_paste_is_rejected_at_driver_when_attachment_changed() {
         let target = ResolvedSessionTarget::device(DeviceId::from_array([0xe1; 32]));
@@ -1364,7 +1364,7 @@ mod tests {
         drop(events);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test(start_paused = true)]
     async fn full_command_queue_expires_and_dequeued_expired_input_is_not_written() {
         let (sender, mut queue) = tokio::sync::mpsc::channel(1);
@@ -1400,7 +1400,7 @@ mod tests {
             crate::protocol::DEFAULT_DEADLINE
         );
 
-        let (mut client, peer) = SessionClient::terminal_driver_test_pair(
+        let (mut client, mut peer) = SessionClient::terminal_driver_test_pair(
             ResolvedSessionTarget::local(),
             SessionId::from_array([1; 16]),
             AttachmentId::from_array([2; 16]),
@@ -1421,15 +1421,14 @@ mod tests {
             queue.try_recv().is_err(),
             "timed-out queue admission retained no command"
         );
-        assert_eq!(
-            peer.try_read(&mut [0_u8; 1])
-                .expect_err("expired input never reached the transport")
-                .kind(),
-            std::io::ErrorKind::WouldBlock
+        use tokio::io::AsyncReadExt;
+        assert!(
+            futures_util::FutureExt::now_or_never(peer.read(&mut [0_u8; 1])).is_none(),
+            "expired input never reached the transport"
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test(start_paused = true)]
     async fn command_write_uses_remaining_queue_budget_and_releases_the_owner() {
         let (mut client, mut peer) = SessionClient::terminal_driver_test_pair(
@@ -1483,7 +1482,7 @@ mod tests {
         assert!(!debug.contains("SENSITIVE_TERMINAL_SIGNAL_SENTINEL"));
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn connection_status_projection_is_route_explicit_and_redacts_private_identity() {
         const ATTACHMENT_SENTINEL: &[u8; AttachmentId::LENGTH] = b"STATUS_ID_SENTIN";
@@ -1541,7 +1540,7 @@ mod tests {
         assert_eq!(error.kind(), DomainErrorKind::MalformedFrame);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn terminal_command_closure_prefers_typed_end_and_normalizes_plain_eof() {
         let session_id = SessionId::from_array([0xc1; SessionId::LENGTH]);
@@ -1623,7 +1622,7 @@ mod tests {
         assert!(eof_pending.is_empty());
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn notification_reader_drains_coalesced_wakes_and_prioritizes_lifecycle() {
         let (sender, receiver) = tokio::sync::mpsc::channel(8);
@@ -1710,7 +1709,7 @@ mod tests {
         assert!(effects.take().is_none());
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn clipboard_events_bypass_the_bounded_semantic_queue_and_keep_only_latest() {
         let (effects, mut wakeup) = TerminalEffectSlot::new();
@@ -1752,7 +1751,7 @@ mod tests {
         assert!(effects.take().is_none());
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn clipboard_slot_is_cleared_by_reconnect_and_malformed_transport_state() {
         let attachment_id = AttachmentId::from_array([0xd2; AttachmentId::LENGTH]);
@@ -1793,7 +1792,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn legal_resize_after_terminal_event_was_queued_preserves_the_typed_outcome() {
         let session_id = SessionId::from_array([0xc5; SessionId::LENGTH]);
@@ -1904,7 +1903,7 @@ mod tests {
         assert!(!error.detail().contains("Broken pipe"));
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn dropped_terminal_event_reader_never_confirms_a_closed_command() {
         let session_id = SessionId::from_array([0xc7; SessionId::LENGTH]);
@@ -1936,7 +1935,7 @@ mod tests {
         drop(peer);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn closed_resize_schedule(
         session_id: SessionId,
         attachment_id: AttachmentId,
@@ -1990,7 +1989,7 @@ mod tests {
         (pending, last_state)
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn closure_schedule_frame<Message: prost::Message>(
         kind: WireKind,
         message: &Message,
@@ -1998,7 +1997,7 @@ mod tests {
         encode_message(kind, 0, 0, message).expect("encode closure-schedule frame")
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn resize_closure_schedules_preserve_typed_end_lease_error_and_remote_resync_order() {
         let session_id = SessionId::from_array([0xc3; SessionId::LENGTH]);
@@ -2134,7 +2133,7 @@ mod tests {
         assert!(failed.is_empty());
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn terminal_driver_local_exact_ack_activates_once_with_bounded_channels() {
         let (prepared, mut daemon, _, attachment_id) = terminal_test_view(false);
@@ -2203,7 +2202,7 @@ mod tests {
         server.await.expect("local driver server");
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn overlapping_history_window_request_is_rejected_without_ending_the_driver() {
         let (prepared, mut daemon, _, attachment_id) = terminal_test_view(false);
@@ -2281,7 +2280,7 @@ mod tests {
         let _daemon = server.await.expect("history overlap server");
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn queued_resume_barrier_survives_view_state_transitions() {
         let (prepared, _peer, _, _) = terminal_test_view(false);
@@ -2342,7 +2341,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn lost_remote_snapshot_ack_stays_synchronizing_until_resume() {
         let target = DeviceId::from_array([0xd1; DeviceId::LENGTH]);
@@ -2389,7 +2388,7 @@ mod tests {
         assert!(!stop_after_pending);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn lost_initial_remote_snapshot_ack_starts_driver_reconnecting_not_active() {
         let target_device = DeviceId::from_array([0xd4; DeviceId::LENGTH]);
@@ -2435,7 +2434,7 @@ mod tests {
         drop(writer);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn terminal_driver_takeover_activates_only_after_correlated_response() {
         let (prepared, mut daemon, session_id, _) = terminal_test_view(true);
@@ -2510,7 +2509,7 @@ mod tests {
         server.await.expect("takeover server");
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn terminal_driver_outcome_unknown_is_terminal_and_never_replays_takeover() {
         let (prepared, mut daemon, _, _) = terminal_test_view(true);
@@ -2577,12 +2576,12 @@ mod tests {
         server.await.expect("outcome-unknown server");
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn terminal_test_view(
         takeover: bool,
     ) -> (
         PreparedTerminalView,
-        tokio::net::UnixStream,
+        crate::session::TestStream,
         SessionId,
         AttachmentId,
     ) {
@@ -2611,9 +2610,9 @@ mod tests {
         )
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn read_terminal_test_frame(
-        stream: &mut tokio::net::UnixStream,
+        stream: &mut crate::session::TestStream,
         decoder: &mut FrameDecoder,
         queued: &mut VecDeque<DecodedFrame>,
     ) -> DecodedFrame {
@@ -2634,7 +2633,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn test_operation_lease() -> v2::SessionOperationLeaseResponse {
         v2::SessionOperationLeaseResponse {
             lease: Some(v2::OperationLease {
@@ -2644,7 +2643,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn test_takeover_response(session_id: SessionId) -> v2::SessionMutateResponse {
         v2::SessionMutateResponse {
             session: Some(v2::SessionSummary {
@@ -2661,7 +2660,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn receipt_test_delta(attachment_id: AttachmentId, from: u64, frame_sequence: u64) -> Vec<u8> {
         let delta = voytty_core::terminal::TerminalSurfaceDelta {
             application_title: String::new(),
@@ -2692,7 +2691,7 @@ mod tests {
         encode_message(WireKind::TerminalSemanticDelta, 0, 0, &message).expect("bounded delta")
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn terminal_driver_reports_numbered_surface_frames_and_rejects_gaps() {
         let (mut prepared, mut daemon, _, attachment_id) = terminal_test_view(false);

@@ -1,41 +1,46 @@
 //! Bounded same-UID listener, first-frame ingress, and server dispatch.
-use crate::{error::DaemonError, service::DaemonService};
 #[cfg(unix)]
+use tokio::net::UnixStream as LocalStream;
+#[cfg(windows)]
+use voytty_platform::local::Stream as LocalStream;
+
+use crate::{error::DaemonError, service::DaemonService};
+#[cfg(any(unix, windows))]
 use crate::{
     service::{ServiceReply, protocol_error},
     session_wire::{SessionWireLimits, SessionWireServer, finish_unary, read_first},
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use iroh::SecretKey;
 use std::sync::Arc;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tokio::{
     io::AsyncWriteExt,
     sync::{Semaphore, mpsc},
     task::{AbortHandle, JoinSet},
 };
 use voytty_core::DomainErrorKind;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use voytty_core::{AttachmentId, DeviceId, ResourceLimits};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use voytty_proto::{DecodedFrame, WireKind, v2};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const DEFAULT_DEADLINE: Duration = Duration::from_secs(5);
 /// After a stop, how long local terminal attachments may take to write their
 /// Session's end. Their Sessions have already ended, so this covers only the
 /// final update and one small write; a client that stops reading waits it out.
 /// It is short because `voytty daemon stop` allows five seconds for the whole
 /// remaining shutdown.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const ATTACHMENT_END_DELIVERY: Duration = Duration::from_secs(1);
 
 // Existing low-level callers retain their entry points during the module move.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use crate::client::{
     LocalAttachmentEvent, LocalPairingClient, LocalTakeoverRetryToken,
     SessionClient as LocalAttachmentClient,
@@ -43,7 +48,7 @@ pub use crate::client::{
 pub use crate::client::{LocalClient, LocalDeviceClient};
 
 /// Fixed production limits with a reduced test constructor for deadline evidence.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone, Copy, Debug)]
 pub struct LocalIpcLimits {
     initial_read_timeout: Duration,
@@ -56,7 +61,7 @@ pub struct LocalIpcLimits {
     injected_fatal_accept_after: usize,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Default for LocalIpcLimits {
     fn default() -> Self {
         let resources = ResourceLimits::default();
@@ -75,7 +80,7 @@ impl Default for LocalIpcLimits {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl LocalIpcLimits {
     /// Creates bounded limits for deterministic isolated tests.
     #[doc(hidden)]
@@ -146,9 +151,9 @@ impl LocalIpcLimits {
 }
 
 /// Runs one local listener until a flushed stop response requests shutdown.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub async fn serve_local(
-    listener: std::os::unix::net::UnixListener,
+    listener: voytty_platform::local::Listener,
     expected_uid: u32,
     service: Arc<DaemonService>,
 ) -> Result<(), DaemonError> {
@@ -156,10 +161,10 @@ pub async fn serve_local(
 }
 
 /// Runs a listener with reduced limits for isolated protocol tests.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[doc(hidden)]
 pub async fn serve_local_with_limits(
-    listener: std::os::unix::net::UnixListener,
+    listener: voytty_platform::local::Listener,
     expected_uid: u32,
     service: Arc<DaemonService>,
     limits: LocalIpcLimits,
@@ -175,9 +180,9 @@ pub async fn serve_local_with_limits(
     .await
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn serve_local_inner(
-    listener: std::os::unix::net::UnixListener,
+    listener: voytty_platform::local::Listener,
     expected_uid: u32,
     service: Arc<DaemonService>,
     limits: LocalIpcLimits,
@@ -186,7 +191,7 @@ async fn serve_local_inner(
     listener
         .set_nonblocking(true)
         .map_err(|error| daemon_io("configure local listener", error))?;
-    let listener = tokio::net::UnixListener::from_std(listener)
+    let listener = voytty_platform::local::AsyncListener::from_std(listener)
         .map_err(|error| daemon_io("adopt local listener", error))?;
     let permits = Arc::new(Semaphore::new(limits.maximum_connections));
     let (stop_sender, mut stop_receiver) = mpsc::unbounded_channel();
@@ -312,7 +317,7 @@ async fn serve_local_inner(
     fatal_error.map_or(Ok(()), Err)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn observe_retired_local_handler(joined: Result<(), tokio::task::JoinError>) {
     if !joined
         .as_ref()
@@ -322,7 +327,7 @@ fn observe_retired_local_handler(joined: Result<(), tokio::task::JoinError>) {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn observe_local_handler_completion(joined: Option<Result<(), tokio::task::JoinError>>) {
     match joined {
         Some(Ok(())) => {}
@@ -337,7 +342,7 @@ fn observe_local_handler_completion(joined: Option<Result<(), tokio::task::JoinE
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn recoverable_accept_error(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
@@ -349,8 +354,8 @@ fn recoverable_accept_error(error: &std::io::Error) -> bool {
     )
 }
 
-#[cfg(not(unix))]
-/// Returns the current platform limitation on non-Unix targets.
+#[cfg(not(any(unix, windows)))]
+/// Returns the current platform limitation on unsupported targets.
 pub async fn serve_local(
     _listener: (),
     _expected_uid: u32,
@@ -358,20 +363,20 @@ pub async fn serve_local(
 ) -> Result<(), DaemonError> {
     Err(DaemonError::new(
         DomainErrorKind::UnsupportedPlatform,
-        "local daemon IPC is Unix-only in the current milestone",
+        "local daemon IPC requires Unix or Windows",
     ))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn handle_connection(
-    mut stream: tokio::net::UnixStream,
+    mut stream: LocalStream,
     expected_uid: u32,
     service: Arc<DaemonService>,
     stop_sender: mpsc::UnboundedSender<()>,
     limits: LocalIpcLimits,
     local_attachment: Arc<AtomicBool>,
 ) {
-    if voytty_platform::local_unix::authorize_stream_peer(&stream, expected_uid).is_err() {
+    if voytty_platform::local::authorize_stream_peer(&stream, expected_uid).is_err() {
         return;
     }
 
@@ -542,7 +547,7 @@ async fn handle_connection(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn local_view_id() -> AttachmentId {
     let secret = SecretKey::generate().to_bytes();
     let mut bytes = [0_u8; 16];
@@ -550,7 +555,7 @@ fn local_view_id() -> AttachmentId {
     AttachmentId::from_array(bytes)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn terminal_attach_target(frame: &DecodedFrame) -> Result<Option<DeviceId>, DaemonError> {
     let request: v2::TerminalAttachRequest = frame
         .decode_message(WireKind::TerminalAttachRequest)
@@ -566,9 +571,9 @@ fn terminal_attach_target(frame: &DecodedFrame) -> Result<Option<DeviceId>, Daem
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn write_error(
-    stream: &mut tokio::net::UnixStream,
+    stream: &mut LocalStream,
     request_id: u64,
     error: &DaemonError,
 ) -> Result<(), std::io::Error> {
@@ -578,7 +583,7 @@ async fn write_error(
     stream.shutdown().await
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn daemon_io(operation: &str, error: std::io::Error) -> DaemonError {
     DaemonError::new(
         DomainErrorKind::DaemonStopped,
@@ -586,7 +591,7 @@ fn daemon_io(operation: &str, error: std::io::Error) -> DaemonError {
     )
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn malformed(detail: impl Into<String>) -> DaemonError {
     DaemonError::new(DomainErrorKind::MalformedFrame, detail)
 }
@@ -602,7 +607,7 @@ mod tests {
     async fn accepted_stop_does_not_wait_for_an_idle_ingress_handler() {
         let temporary = tempfile::tempdir().expect("private stop fixture");
         let socket = temporary.path().join("stop.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("fixture listener");
+        let listener = voytty_platform::local::Listener::bind(&socket).expect("fixture listener");
         let setup = crate::bootstrap::BootstrapResult {
             device_id: DeviceId::from_array([0x72; DeviceId::LENGTH]),
             endpoint_id: "stop-fixture-endpoint".to_owned(),
@@ -654,7 +659,7 @@ mod tests {
         let temporary = tempfile::tempdir().expect("temporary handler-reap fixture");
         let socket = temporary.path().join("handler-reap.sock");
         let listener =
-            std::os::unix::net::UnixListener::bind(&socket).expect("bind handler-reap listener");
+            voytty_platform::local::Listener::bind(&socket).expect("bind handler-reap listener");
         let config = crate::config::validate_setup_input(
             "handler-reap",
             crate::config::ValidatedInfrastructure::OfficialN0,

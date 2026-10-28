@@ -5,68 +5,68 @@
 //! receiver-owned authorization generation; both paths terminate in the same
 //! SessionService and framing owner.
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod upload;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::collections::VecDeque;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::path::PathBuf;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::sync::Arc;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::time::{Duration, Instant};
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tokio::sync::{mpsc, oneshot};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tokio::task::{JoinHandle, JoinSet};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tokio_util::task::AbortOnDropHandle;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use voytty_core::terminal::{
     TerminalHistoryWindowAnchor, TerminalHistoryWindowQuery, TerminalSize, TerminalSurfaceDelta,
     TerminalSurfaceSnapshot,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use voytty_core::{
     AttachmentId, AttachmentPrincipal, AuthGeneration, DeviceId, DomainErrorKind, OperationId,
     ResourceLimits, ResumeViewId, Revision, SessionId, SessionName, SessionSelector,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use zeroize::Zeroizing;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::authorization::AuthorizationRegistry;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::connection_broker::{
     InboundAuthenticatedStream, RemoteServiceHandler, RemoteServiceHandlerFuture,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::error::DaemonError;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::service::{ServiceReply, protocol_error};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::session::{
     AttachmentLifecycle, AttachmentUpdate, PreparedAttachment, RemoteAttachmentRequest,
     RemoteResumeRequest, SessionAttachment, SessionService, SessionSummary,
 };
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const ATTACHMENT_OUTBOUND_CAPACITY: usize = 8;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const DEFAULT_SESSION_WIRE_DEADLINE: Duration = Duration::from_secs(5);
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) use voytty_client::framing::{FirstFrame, read_first};
 
 /// Deadlines consumed by the shared Session stream owner.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone, Copy)]
 pub(crate) struct SessionWireLimits {
     default_request_deadline: Duration,
@@ -74,7 +74,7 @@ pub(crate) struct SessionWireLimits {
     operation_timeout: Duration,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl SessionWireLimits {
     pub(crate) const fn new(
         default_request_deadline: Duration,
@@ -107,7 +107,7 @@ impl SessionWireLimits {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Default for SessionWireLimits {
     fn default() -> Self {
         Self::new(
@@ -121,7 +121,7 @@ impl Default for SessionWireLimits {
 }
 
 /// Validated trust and routing context for one Session wire stream.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone)]
 pub(crate) enum SessionRequestContext {
     LocalSameUid {
@@ -137,7 +137,7 @@ pub(crate) enum SessionRequestContext {
     },
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl SessionRequestContext {
     fn local(local_view_id: AttachmentId) -> Self {
         Self::LocalSameUid { local_view_id }
@@ -165,7 +165,7 @@ impl SessionRequestContext {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn with_commit_first_poll_observer(
         mut self,
         observer: mpsc::UnboundedSender<(DeviceId, bool)>,
@@ -315,7 +315,7 @@ impl SessionRequestContext {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn project_remote_authorization_error(error: DaemonError) -> DaemonError {
     if matches!(
         error.kind(),
@@ -330,7 +330,7 @@ fn project_remote_authorization_error(error: DaemonError) -> DaemonError {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct AttachmentOutbound {
     bytes: Zeroizing<Vec<u8>>,
     flushed: Option<oneshot::Sender<()>>,
@@ -338,7 +338,7 @@ struct AttachmentOutbound {
     synchronize_before_reply: bool,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl AttachmentOutbound {
     fn queued(bytes: Vec<u8>, deadline: Instant) -> Self {
         Self {
@@ -359,7 +359,7 @@ impl AttachmentOutbound {
 
 /// Production callback which connects authenticated broker streams to the one
 /// transport-independent Session wire owner.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone)]
 pub(crate) struct RemoteSessionServiceHandler {
     server: SessionWireServer,
@@ -368,7 +368,7 @@ pub(crate) struct RemoteSessionServiceHandler {
     limits: SessionWireLimits,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl RemoteSessionServiceHandler {
     pub(crate) fn new(
         sessions: SessionService,
@@ -384,7 +384,7 @@ impl RemoteSessionServiceHandler {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl RemoteServiceHandler for RemoteSessionServiceHandler {
     fn handle_service_stream(
         &self,
@@ -415,7 +415,7 @@ impl RemoteServiceHandler for RemoteSessionServiceHandler {
 
 /// Requires EOF after the one decoded unary frame, including bytes that arrive
 /// in a later read.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) async fn finish_unary<Reader>(
     reader: &mut Reader,
     mut first: FirstFrame,
@@ -452,13 +452,13 @@ where
 }
 
 /// The single wire adapter around the daemon's transport-independent SessionService.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone)]
 pub(crate) struct SessionWireServer {
     sessions: SessionService,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl SessionWireServer {
     pub(crate) const fn new(sessions: SessionService) -> Self {
         Self { sessions }
@@ -924,7 +924,7 @@ impl SessionWireServer {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone, Copy, Default)]
 struct AttachmentEncoding(bool);
 
@@ -933,21 +933,21 @@ struct AttachmentEncoding(bool);
 /// QUIC flow-control credit lets a slow Relay path hold far more terminal
 /// output than it can deliver. Without this bound every PTY revision became a
 /// queued delta and a requested viewport's snapshot waited behind all of them.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const MAX_UNRECEIVED_SURFACE_FRAMES: usize = 4;
 
 /// Encoded bytes of numbered live surface frames not yet reported received.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const MAX_UNRECEIVED_SURFACE_BYTES: usize = 32 * 1024;
 
 /// Reader-owned validation of controller receipts for one attachment stream.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct SurfaceFrameReceipts {
     received: tokio::sync::watch::Sender<u64>,
     highest_sent: Arc<std::sync::atomic::AtomicU64>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl SurfaceFrameReceipts {
     /// Creates the reader validator and the matching writer window.
     fn pair() -> (Self, SurfaceFrameWindow) {
@@ -985,14 +985,14 @@ impl SurfaceFrameReceipts {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct SurfaceFrameReceiptWatch {
     received: tokio::sync::watch::Receiver<u64>,
     highest_sent: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Writer-owned bound on live surface frames; disabled unless negotiated.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Default)]
 struct SurfaceFrameWindow {
     receipts: Option<SurfaceFrameReceiptWatch>,
@@ -1000,7 +1000,7 @@ struct SurfaceFrameWindow {
     in_flight_bytes: usize,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl SurfaceFrameWindow {
     /// Sequence for the next written frame; zero means not numbered.
     fn next_sequence(&self) -> u64 {
@@ -1056,14 +1056,14 @@ impl SurfaceFrameWindow {
 }
 
 /// Encoding and optional receipt window owned by one attachment writer.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Default)]
 struct SurfaceOutput {
     encoding: AttachmentEncoding,
     frames: SurfaceFrameWindow,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl AttachmentEncoding {
     fn encode(self, bytes: Vec<u8>) -> Result<Vec<u8>, DaemonError> {
         if self.0 {
@@ -1074,7 +1074,7 @@ impl AttachmentEncoding {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AttachmentTaskEnd {
     Explicit,
@@ -1083,7 +1083,7 @@ enum AttachmentTaskEnd {
     ReaderClosed,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn finish_attachment_tasks(
     reader_task: JoinHandle<Result<AttachmentTaskEnd, DaemonError>>,
     writer_task: JoinHandle<Result<AttachmentTaskEnd, DaemonError>>,
@@ -1129,7 +1129,7 @@ async fn finish_attachment_tasks(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn should_move_remote_resume_checkpoint(
     remote_authenticated: bool,
     result: &Result<AttachmentTaskEnd, DaemonError>,
@@ -1137,7 +1137,7 @@ fn should_move_remote_resume_checkpoint(
     remote_authenticated && matches!(result, Ok(AttachmentTaskEnd::TransportEof))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn flatten_attachment_task(
     result: Result<Result<AttachmentTaskEnd, DaemonError>, tokio::task::JoinError>,
 ) -> Result<AttachmentTaskEnd, DaemonError> {
@@ -1149,7 +1149,7 @@ fn flatten_attachment_task(
     })?
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn run_blocking_until<T, F>(deadline: Instant, operation: F) -> Result<T, DaemonError>
 where
     T: Send + 'static,
@@ -1169,7 +1169,7 @@ where
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn timeout_at<F>(
     deadline: Instant,
     future: F,
@@ -1186,7 +1186,7 @@ where
         .map_err(|_| DaemonError::new(DomainErrorKind::DeadlineExceeded, detail))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn write_error_best_effort<Writer>(
     writer: &mut Writer,
     request_id: u64,
@@ -1203,7 +1203,7 @@ async fn write_error_best_effort<Writer>(
     let _ = timeout_at(deadline, write, "Session error response deadline elapsed").await;
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn write_attachment_bytes_until<Writer>(
     writer: &mut Writer,
     bytes: &[u8],
@@ -1226,7 +1226,7 @@ where
     .map_err(|error| daemon_io(operation, error))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn send_attachment_outbound_until(
     outbound: &mpsc::Sender<AttachmentOutbound>,
     message: AttachmentOutbound,
@@ -1241,7 +1241,7 @@ async fn send_attachment_outbound_until(
     .map_err(|_| attachment_cancelled())
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 struct AttachmentReaderContext {
     server: SessionWireServer,
     attachment: Arc<SessionAttachment>,
@@ -1253,7 +1253,7 @@ struct AttachmentReaderContext {
 }
 
 /// Validates one stream-local transport receipt; it is not a Session effect.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn accept_surface_frames_received(
     frame: &DecodedFrame,
     context: &AttachmentReaderContext,
@@ -1269,7 +1269,7 @@ fn accept_surface_frames_received(
     receipts.accept(receipt.frame_sequence)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn attachment_reader<Reader>(
     mut reader: Reader,
     mut decoder: FrameDecoder,
@@ -1355,7 +1355,7 @@ where
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn finish_history_task(
     result: Result<Result<(), DaemonError>, tokio::task::JoinError>,
 ) -> Result<(), DaemonError> {
@@ -1367,7 +1367,7 @@ fn finish_history_task(
     })?
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn flush_attachment_error(
     outbound: &mpsc::Sender<AttachmentOutbound>,
     request_id: u64,
@@ -1394,7 +1394,7 @@ async fn flush_attachment_error(
     let _ = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), flush).await;
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn process_attachment_frame(
     frame: DecodedFrame,
     server: &SessionWireServer,
@@ -1655,7 +1655,7 @@ async fn process_attachment_frame(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn attachment_writer<Writer>(
     mut writer: Writer,
     server: SessionWireServer,
@@ -1792,7 +1792,7 @@ where
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn next_host_effect(
     attachment: &SessionAttachment,
     wake: &mut tokio::sync::watch::Receiver<()>,
@@ -1807,7 +1807,7 @@ async fn next_host_effect(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn write_host_effect<Writer>(
     writer: &mut Writer,
     attachment_id: AttachmentId,
@@ -1843,7 +1843,7 @@ where
     .await
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn write_lifecycle_event<Writer>(
     writer: &mut Writer,
     server: &SessionWireServer,
@@ -1911,7 +1911,7 @@ where
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn attachment_next_update(
     server: &SessionWireServer,
     attachment: Arc<SessionAttachment>,
@@ -1932,7 +1932,7 @@ async fn attachment_next_update(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn write_terminal_update<Writer>(
     writer: &mut Writer,
     attachment: &SessionAttachment,
@@ -2002,7 +2002,7 @@ where
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn send_resync(
     request_id: u64,
     attachment: &SessionAttachment,
@@ -2033,7 +2033,7 @@ async fn send_resync(
     .await
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn encode_snapshot(
     request_id: u64,
     session_id: SessionId,
@@ -2048,7 +2048,7 @@ fn encode_snapshot(
         .map_err(protocol_error)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn encode_delta(
     request_id: u64,
     attachment_id: AttachmentId,
@@ -2060,7 +2060,7 @@ fn encode_delta(
     encode_message(WireKind::TerminalSemanticDelta, request_id, 0, &message).map_err(protocol_error)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn terminal_selector(
     request: &v2::TerminalAttachRequest,
 ) -> Result<(Option<SessionSelector>, bool), DaemonError> {
@@ -2089,7 +2089,7 @@ fn terminal_selector(
     Ok((Some(SessionSelector::Name(name)), false))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn terminal_resume_request(
     context: &SessionRequestContext,
     request: &v2::TerminalAttachRequest,
@@ -2119,7 +2119,7 @@ fn terminal_resume_request(
     }))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn require_attachment_id(
     attachment_id: Option<v2::AttachmentId>,
     attachment: &SessionAttachment,
@@ -2137,7 +2137,7 @@ fn require_attachment_id(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn session_ended_message(
     attachment: &SessionAttachment,
     reason: voytty_core::SessionEndReason,
@@ -2171,12 +2171,12 @@ fn session_ended_message(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn attachment_cancelled() -> DaemonError {
     DaemonError::new(DomainErrorKind::Cancelled, "terminal attachment closed")
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn decode_request<Message>(frame: &DecodedFrame) -> Result<Message, DaemonError>
 where
     Message: prost::Message + Default,
@@ -2184,7 +2184,7 @@ where
     frame.decode_message(frame.kind).map_err(protocol_error)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn mutate_reply(request_id: u64, summary: SessionSummary) -> Result<ServiceReply, DaemonError> {
     ServiceReply::message(
         WireKind::SessionMutateResponse,
@@ -2196,7 +2196,7 @@ fn mutate_reply(request_id: u64, summary: SessionSummary) -> Result<ServiceReply
     )
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn session_summary_proto(summary: SessionSummary) -> v2::SessionSummary {
     v2::SessionSummary {
         session_id: Some(summary.session_id.into()),
@@ -2208,7 +2208,7 @@ fn session_summary_proto(summary: SessionSummary) -> v2::SessionSummary {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn required_operation_id(
     operation_id: Option<v2::OperationId>,
 ) -> Result<OperationId, DaemonError> {
@@ -2218,7 +2218,7 @@ fn required_operation_id(
         .map_err(protocol_error)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn required_session_id(session_id: Option<v2::SessionId>) -> Result<SessionId, DaemonError> {
     session_id
         .ok_or_else(|| malformed("session mutation omitted session_id"))?
@@ -2226,20 +2226,20 @@ fn required_session_id(session_id: Option<v2::SessionId>) -> Result<SessionId, D
         .map_err(protocol_error)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn session_name(value: &str) -> Result<SessionName, DaemonError> {
     SessionName::new(value.to_owned())
         .map_err(|error| DaemonError::new(DomainErrorKind::InvalidSessionName, error.to_string()))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn local_request_view_id(request_id: u64) -> AttachmentId {
     let mut bytes = [0_u8; 16];
     bytes[..8].copy_from_slice(&request_id.to_le_bytes());
     AttachmentId::from_array(bytes)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn terminal_history_window_query(
     request: &v2::TerminalHistoryWindowRequest,
 ) -> Result<TerminalHistoryWindowQuery, DaemonError> {
@@ -2280,12 +2280,12 @@ fn terminal_history_window_query(
         .ok_or_else(|| malformed("terminal history window query is invalid"))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn malformed(detail: impl Into<String>) -> DaemonError {
     DaemonError::new(DomainErrorKind::MalformedFrame, detail)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn remote_target_mismatch() -> DaemonError {
     DaemonError::new(
         DomainErrorKind::Unauthorized,
@@ -2293,7 +2293,7 @@ fn remote_target_mismatch() -> DaemonError {
     )
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn daemon_io(operation: &str, error: std::io::Error) -> DaemonError {
     DaemonError::new(
         DomainErrorKind::DaemonStopped,

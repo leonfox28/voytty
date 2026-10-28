@@ -663,7 +663,9 @@ mod tests {
         let home = temporary.path().join("home");
         fs::create_dir(&home).expect("test home");
         let paths = UserPaths::for_test(
-            nix::unistd::Uid::effective().as_raw(),
+            voytty_platform::account::EffectiveAccount::current()
+                .expect("current account")
+                .uid(),
             home.clone(),
             home.join(".voytty"),
             temporary.path().join("run"),
