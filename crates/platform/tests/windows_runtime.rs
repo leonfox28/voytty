@@ -71,6 +71,21 @@ fn private_state_acl_lock_atomic_replace_and_foreign_grants() {
         .append(false, b"private diagnostic fixture\n")
         .expect("diagnostic append");
     diagnostics.flush().expect("diagnostic durability barrier");
+    let sid = win_custody::current_user_sid_string().expect("SID");
+    let exports = temporary.path().join("exports");
+    std::fs::create_dir(&exports).expect("export directory");
+    win_custody::SecurityDescriptor::from_sddl(&format!(
+        "D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FR;;;WD)"
+    ))
+    .expect("readable parent ACL")
+    .apply_to_tree(&exports, true)
+    .expect("publicly readable export parent");
+    let exported = exports.join("diagnostics.jsonl");
+    diagnostics
+        .export(&exported, false, 0)
+        .expect("private export");
+    validate_regular_file(&exported, 0).expect("export must not inherit foreign readers");
+    assert!(diagnostics.export(&exported, false, 0).is_err());
     let first = FileLock::try_acquire(paths.lifecycle_lock(), 0)
         .expect("lock")
         .expect("first owner");
@@ -113,7 +128,6 @@ fn private_state_acl_lock_atomic_replace_and_foreign_grants() {
     );
     voytty_platform::user_state::remove_owned_executable(&executable, 0).expect("uninstall");
     assert!(!executable.exists());
-    let sid = win_custody::current_user_sid_string().expect("SID");
     win_custody::SecurityDescriptor::from_sddl(&format!("D:P(A;;FA;;;{sid})(A;;FR;;;WD)"))
         .expect("public ACL")
         .apply_to_tree(paths.config(), true)

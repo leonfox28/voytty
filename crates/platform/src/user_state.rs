@@ -915,10 +915,24 @@ fn open_managed_file(path: &Path, uid: u32, create: bool, append: bool) -> Resul
 }
 
 pub(crate) fn create_new_file(path: &Path) -> Result<File, PathError> {
+    #[cfg(windows)]
+    {
+        let parent = path
+            .parent()
+            .ok_or_else(|| PathError::NotAbsolute(path.to_path_buf()))?;
+        crate::windows_security::validate_parent(parent).map_err(|error| io_error(path, error))?;
+    }
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     configure_secure_open(&mut options);
-    options.open(path).map_err(|error| io_error(path, error))
+    let file = options.open(path).map_err(|error| io_error(path, error))?;
+    #[cfg(windows)]
+    if let Err(error) = crate::windows_security::protect_new_file(path) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(io_error(path, error));
+    }
+    Ok(file)
 }
 
 fn create_new_executable(path: &Path) -> Result<File, PathError> {
