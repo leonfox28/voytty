@@ -41,9 +41,15 @@ function Test-FixtureCertificate([string]$Thumbprint) {
     } finally { $store.Dispose() }
 }
 function Expect-Rejection([scriptblock]$Action, [string]$Message) {
+    $previousExitCode = 0
+    if (Test-Path -LiteralPath Variable:\LASTEXITCODE) { $previousExitCode = $LASTEXITCODE }
     $rejected = $false
     try { & $Action } catch { $rejected = $true }
     if (-not $rejected) { throw $Message }
+    # GitHub's PowerShell wrapper exits with LASTEXITCODE. A deliberately rejected
+    # native verifier must not turn a successful assertion into a failed job;
+    # preserve any failure that was already present before this expected one.
+    $global:LASTEXITCODE = $previousExitCode
 }
 try {
     if ($FixtureOnly) {
@@ -64,13 +70,15 @@ CN = 127.0.0.1
 [extensions]
 subjectAltName = IP:127.0.0.1
 basicConstraints = critical,CA:TRUE
-keyUsage = critical,digitalSignature,keyEncipherment,keyCertSign
+keyUsage = critical,digitalSignature,keyCertSign
 '@ | Set-Content -LiteralPath $config -Encoding Ascii
     $key = Join-Path $temporary 'server.key'; $cert = Join-Path $temporary 'server.crt'
     # Windows PowerShell 5 treats native stderr as errors under Stop, even
     # when OpenSSL succeeds. Capture its ordinary progress outside that pipe.
-    Write-Output 'Generating the temporary HTTPS certificate.'
-    Invoke-FixtureProcess $openssl @('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-config', $config, '-keyout', $key, '-out', $cert) 'openssl'
+    # P-256 avoids variable RSA prime-search time on a loaded hosted runner.
+    # The key and trusted certificate remain fresh for every fixture invocation.
+    Write-Output 'Generating the temporary P-256 HTTPS certificate.'
+    Invoke-FixtureProcess $openssl @('req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-sha256', '-nodes', '-days', '1', '-config', $config, '-keyout', $key, '-out', $cert) 'openssl'
     $generatedCertificate = New-Object Security.Cryptography.X509Certificates.X509Certificate2($cert)
     if (Test-FixtureCertificate $generatedCertificate.Thumbprint) { throw 'Fixture certificate already exists in the runner store' }
     $certificate = $generatedCertificate
@@ -81,7 +89,7 @@ keyUsage = critical,digitalSignature,keyEncipherment,keyCertSign
     Invoke-FixtureProcess (Get-Command certutil.exe).Source @('-f', '-addstore', 'Root', $cert) 'trust'
     if (-not (Test-FixtureCertificate $certificate.Thumbprint)) { throw 'Fixture certificate was not imported' }
     $port = Join-Path $temporary 'port'; $requests = Join-Path $temporary 'requests.log'
-    $arguments = @([IO.Path]::GetFullPath('tests/release/https_fixture.py'), $ReleaseDirectory, $cert, $key, $port, $requests)
+    $arguments = @((Join-Path $PSScriptRoot 'https_fixture.py'), $ReleaseDirectory, $cert, $key, $port, $requests)
     $quoted = $arguments | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }
     $server = Start-Process -FilePath (Get-Command python.exe).Source -ArgumentList $quoted -PassThru -NoNewWindow
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
@@ -98,6 +106,18 @@ keyUsage = critical,digitalSignature,keyEncipherment,keyCertSign
         try {
             if ($client.GetStringAsync($base + '/health.txt').GetAwaiter().GetResult() -cne 'voytty HTTPS fixture') { throw 'HTTPS fixture response mismatch' }
         } finally { $client.Dispose() }
+        foreach ($baseline in @(0, 17)) {
+            $global:LASTEXITCODE = $baseline
+            $script:observedNativeCode = $null
+            Expect-Rejection {
+                & $env:ComSpec /d /c 'exit 23'
+                $script:observedNativeCode = $LASTEXITCODE
+                throw 'Expected native fixture rejection'
+            } 'Expected rejection was not observed'
+            if ($script:observedNativeCode -ne 23 -or $LASTEXITCODE -ne $baseline) { throw 'Expected native rejection changed the caller exit status' }
+        }
+        $global:LASTEXITCODE = 0
+        Write-Output 'Expected native rejection preserves the caller exit status.'
         Write-Output 'Windows HTTPS fixture acceptance passed with ordinary TLS validation.'
         return
     }

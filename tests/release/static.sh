@@ -24,7 +24,7 @@ fail() {
 
 sh -n "$bootstrap" || fail "mutable bootstrap is not POSIX shell syntax"
 PYTHONDONTWRITEBYTECODE=1 python3 "$https_fixture_bind_test" \
-    || fail "installer fixture bind override violated its socket-free contract"
+    || fail "installer fixture violated its socket-free binding/readiness contract"
 syntax_fixture=$(mktemp -d)
 trap 'rm -rf "$syntax_fixture"' EXIT HUP INT TERM
 cp "$repo_root/tests/release/https_fixture.py" \

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Socket-free regression for the installer fixture's bind override."""
+"""Socket-free regressions for fixture binding and readiness publication."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import importlib.util
 import pathlib
 import socket
 import socketserver
+import tempfile
 from unittest import mock
 
 
@@ -52,3 +53,43 @@ if (server.server_name, server.server_port) != bound_address:
     raise AssertionError("fixture did not publish the post-bind address")
 if not issubclass(fixture.FixtureHTTPServer, http.server.ThreadingHTTPServer):
     raise AssertionError("fixture no longer preserves threaded HTTP behavior")
+
+with tempfile.TemporaryDirectory(prefix="voytty-port-publication-") as temporary:
+    port_file = pathlib.Path(temporary) / "port"
+    original_replace = pathlib.Path.replace
+    published = []
+
+    def observe_publication(pending: pathlib.Path, destination: pathlib.Path) -> pathlib.Path:
+        if destination != port_file or destination.exists():
+            raise AssertionError("readiness was visible before atomic publication")
+        if pending.parent != destination.parent or pending.read_text(encoding="ascii") != "43123":
+            raise AssertionError("ready port was not complete on the same filesystem")
+        published.append(destination)
+        return original_replace(pending, destination)
+
+    with mock.patch.object(pathlib.Path, "replace", new=observe_publication):
+        fixture.publish_port(port_file, 43123)
+    if published != [port_file] or port_file.read_text(encoding="ascii") != "43123":
+        raise AssertionError("ready port publication did not complete exactly once")
+    if list(port_file.parent.iterdir()) != [port_file]:
+        raise AssertionError("ready port publication left a staging file")
+
+with tempfile.TemporaryDirectory(prefix="voytty-port-interruption-") as temporary:
+    port_file = pathlib.Path(temporary) / "port"
+    original_write = pathlib.Path.write_text
+
+    def interrupted_write(path: pathlib.Path, text: str, **kwargs: object) -> int:
+        if path == port_file:
+            raise AssertionError("readiness path was opened before the write completed")
+        original_write(path, text[:2], **kwargs)
+        raise OSError("fixture write interrupted")
+
+    with mock.patch.object(pathlib.Path, "write_text", new=interrupted_write):
+        try:
+            fixture.publish_port(port_file, 43123)
+        except OSError:
+            pass
+        else:
+            raise AssertionError("interrupted port write unexpectedly succeeded")
+    if port_file.exists():
+        raise AssertionError("interrupted write advertised readiness")
