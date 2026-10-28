@@ -125,6 +125,10 @@ release version pr:
 ci-windows transport='true':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File tools/ci/check-windows.ps1 -Transport {{ quote(transport) }}
 
+# HTTPS trust lifecycle on disposable GitHub-hosted Windows VMs only.
+windows-installer-fixture:
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/release/installer-windows.ps1 -FixtureOnly
+
 # Exact-source unsigned native MSVC candidate; RELEASE_TARGET must match the host.
 windows-build output='release-input':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File tools/release/build-windows.ps1 -OutputDirectory {{ quote(output) }}

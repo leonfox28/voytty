@@ -170,8 +170,11 @@ checks visible prerequisites and never changes those settings.
 A defect in the test harness can stop the original tag workflow after protected
 signing but before a draft exists. Repair and review the harness on main first;
 never move the tag or replace the retained signed product files. Windows CI now
-exercises the HTTPS fixture independently, including its temporary user trust
+exercises the HTTPS fixture independently, including its temporary trust
 certificate and cleanup, so an interactive certificate prompt fails before release.
+The fixture is restricted to disposable GitHub-hosted Windows VMs and uses their
+elevated LocalMachine store; CurrentUser Root prompts even with certutil `-user -f`.
+The production installer never modifies a certificate store or requires elevation.
 
 After inspecting and authorizing the original release evidence, explicitly run:
 
@@ -251,8 +254,8 @@ explicit exact-main full run uploads candidates. Ubuntu assembles deterministic
 checksum inventory include both new targets and `voytty-install.ps1`.
 
 The Windows final installer proofs run on both native architectures over a local
-HTTPS fixture, with a temporary current-user trust certificate that is removed
-on exit. They verify Unicode/space-containing destinations, no-clobber behavior,
+HTTPS fixture on a disposable hosted VM, with a temporary machine trust certificate
+that is removed on exit. They verify Unicode/space-containing destinations, no-clobber behavior,
 manifest/signature tampering, and the production URL boundary. The protected
 signing key, exact candidate selection, immutable publication and draft recovery
 remain shared with Unix. Windows inventories require both Windows installer jobs;

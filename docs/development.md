@@ -246,4 +246,8 @@ and embedded source identity checks; it requires `RELEASE_TARGET`,
 `VOYTTY_SOURCE_COMMIT`, and `SOURCE_DATE_EPOCH`. Both CI matrices use these recipes.
 Existing Unix PTY/signal fixtures stay on Unix; Windows adds private ACL/pipe,
 ConPTY and detached daemon fixtures. Shared attachment/recovery tests run on both.
+The native CI jobs also run `just windows-installer-fixture` on their disposable
+hosted VMs. This HTTPS-only fixture temporarily trusts its generated certificate
+in that VM's machine store and verifies cleanup; it refuses local/self-hosted
+execution. Ordinary `just ci-windows` and product installation require no elevation.
 See [Windows architecture and evidence](windows.md).

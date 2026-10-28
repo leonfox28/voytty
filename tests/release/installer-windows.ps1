@@ -2,6 +2,9 @@
 param([string]$ReleaseDirectory, [string]$TestInstaller, [switch]$FixtureOnly)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') {
+    throw 'The HTTPS trust fixture requires a disposable GitHub-hosted Windows runner'
+}
 if (-not $FixtureOnly) {
     $ReleaseDirectory = [IO.Path]::GetFullPath($ReleaseDirectory)
     $TestInstaller = [IO.Path]::GetFullPath($TestInstaller)
@@ -59,13 +62,14 @@ keyUsage = critical,digitalSignature,keyEncipherment,keyCertSign
     Write-Output 'Generating the temporary HTTPS certificate.'
     Invoke-FixtureProcess $openssl @('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-config', $config, '-keyout', $key, '-out', $cert) 'openssl'
     $generatedCertificate = New-Object Security.Cryptography.X509Certificates.X509Certificate2($cert)
-    $certificatePath = 'Cert:\CurrentUser\Root\' + $generatedCertificate.Thumbprint
-    if (Test-Path -LiteralPath $certificatePath) { throw 'Fixture certificate already exists in the user store' }
+    $certificatePath = 'Cert:\LocalMachine\Root\' + $generatedCertificate.Thumbprint
+    if (Test-Path -LiteralPath $certificatePath) { throw 'Fixture certificate already exists in the runner store' }
     $certificate = $generatedCertificate
-    # Import-Certificate can open a CryptoAPI confirmation dialog for CurrentUser
-    # Root. certutil -user -f explicitly imports only this fresh fixture root.
+    # CurrentUser Root requires an interactive CryptoAPI confirmation even with
+    # certutil -user -f. Only this disposable hosted VM receives the fresh root;
+    # its elevated LocalMachine store supports unattended import and cleanup.
     Write-Output 'Trusting the temporary certificate without an interactive dialog.'
-    Invoke-FixtureProcess (Get-Command certutil.exe).Source @('-user', '-f', '-addstore', 'Root', $cert) 'trust'
+    Invoke-FixtureProcess (Get-Command certutil.exe).Source @('-f', '-addstore', 'Root', $cert) 'trust'
     if (-not (Test-Path -LiteralPath $certificatePath)) { throw 'Fixture certificate was not imported' }
     $port = Join-Path $temporary 'port'; $requests = Join-Path $temporary 'requests.log'
     $arguments = @([IO.Path]::GetFullPath('tests/release/https_fixture.py'), $ReleaseDirectory, $cert, $key, $port, $requests)
@@ -114,13 +118,13 @@ keyUsage = critical,digitalSignature,keyEncipherment,keyCertSign
 } finally {
     if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id; $server.WaitForExit() }
     if ($certificate) {
-        $certificatePath = 'Cert:\CurrentUser\Root\' + $certificate.Thumbprint
+        $certificatePath = 'Cert:\LocalMachine\Root\' + $certificate.Thumbprint
         if (Test-Path -LiteralPath $certificatePath) {
-            Invoke-FixtureProcess (Get-Command certutil.exe).Source @('-user', '-f', '-delstore', 'Root', $certificate.Thumbprint) 'untrust'
+            Invoke-FixtureProcess (Get-Command certutil.exe).Source @('-f', '-delstore', 'Root', $certificate.Thumbprint) 'untrust'
         }
         if (Test-Path -LiteralPath $certificatePath) { throw 'Fixture certificate cleanup failed' }
         $certificate.Dispose()
-        Write-Output 'Temporary certificate removed from the user trust store.'
+        Write-Output 'Temporary certificate removed from the disposable runner trust store.'
     }
     Remove-Item -LiteralPath $temporary -Recurse -Force
 }
