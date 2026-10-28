@@ -70,13 +70,15 @@ CN = 127.0.0.1
 [extensions]
 subjectAltName = IP:127.0.0.1
 basicConstraints = critical,CA:TRUE
-keyUsage = critical,digitalSignature,keyEncipherment,keyCertSign
+keyUsage = critical,digitalSignature,keyCertSign
 '@ | Set-Content -LiteralPath $config -Encoding Ascii
     $key = Join-Path $temporary 'server.key'; $cert = Join-Path $temporary 'server.crt'
     # Windows PowerShell 5 treats native stderr as errors under Stop, even
     # when OpenSSL succeeds. Capture its ordinary progress outside that pipe.
-    Write-Output 'Generating the temporary HTTPS certificate.'
-    Invoke-FixtureProcess $openssl @('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-config', $config, '-keyout', $key, '-out', $cert) 'openssl'
+    # P-256 avoids variable RSA prime-search time on a loaded hosted runner.
+    # The key and trusted certificate remain fresh for every fixture invocation.
+    Write-Output 'Generating the temporary P-256 HTTPS certificate.'
+    Invoke-FixtureProcess $openssl @('req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-sha256', '-nodes', '-days', '1', '-config', $config, '-keyout', $key, '-out', $cert) 'openssl'
     $generatedCertificate = New-Object Security.Cryptography.X509Certificates.X509Certificate2($cert)
     if (Test-FixtureCertificate $generatedCertificate.Thumbprint) { throw 'Fixture certificate already exists in the runner store' }
     $certificate = $generatedCertificate
