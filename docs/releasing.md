@@ -189,6 +189,10 @@ installer jobs, terminal Windows failures, skipped publication, and the original
 unexpired signed artifact with a server digest. Cancelled Windows jobs require
 GitHub's job-timeout annotation; manual cancellation is not a substitute.
 
+The subsequent recovery run `40654018909` exposed a PowerShell 5.1 type error in
+that frozen installer. This specific signed inventory cannot be published;
+repairing product source requires a new candidate, not fixture-only recovery.
+
 The original frozen verifier authenticates the retained inventory and generates
 fixture-only installers. All five native installer proofs run again on those
 exact signed bytes; Windows uses the reviewed harness repair without dropping

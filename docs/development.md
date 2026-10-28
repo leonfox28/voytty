@@ -240,8 +240,9 @@ Clang (ring's ARM64 Windows C backend). The native runners are `windows-2025`
 (x86-64) and `windows-11-arm` (ARM64). Do not substitute an x64 emulation build
 for ARM64 evidence. Windows targets statically link the CRT.
 
-`just ci-windows` owns script syntax, workspace Clippy/tests, CLI smoke, and the
-selected patched transport tests. `just windows-build` owns native PE architecture
+`just ci-windows` owns script syntax, installer native-architecture preflight and
+runtime type resolution in Windows PowerShell 5.1, workspace Clippy/tests, CLI
+smoke, and the selected patched transport tests. `just windows-build` owns native PE architecture
 and embedded source identity checks; it requires `RELEASE_TARGET`,
 `VOYTTY_SOURCE_COMMIT`, and `SOURCE_DATE_EPOCH`. Both CI matrices use these recipes.
 Existing Unix PTY/signal fixtures stay on Unix; Windows adds private ACL/pipe,

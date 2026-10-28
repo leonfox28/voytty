@@ -14,6 +14,7 @@ Get-ChildItem install, tools, tests -Recurse -File | Where-Object { $_.Name -mat
     $null = [Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)
     if ($errors.Count) { throw "$($_.FullName): $errors" }
 }
+& tests/release/windows-installer-preflight.ps1
 Invoke-Checked { cargo +1.98.0 clippy --locked --workspace --all-targets --all-features -- -D warnings }
 Invoke-Checked { cargo +1.98.0 test --locked --workspace --all-features --no-fail-fast }
 Invoke-Checked { & target/debug/voytty.exe }

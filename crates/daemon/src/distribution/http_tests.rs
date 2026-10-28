@@ -20,8 +20,10 @@ impl Server {
         let calls = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let (count, done) = (calls.clone(), stop.clone());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (ready, started) = std::sync::mpsc::sync_channel(0);
         let worker = thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            ready.send(()).expect("fixture readiness receiver");
             while !done.load(Ordering::Acquire) && Instant::now() < deadline {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
@@ -53,6 +55,12 @@ impl Server {
                 }
             }
         });
+        // Thread startup under runner load must not consume the client's 500 ms
+        // HTTP budget. Wait for the serving thread within the fixture's existing
+        // five-second deadline before beginning any measured request.
+        started
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("fixture serving thread ready");
         Self {
             url,
             calls,
@@ -116,7 +124,16 @@ fn transient_status_and_truncated_body_retry_from_empty_buffers() {
                 .write_all(response.as_bytes())
                 .expect("fixture response");
         });
-        assert_eq!(fetcher().fetch(&server.url, 64).expect("download"), b"good");
+        let downloader = fetcher();
+        let started = Instant::now();
+        let bytes = downloader.fetch(&server.url, 64).unwrap_or_else(|error| {
+            panic!(
+                "download after {first:?}: {error:?}; requests={}, elapsed={:?}",
+                server.count(),
+                started.elapsed()
+            )
+        });
+        assert_eq!(bytes, b"good");
         assert_eq!(server.count(), 2);
     }
 }

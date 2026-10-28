@@ -29,7 +29,7 @@ public static class VoyttyInstallerPlatform {
 }
 '@
 }
-$processMachine = [ushort]0; $nativeMachine = [ushort]0
+$processMachine = [System.UInt16]0; $nativeMachine = [System.UInt16]0
 if (-not [VoyttyInstallerPlatform]::IsWow64Process2([IntPtr](-1), [ref]$processMachine, [ref]$nativeMachine)) { throw 'Unable to determine native Windows architecture' }
 switch ($nativeMachine) {
     0x8664 { $target = 'x86_64-pc-windows-msvc' }
