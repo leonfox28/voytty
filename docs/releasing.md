@@ -165,6 +165,47 @@ Repository administrators own immutable Releases, the signing Environment/key,
 and [main protection](development.md#branch-protection-and-ongoing-checks). The operator
 checks visible prerequisites and never changes those settings.
 
+## Resume a signed inventory after a Windows fixture failure
+
+A defect in the test harness can stop the original tag workflow after protected
+signing but before a draft exists. Repair and review the harness on main first;
+never move the tag or replace the retained signed product files. Windows CI now
+exercises the HTTPS fixture independently, including its temporary trust
+certificate and cleanup, so an interactive certificate prompt fails before release.
+The fixture is restricted to disposable GitHub-hosted Windows VMs and uses their
+elevated LocalMachine store; CurrentUser Root prompts even with certutil `-user -f`.
+The production installer never modifies a certificate store or requires elevation.
+
+After inspecting and authorizing the original release evidence, explicitly run:
+
+```bash
+gh workflow run release-resume-signed.yml --ref main \
+  -f tag=v1.0.0 -f run_id=40647210683 -f artifact_id=12797742664
+```
+
+These IDs identify the first voytty release's Windows fixture timeout. The owner
+requires the original annotated source, successful protected signing and Unix
+installer jobs, terminal Windows failures, skipped publication, and the original
+unexpired signed artifact with a server digest. Cancelled Windows jobs require
+GitHub's job-timeout annotation; manual cancellation is not a substitute.
+
+The original frozen verifier authenticates the retained inventory and generates
+fixture-only installers. All five native installer proofs run again on those
+exact signed bytes; Windows uses the reviewed harness repair without dropping
+assertions. Only then does the workflow create a late draft, verify its complete
+download with the frozen verifier, attest, publish and require immutable assets.
+It never accesses a signing key, rebuilds a product binary, changes a tag or
+replaces assets. Exact-source main CI remains mandatory. This is a separate
+completion record; the original failed run remains intact.
+
+If interrupted after uploading a complete draft, inspect that draft by numeric ID
+and rejoin this explicit workflow. It accepts an existing draft only when its
+tag, source, classification and complete asset bytes match the retained signed
+inventory; it never uploads over existing assets. Partial or mismatched drafts
+stop for diagnosis. After any ambiguous publish result, inspect publication
+state first; already published releases are rejected. The historical draft
+recovery below retains its existing evidence and verifier requirements.
+
 ## Recover an existing signed draft
 
 If signing and every installer job from that release passed, but publication failed after
@@ -213,8 +254,8 @@ explicit exact-main full run uploads candidates. Ubuntu assembles deterministic
 checksum inventory include both new targets and `voytty-install.ps1`.
 
 The Windows final installer proofs run on both native architectures over a local
-HTTPS fixture, with a temporary current-user trust certificate that is removed
-on exit. They verify Unicode/space-containing destinations, no-clobber behavior,
+HTTPS fixture on a disposable hosted VM, with a temporary machine trust certificate
+that is removed on exit. They verify Unicode/space-containing destinations, no-clobber behavior,
 manifest/signature tampering, and the production URL boundary. The protected
 signing key, exact candidate selection, immutable publication and draft recovery
 remain shared with Unix. Windows inventories require both Windows installer jobs;

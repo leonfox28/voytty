@@ -57,8 +57,9 @@ ci-policy:
     sh tests/release/operator-fixture.sh
     sh tests/release/candidate-fixture.sh
     PYTHONDONTWRITEBYTECODE=1 python3 tests/release/recover_draft_test.py
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/release/resume_signed_test.py
     shellcheck -s sh install/install.sh tests/release/*.sh tests/ci/*.sh tests/secret-scan*.sh tests/terminal-dependency-policy.sh $(find tools/ci tools/release -type f -name '*.sh' -print)
-    sh tools/ci/check-python-syntax.sh tests/ci/*.py tools/ci/*.py tests/release/https_fixture.py tests/release/https_fixture_bind_test.py tests/release/installer_test.py tests/release/installer_download_test.py tools/release/recover-draft.py tests/release/recover_draft_test.py
+    sh tools/ci/check-python-syntax.sh tests/ci/*.py tools/ci/*.py tests/release/https_fixture.py tests/release/https_fixture_bind_test.py tests/release/installer_test.py tests/release/installer_download_test.py tools/release/recover-draft.py tests/release/recover_draft_test.py tools/release/resume-signed.py tests/release/resume_signed_test.py
 
 # Bootstrap, platform selection, download bounds, and install-path regressions.
 installer-check:
@@ -123,6 +124,10 @@ release version pr:
 # Native Windows x64/ARM64 workspace and transport evidence.
 ci-windows transport='true':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File tools/ci/check-windows.ps1 -Transport {{ quote(transport) }}
+
+# HTTPS trust lifecycle on disposable GitHub-hosted Windows VMs only.
+windows-installer-fixture:
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/release/installer-windows.ps1 -FixtureOnly
 
 # Exact-source unsigned native MSVC candidate; RELEASE_TARGET must match the host.
 windows-build output='release-input':

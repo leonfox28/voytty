@@ -1,0 +1,215 @@
+name: resume retained signed desktop release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Original annotated tag with a failed Windows installer fixture
+        required: true
+        type: string
+      run_id:
+        description: Original signed release run (publication must have been skipped)
+        required: true
+        type: string
+      artifact_id:
+        description: Retained signed inventory artifact from the original run
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: signed-native-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.repository == 'leonfox28/voytty' && github.ref == 'refs/heads/main'
+    name: Verify the retained signed inventory and original source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      commit: ${{ steps.evidence.outputs.source_commit }}
+      fixture_id: ${{ steps.fixture.outputs.artifact-id }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      ORIGINAL_RUN: ${{ inputs.run_id }}
+      SIGNED_ARTIFACT: ${{ inputs.artifact_id }}
+    steps:
+      - name: Check out the reviewed recovery owner
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: recovery
+          persist-credentials: false
+      - name: Bind original signing, Windows failure, tag and artifact
+        id: evidence
+        run: |
+          mkdir fixture
+          python3 recovery/tools/release/resume-signed.py inspect \
+            --tag "$RELEASE_TAG" --run-id "$ORIGINAL_RUN" \
+            --artifact-id "$SIGNED_ARTIFACT" --plan fixture/resume-plan.json
+      - name: Check out the frozen product source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.evidence.outputs.source_commit }}
+          path: source
+          persist-credentials: false
+      - name: Require successful exact original main CI
+        env:
+          SOURCE_COMMIT: ${{ steps.evidence.outputs.source_commit }}
+        run: sh source/tools/release/find-green-main-ci.sh "$SOURCE_COMMIT"
+      - name: Install the frozen Rust toolchain
+        run: rustup toolchain install 1.98.0 --profile minimal
+      - name: Download the retained signed inventory
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          digest-mismatch: error
+          path: signed
+      - name: Authenticate with the original frozen verifier and render test installers
+        run: |
+          cargo +1.98.0 run --manifest-path source/tools/release/Cargo.toml \
+            --locked --release -- verify signed
+          source/target/release/voytty-release-tool render-test-installer signed fixture/voytty-install-test.sh
+          source/target/release/voytty-release-tool render-test-installer signed fixture/voytty-install-test.ps1
+      - name: Upload only fixture installers and the bound plan
+        id: fixture
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: resumed-fixture-${{ github.run_id }}-${{ github.run_attempt }}
+          path: fixture/
+          if-no-files-found: error
+          retention-days: 7
+
+  installer:
+    name: Install ${{ matrix.target }} from retained signed bytes
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    steps:
+      - name: Check out the frozen product fixtures
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          path: source
+          persist-credentials: false
+      - name: Check out the reviewed Windows fixture repair
+        if: runner.os == 'Windows'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: recovery
+          persist-credentials: false
+      - name: Download the unchanged original signed inventory
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          digest-mismatch: error
+          path: source/release-output
+      - name: Download the authenticated fixture installers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.verify.outputs.fixture_id }}
+          digest-mismatch: error
+          path: source/fixture
+      - name: Run the original Unix installer assertions
+        if: runner.os != 'Windows'
+        working-directory: source
+        run: sh tests/release/installer-fixture.sh release-output fixture/voytty-install-test.sh
+      - name: Run every Windows installer assertion with repaired certificate setup
+        if: runner.os == 'Windows'
+        shell: powershell
+        working-directory: source
+        run: ../recovery/tests/release/installer-windows.ps1 -ReleaseDirectory release-output -TestInstaller fixture/voytty-install-test.ps1
+
+  publish:
+    name: Publish the exact retained signed inventory after all five installer proofs
+    needs: [verify, installer]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Check out the reviewed recovery owner
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: recovery
+          persist-credentials: false
+      - name: Check out the frozen product verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download the original signed inventory
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          digest-mismatch: error
+          path: signed
+      - name: Download the original-source plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.verify.outputs.fixture_id }}
+          digest-mismatch: error
+          path: fixture
+      - name: Install the frozen Rust toolchain
+        run: rustup toolchain install 1.98.0 --profile minimal
+      - name: Recheck original CI and authenticate the retained bytes before any write
+        env:
+          SOURCE_COMMIT: ${{ needs.verify.outputs.commit }}
+        run: |
+          sh source/tools/release/find-green-main-ci.sh "$SOURCE_COMMIT"
+          cargo +1.98.0 run --manifest-path source/tools/release/Cargo.toml \
+            --locked --release -- verify signed
+      - name: Create one late draft or reconcile its complete unchanged inventory
+        working-directory: source
+        run: >-
+          python3 ../recovery/tools/release/resume-signed.py stage
+          --plan ../fixture/resume-plan.json --signed ../signed
+      - name: Verify the exact draft download
+        run: |
+          python3 recovery/tools/release/recover-draft.py download \
+            --plan fixture/resume-plan.json --signed signed --roundtrip roundtrip
+          cargo +1.98.0 run --manifest-path source/tools/release/Cargo.toml \
+            --locked --release -- verify roundtrip
+      - name: Attest the exact verified draft inventory
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: roundtrip/*
+      - name: Publish and require immutable identical assets
+        run: >-
+          python3 recovery/tools/release/resume-signed.py publish
+          --plan fixture/resume-plan.json --signed signed --roundtrip roundtrip

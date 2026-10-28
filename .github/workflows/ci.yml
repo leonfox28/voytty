@@ -118,6 +118,8 @@ jobs:
       - uses: ./.github/actions/setup-ci-tools
         with:
           profile: rust
+      - name: Verify the unattended Windows HTTPS fixture
+        run: just windows-installer-fixture
       - name: Run native Windows checks
         run: just ci-windows "${{ needs.changes.outputs.transport }}"
 
