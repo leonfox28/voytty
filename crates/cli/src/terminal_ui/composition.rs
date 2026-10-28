@@ -275,11 +275,9 @@ impl ComposedFrame {
                 status_row,
                 text_cells(
                     &text,
-                    usize::from(
-                        physical_size
-                            .columns
-                            .min(ResourceLimits::default().max_viewport_columns),
-                    ),
+                    // Host-owned chrome fills the outer terminal independently
+                    // of the resource limit on the child viewport.
+                    usize::from(physical_size.columns),
                     TerminalStyle {
                         inverse: true,
                         ..TerminalStyle::default()

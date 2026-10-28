@@ -1738,11 +1738,7 @@ mod unix {
             let Some(upload) = &self.upload else {
                 return Some(left);
             };
-            let width = usize::from(
-                self.physical_size
-                    .columns
-                    .min(voytty_core::ResourceLimits::default().max_viewport_columns),
-            );
+            let width = usize::from(self.physical_size.columns);
             let right = upload.text(width);
             let right_width = unicode_width::UnicodeWidthStr::width(right.as_str());
             let left = upload::truncate(&left, width.saturating_sub(right_width + 1));
@@ -5294,9 +5290,51 @@ mod unix {
         }
 
         #[test]
+        fn status_row_fills_physical_width_across_resizes() {
+            for screen in [ActiveScreen::Main, ActiveScreen::Alternate] {
+                for route in [TerminalViewRoute::Local, TerminalViewRoute::Remote] {
+                    let physical = TerminalSize::new(24, 80);
+                    let layout = ChromeLayout::new(physical, screen);
+                    let snapshot = test_snapshot(layout.child, screen, Revision::new(2));
+                    let mut viewport = ViewportController::with_layout(layout, None);
+                    let mut status = StatusRenderer::new(
+                        TerminalViewTarget::for_display("Mac", route),
+                        physical,
+                    );
+                    let mut previous = None;
+
+                    // Local chrome must resize before the child snapshot catches up,
+                    // including when the child has reached its resource limit.
+                    for columns in [80, 240, 241, 320, 480, 240, 80] {
+                        let physical = TerminalSize::new(24, columns);
+                        viewport.set_layout(ChromeLayout::new(physical, screen));
+                        status.resize(physical);
+                        let frame = ComposedFrame::compose(
+                            &snapshot.surface,
+                            previous.as_ref(),
+                            &viewport,
+                            &status,
+                            TerminalViewTransportState::Active,
+                        )
+                        .expect("compose resized status row");
+                        let cells = &frame.rows[&(physical.rows - 1)];
+                        assert_eq!(cells.len(), usize::from(columns));
+                        assert!(cells.iter().all(|cell| cell.style.inverse));
+                        assert!(cells.last().expect("status padding").contents.is_empty());
+                        assert!(
+                            frame.layout.content_size.columns
+                                <= voytty_core::ResourceLimits::default().max_viewport_columns
+                        );
+                        previous = Some(frame);
+                    }
+                }
+            }
+        }
+
+        #[test]
         fn upload_status_stays_right_aligned_without_changing_child_geometry() {
             use voytty_core::upload::{UploadPhase, UploadProgress};
-            for width in [4, 12, 24, 80, 120] {
+            for width in [4, 12, 24, 80, 120, 240, 241, 320, 480] {
                 for screen in [ActiveScreen::Main, ActiveScreen::Alternate] {
                     let physical = TerminalSize::new(24, width);
                     let original = ChromeLayout::new(physical, screen);
