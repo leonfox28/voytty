@@ -21,6 +21,14 @@ class FixtureHTTPServer(http.server.ThreadingHTTPServer):
         self.server_name, self.server_port = self.server_address[:2]
 
 
+def publish_port(port_file: pathlib.Path, port: int) -> None:
+    # Existence is the readiness signal. Close the writer before publishing it,
+    # so Windows readers cannot race an open handle or observe partial text.
+    pending = port_file.with_name(port_file.name + ".pending")
+    pending.write_text(str(port), encoding="ascii")
+    pending.replace(port_file)
+
+
 def main() -> None:
     if len(sys.argv) != 6:
         raise SystemExit("usage: https_fixture.py ROOT CERT KEY PORT_FILE LOG_FILE")
@@ -39,7 +47,7 @@ def main() -> None:
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(certificate, key)
     server.socket = context.wrap_socket(server.socket, server_side=True)
-    port_file.write_text(str(server.server_port), encoding="ascii")
+    publish_port(port_file, server.server_port)
     server.serve_forever()
 
 

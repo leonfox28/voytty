@@ -87,7 +87,7 @@ keyUsage = critical,digitalSignature,keyEncipherment,keyCertSign
     Invoke-FixtureProcess (Get-Command certutil.exe).Source @('-f', '-addstore', 'Root', $cert) 'trust'
     if (-not (Test-FixtureCertificate $certificate.Thumbprint)) { throw 'Fixture certificate was not imported' }
     $port = Join-Path $temporary 'port'; $requests = Join-Path $temporary 'requests.log'
-    $arguments = @([IO.Path]::GetFullPath('tests/release/https_fixture.py'), $ReleaseDirectory, $cert, $key, $port, $requests)
+    $arguments = @((Join-Path $PSScriptRoot 'https_fixture.py'), $ReleaseDirectory, $cert, $key, $port, $requests)
     $quoted = $arguments | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }
     $server = Start-Process -FilePath (Get-Command python.exe).Source -ArgumentList $quoted -PassThru -NoNewWindow
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
