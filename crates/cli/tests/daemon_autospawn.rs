@@ -1264,10 +1264,23 @@ fn set_terminal_child_size(output: &File, rows: u16, columns: u16) {
 async fn wait_for_active_viewport(runtime: &LocalRuntime, rows: u16, columns: u16) -> Revision {
     let deadline = std::time::Instant::now() + TERMINAL_TEST_TIMEOUT;
     loop {
-        let sessions = runtime
-            .session_list("local")
-            .await
-            .expect("observe terminal active barrier");
+        let observation = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            runtime.session_list("local"),
+        )
+        .await
+        .expect("terminal active barrier exceeded its existing deadline");
+        let sessions = match observation {
+            Ok(sessions) => sessions,
+            // A single readiness probe has a 250 ms budget. The viewport
+            // assertion owns the existing five-second deadline, so an
+            // unanswered probe is not yet a failed state observation.
+            Err(error) if error.kind() == voytty_core::DomainErrorKind::DaemonStartTimeout => {
+                tokio::task::yield_now().await;
+                continue;
+            }
+            Err(error) => panic!("observe terminal active barrier: {error:?}"),
+        };
         let active = sessions
             .iter()
             .find(|session| {

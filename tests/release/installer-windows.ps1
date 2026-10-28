@@ -1,18 +1,43 @@
 # Final signed installer acceptance on each native Windows architecture.
-param([Parameter(Mandatory)][string]$ReleaseDirectory, [Parameter(Mandatory)][string]$TestInstaller)
+param([string]$ReleaseDirectory, [string]$TestInstaller, [switch]$FixtureOnly)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-$ReleaseDirectory = [IO.Path]::GetFullPath($ReleaseDirectory)
-$TestInstaller = [IO.Path]::GetFullPath($TestInstaller)
+if (-not $FixtureOnly) {
+    $ReleaseDirectory = [IO.Path]::GetFullPath($ReleaseDirectory)
+    $TestInstaller = [IO.Path]::GetFullPath($TestInstaller)
+}
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ('voytty-https-' + [guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($temporary) | Out-Null
 $server = $null; $certificate = $null
+function Invoke-FixtureProcess([string]$FilePath, [string[]]$Arguments, [string]$Name) {
+    $stdout = Join-Path $temporary ($Name + '.stdout')
+    $stderr = Join-Path $temporary ($Name + '.stderr')
+    $quoted = $Arguments | ForEach-Object { '"' + $_ + '"' }
+    $process = Start-Process -FilePath $FilePath -ArgumentList $quoted -RedirectStandardOutput $stdout -RedirectStandardError $stderr -NoNewWindow -PassThru
+    # Hold a process handle before exit so Windows PowerShell retains ExitCode.
+    $null = $process.Handle
+    try {
+        if (-not $process.WaitForExit(30000)) {
+            $process.Kill()
+            throw "$Name exceeded the 30-second fixture deadline"
+        }
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) {
+            throw ("$Name failed: " + [IO.File]::ReadAllText($stdout) + [IO.File]::ReadAllText($stderr))
+        }
+    } finally { $process.Dispose() }
+}
 function Expect-Rejection([scriptblock]$Action, [string]$Message) {
     $rejected = $false
     try { & $Action } catch { $rejected = $true }
     if (-not $rejected) { throw $Message }
 }
 try {
+    if ($FixtureOnly) {
+        $ReleaseDirectory = Join-Path $temporary 'fixture'
+        [IO.Directory]::CreateDirectory($ReleaseDirectory) | Out-Null
+        [IO.File]::WriteAllText((Join-Path $ReleaseDirectory 'health.txt'), 'voytty HTTPS fixture')
+    }
     $openssl = Join-Path (Split-Path (Split-Path (Get-Command git.exe).Source)) 'usr/bin/openssl.exe'
     if (-not (Test-Path -LiteralPath $openssl)) { $openssl = (Get-Command openssl.exe).Source }
     $config = Join-Path $temporary 'certificate.conf'
@@ -31,10 +56,17 @@ keyUsage = critical,digitalSignature,keyEncipherment,keyCertSign
     $key = Join-Path $temporary 'server.key'; $cert = Join-Path $temporary 'server.crt'
     # Windows PowerShell 5 treats native stderr as errors under Stop, even
     # when OpenSSL succeeds. Capture its ordinary progress outside that pipe.
-    $opensslLog = Join-Path $temporary 'openssl.log'
-    $opensslProcess = Start-Process -FilePath $openssl -ArgumentList @('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-config', ('"' + $config + '"'), '-keyout', ('"' + $key + '"'), '-out', ('"' + $cert + '"')) -RedirectStandardError $opensslLog -NoNewWindow -Wait -PassThru
-    if ($opensslProcess.ExitCode -ne 0) { throw ('Unable to generate fixture certificate: ' + [IO.File]::ReadAllText($opensslLog)) }
-    $certificate = Import-Certificate -FilePath $cert -CertStoreLocation Cert:\CurrentUser\Root
+    Write-Output 'Generating the temporary HTTPS certificate.'
+    Invoke-FixtureProcess $openssl @('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-config', $config, '-keyout', $key, '-out', $cert) 'openssl'
+    $generatedCertificate = New-Object Security.Cryptography.X509Certificates.X509Certificate2($cert)
+    $certificatePath = 'Cert:\CurrentUser\Root\' + $generatedCertificate.Thumbprint
+    if (Test-Path -LiteralPath $certificatePath) { throw 'Fixture certificate already exists in the user store' }
+    $certificate = $generatedCertificate
+    # Import-Certificate can open a CryptoAPI confirmation dialog for CurrentUser
+    # Root. certutil -user -f explicitly imports only this fresh fixture root.
+    Write-Output 'Trusting the temporary certificate without an interactive dialog.'
+    Invoke-FixtureProcess (Get-Command certutil.exe).Source @('-user', '-f', '-addstore', 'Root', $cert) 'trust'
+    if (-not (Test-Path -LiteralPath $certificatePath)) { throw 'Fixture certificate was not imported' }
     $port = Join-Path $temporary 'port'; $requests = Join-Path $temporary 'requests.log'
     $arguments = @([IO.Path]::GetFullPath('tests/release/https_fixture.py'), $ReleaseDirectory, $cert, $key, $port, $requests)
     $quoted = $arguments | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }
@@ -45,6 +77,17 @@ keyUsage = critical,digitalSignature,keyEncipherment,keyCertSign
         Start-Sleep -Milliseconds 50
     }
     $base = 'https://127.0.0.1:' + [IO.File]::ReadAllText($port)
+    Write-Output 'HTTPS fixture is listening.'
+    if ($FixtureOnly) {
+        Add-Type -AssemblyName System.Net.Http
+        $client = New-Object Net.Http.HttpClient
+        $client.Timeout = [TimeSpan]::FromSeconds(10)
+        try {
+            if ($client.GetStringAsync($base + '/health.txt').GetAwaiter().GetResult() -cne 'voytty HTTPS fixture') { throw 'HTTPS fixture response mismatch' }
+        } finally { $client.Dispose() }
+        Write-Output 'Windows HTTPS fixture acceptance passed with ordinary TLS validation.'
+        return
+    }
     $directory = Join-Path $temporary (([char]0x7528).ToString() + [char]0x6237 + ' path\bin')
     $destination = Join-Path $directory 'voytty.exe'
     & $TestInstaller -InstallDir $directory -NoPath -TestBaseUrl $base
@@ -70,6 +113,14 @@ keyUsage = critical,digitalSignature,keyEncipherment,keyCertSign
     Write-Output 'Windows authenticated installer acceptance passed.'
 } finally {
     if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id; $server.WaitForExit() }
-    if ($certificate) { Remove-Item -LiteralPath ("Cert:\CurrentUser\Root\" + $certificate.Thumbprint) }
+    if ($certificate) {
+        $certificatePath = 'Cert:\CurrentUser\Root\' + $certificate.Thumbprint
+        if (Test-Path -LiteralPath $certificatePath) {
+            Invoke-FixtureProcess (Get-Command certutil.exe).Source @('-user', '-f', '-delstore', 'Root', $certificate.Thumbprint) 'untrust'
+        }
+        if (Test-Path -LiteralPath $certificatePath) { throw 'Fixture certificate cleanup failed' }
+        $certificate.Dispose()
+        Write-Output 'Temporary certificate removed from the user trust store.'
+    }
     Remove-Item -LiteralPath $temporary -Recurse -Force
 }

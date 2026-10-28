@@ -4,6 +4,7 @@ set -eu
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 workflow="$repo_root/.github/workflows/release.yml"
 recovery_workflow="$repo_root/.github/workflows/release-recover.yml"
+resume_workflow="$repo_root/.github/workflows/release-resume-signed.yml"
 ci_workflow="$repo_root/.github/workflows/ci.yml"
 justfile="$repo_root/justfile"
 green_ci_lookup="$repo_root/tools/release/find-green-main-ci.sh"
@@ -98,7 +99,7 @@ else
     fail "Linux glibc-floor image must be digest-pinned"
 fi
 
-unpinned_actions=$(grep -hE '^[[:space:]]*(- )?uses:' "$workflow" "$recovery_workflow" \
+unpinned_actions=$(grep -hE '^[[:space:]]*(- )?uses:' "$workflow" "$recovery_workflow" "$resume_workflow" \
     | grep -Ev 'uses: [.]?/[.]github/workflows/|@[0-9a-f]{40}([[:space:]]|$)' || true)
 [ -z "$unpinned_actions" ] || fail "all release actions must use commit SHAs"
 grep -Fq "github.ref == 'refs/heads/main'" "$recovery_workflow" \
@@ -114,6 +115,24 @@ for recovery_boundary in 'find-green-main-ci.sh' 'digest-mismatch: error' \
     'actions/attest-build-provenance@' 'recover-draft.py publish'; do
     grep -Fq -- "$recovery_boundary" "$recovery_workflow" \
         || fail "draft recovery bypasses a publication boundary: $recovery_boundary"
+done
+grep -Fq "github.ref == 'refs/heads/main'" "$resume_workflow" \
+    || fail "signed resumption must run only from reviewed main"
+grep -Fq '  workflow_dispatch:' "$resume_workflow" \
+    || fail "signed resumption requires an explicit dispatch"
+if grep -Eq '^[[:space:]]{2}(push|pull_request|release):|secrets\.|environment: release|--clobber|git tag|git push|--package voytty-cli' "$resume_workflow"; then
+    fail "signed resumption must not run implicitly, sign, retag, replace or rebuild product binaries"
+fi
+for resume_boundary in 'needs: [verify, installer]' 'find-green-main-ci.sh' \
+    'digest-mismatch: error' 'resume-signed.py inspect' 'resume-signed.py stage' \
+    '--locked --release -- verify signed' '--locked --release -- verify roundtrip' \
+    'actions/attest-build-provenance@' 'resume-signed.py publish' \
+    'installer-fixture.sh release-output fixture/voytty-install-test.sh' \
+    'installer-windows.ps1 -ReleaseDirectory release-output -TestInstaller fixture/voytty-install-test.ps1' \
+    'aarch64-apple-darwin' 'x86_64-unknown-linux-gnu' 'aarch64-unknown-linux-gnu' \
+    'x86_64-pc-windows-msvc' 'aarch64-pc-windows-msvc'; do
+    grep -Fq -- "$resume_boundary" "$resume_workflow" \
+        || fail "signed resumption omits a required boundary: $resume_boundary"
 done
 unpinned_ci_actions=$(grep -hE '^[[:space:]]*(- )?uses:' "$ci_workflow" \
     "$repo_root/.github/actions/setup-ci-tools/action.yml" \
