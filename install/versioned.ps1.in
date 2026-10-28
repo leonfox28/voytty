@@ -60,11 +60,13 @@ Set-Acl -LiteralPath $temporary -AclObject $acl
 function Get-BoundedAsset([string]$Name, [long]$Maximum) {
     $response = $null; $inputStream = $null; $output = $null
     $watch = [Diagnostics.Stopwatch]::StartNew()
+    $deadline = New-Object Threading.CancellationTokenSource
+    $deadline.CancelAfter(600000)
     try {
         $url = "$baseUrl/$Name"
         for ($redirect = 0; ; $redirect++) {
             if (([uri]$url).Scheme -ne 'https') { throw 'HTTPS is required' }
-            $response = $client.GetAsync($url, [Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+            $response = $client.GetAsync($url, [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $deadline.Token).GetAwaiter().GetResult()
             if ([int]$response.StatusCode -notin @(301, 302, 303, 307, 308)) { break }
             if ($redirect -ge 5 -or -not $response.Headers.Location) { throw 'Invalid asset redirect' }
             $url = (New-Object Uri([uri]$url, $response.Headers.Location)).AbsoluteUri
@@ -77,8 +79,9 @@ function Get-BoundedAsset([string]$Name, [long]$Maximum) {
         $buffer = New-Object byte[] 81920
         $count = 0L
         while ($true) {
-            $pending = $inputStream.ReadAsync($buffer, 0, $buffer.Length)
-            if (-not $pending.Wait(30000)) { throw 'Download stalled' }
+            $pending = $inputStream.ReadAsync($buffer, 0, $buffer.Length, $deadline.Token)
+            $remaining = [int][Math]::Max(1, [Math]::Min(30000, 600000 - $watch.ElapsedMilliseconds))
+            if (-not $pending.Wait($remaining)) { throw 'Download stalled or exceeded its total deadline' }
             $read = $pending.GetAwaiter().GetResult()
             if ($read -eq 0) { break }
             $count += $read
@@ -88,6 +91,7 @@ function Get-BoundedAsset([string]$Name, [long]$Maximum) {
         $output.Flush($true)
         return $count
     } finally {
+        $deadline.Cancel(); $deadline.Dispose()
         if ($output) { $output.Dispose() }; if ($inputStream) { $inputStream.Dispose() }; if ($response) { $response.Dispose() }
     }
 }

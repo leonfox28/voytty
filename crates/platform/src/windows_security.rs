@@ -10,19 +10,23 @@ pub(crate) fn private_sddl() -> io::Result<String> {
     Ok(format!("D:P(A;OICI;FA;;;{})(A;OICI;FA;;;SY)", sid()?))
 }
 
-fn default_owner() -> io::Result<OwnedSid> {
-    use winsafe::{HPROCESS, TokenInfo, co};
-    let token = HPROCESS::GetCurrentProcess()
-        .OpenProcessToken(co::TOKEN::QUERY)
-        .map_err(io::Error::other)?;
-    if let TokenInfo::Owner(owner) = token
-        .GetTokenInformation(co::TOKEN_INFORMATION_CLASS::Owner)
-        .map_err(io::Error::other)?
-        && let Some(owner) = owner.Owner()
-    {
-        return OwnedSid::from_string(&owner.to_string());
+fn file_security(path: &Path) -> io::Result<ObjectSecurityDescriptor> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // query_file requests only the DACL. Query the file's kernel handle to
+    // retrieve both OWNER_SECURITY_INFORMATION and DACL_SECURITY_INFORMATION.
+    // READ_CONTROL needs no data access; BACKUP_SEMANTICS permits directories.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .access_mode(0x0002_0000)
+        .custom_flags(0x0200_0000 | 0x0020_0000)
+        .open(path)?;
+    if file.metadata()?.file_attributes() & 0x400 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "managed path is a reparse point",
+        ));
     }
-    Err(io::Error::other("process token has no default owner"))
+    ObjectSecurityDescriptor::query_kernel_object(&file)
 }
 
 pub(crate) fn validate(path: &Path) -> io::Result<()> {
@@ -32,21 +36,24 @@ pub(crate) fn validate(path: &Path) -> io::Result<()> {
             "managed path is a reparse point",
         ));
     }
-    let descriptor = ObjectSecurityDescriptor::query_file(path)?;
+    let descriptor = file_security(path)?;
     let user = OwnedSid::from_string(&sid()?)?;
     let system = OwnedSid::from_string("S-1-5-18")?;
+    let administrators = OwnedSid::from_string("S-1-5-32-544")?;
     let owner = descriptor.owner().map_err(io::Error::other)?;
-    // Elevated tokens can create Administrators-owned objects. Accept only
-    // this token's default owner in addition to its user; the DACL still
-    // admits only the full user SID and SYSTEM, never the owner group.
-    if !owner.matches(&user) && !owner.matches(&default_owner()?) {
+    // Elevated creation can assign the Administrators owner. It remains in
+    // the OS trust boundary when the same user later runs unelevated; the
+    // DACL must still admit this full user SID and no other ordinary account.
+    if !owner.matches(&user) && !owner.matches(&administrators) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "managed path belongs to another Windows account",
         ));
     }
     let dacl = descriptor.dacl().map_err(io::Error::other)?;
-    if dacl.is_empty()
+    if !dacl
+        .allowed_aces()
+        .any(|ace| ace.trustee_matches(&user) && ace.flags() & 0x08 == 0)
         || dacl
             .allowed_aces()
             .any(|ace| !ace.trustee_matches(&user) && !ace.trustee_matches(&system))
@@ -162,7 +169,7 @@ pub(crate) fn validate_parent(path: &Path) -> io::Result<()> {
             ));
         }
     }
-    let descriptor = ObjectSecurityDescriptor::query_file(path)?;
+    let descriptor = file_security(path)?;
     let trusted = [
         OwnedSid::from_string(&sid()?)?,
         OwnedSid::from_string("S-1-5-18")?,

@@ -15,7 +15,7 @@ Get-ChildItem install, tools, tests -Recurse -File | Where-Object { $_.Name -mat
     if ($errors.Count) { throw "$($_.FullName): $errors" }
 }
 Invoke-Checked { cargo +1.98.0 clippy --locked --workspace --all-targets --all-features -- -D warnings }
-Invoke-Checked { cargo +1.98.0 test --locked --workspace --all-features }
+Invoke-Checked { cargo +1.98.0 test --locked --workspace --all-features --no-fail-fast }
 Invoke-Checked { & target/debug/voytty.exe }
 if ($Transport -eq 'true') {
     Invoke-Checked { cargo +1.98.0 test --locked --manifest-path vendor/noq-proto/Cargo.toml --target-dir target/noq-tests --lib }

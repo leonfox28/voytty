@@ -26,8 +26,10 @@ to drain; this releases blocked input and attached processes. It also accommodat
 State is stored in `<profile>/.voytty`, with the endpoint marker in
 `<profile>/.voytty-run`. Managed directories/files use protected user/SYSTEM DACLs.
 Other users' grants, reparse points and foreign ownership are rejected. The owner
-must be the user or the current token's default owner (Administrators for an
-elevated token); this does not grant the owner group access through the DACL. New objects
+must be the user or Administrators (which Windows can assign during elevated
+creation). The DACL must admit the user and no ordinary foreign account;
+Administrators remain part of the OS trust boundary even after returning to an
+unelevated process. New objects
 are created only beneath parents whose mutation rights are limited to the current
 account, Administrators and SYSTEM. Numeric compatibility UIDs are never used for
 Windows authorization.
