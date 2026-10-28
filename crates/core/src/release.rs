@@ -514,6 +514,13 @@ fn validate_platform_floor(artifact: &ReleaseArtifact) -> Result<(), ReleaseErro
         {
             return Err(ReleaseError::PlatformFloor);
         }
+    } else if matches!(
+        artifact.target.as_str(),
+        "x86_64-pc-windows-msvc" | "aarch64-pc-windows-msvc"
+    ) {
+        if artifact.minimum_macos.is_some() || artifact.minimum_glibc.is_some() {
+            return Err(ReleaseError::PlatformFloor);
+        }
     } else {
         return Err(ReleaseError::UnsupportedTarget);
     }

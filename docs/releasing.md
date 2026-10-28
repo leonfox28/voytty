@@ -1,8 +1,7 @@
 # Release operations
 
-The default publication scope is **macOS arm64, Linux arm64, and Linux x64**.
-macOS Intel, Windows CI/distribution, and relay image publication are paused.
-Restore any of them only when a future task explicitly requests it. Existing
+The publication scope is **macOS arm64, Linux arm64/x64, and Windows x86-64/ARM64**.
+macOS Intel and relay image publication remain paused. Existing
 immutable Releases and already published relay images remain historical assets.
 This platform matrix belongs to the release tool. Installed updaters require
 and validate only their own target entry in the authenticated manifest; they
@@ -13,7 +12,7 @@ reviewed feature branch + version commit in one PR
   -> PR CI -> merge the exact reviewed head
   -> explicit exact-SHA full main CI + cold native builds + unsigned candidate
   -> annotated vVERSION tag -> select that main candidate by artifact ID
-  -> protected signing -> three final installer proofs -> immutable Release
+  -> protected signing -> five final installer proofs -> immutable Release
 ```
 
 `VERSION` is canonical SemVer without the `v` prefix or build metadata.
@@ -93,7 +92,7 @@ without publishing. The dispatch carries the expected SHA and rejects a moved
 main. Release commands reuse an existing full run for that SHA or request one;
 a failed run stops publication and is never automatically retried.
 
-The full run builds all three shipped native binaries: Linux uses the pinned
+The full run builds all five shipped native binaries: Linux uses the pinned
 glibc 2.28 builder and macOS declares the 13.0 deployment floor. These jobs embed
 the exact source SHA, self-check and run the CLI without arguments. PRs changing
 build/release inputs also run those packaging checks, but never upload binaries.
@@ -118,9 +117,10 @@ The tag workflow does not rebuild `voytty` or rerun ordinary CI. It rebuilds the
 small reviewed signing tool before exposing the key, re-verifies the candidate
 and source SHA, signs the exact native manifest and complete
 SHA256SUMS inventory, and tests the final signed installers
-on all three targets. It then creates one late draft, downloads and verifies its
+on all five targets. It then creates one late draft, downloads and verifies its
 assets, attests those exact bytes, publishes, and requires `immutable: true`.
-The nine assets are the three native archives, manifest and signature, installer,
+The twelve assets are the five native archives, manifest and signature, POSIX and
+PowerShell installers,
 Rust SBOM, and signed SHA256SUMS inventory. No mobile app or relay image is published.
 The native schema-v1 manifest/installer and protected signing checks stay unchanged.
 
@@ -167,7 +167,7 @@ checks visible prerequisites and never changes those settings.
 
 ## Recover an existing signed draft
 
-If signing and all three installer jobs passed, but publication failed after
+If signing and every installer job from that release passed, but publication failed after
 uploading the complete draft (for example, GitHub returned HTTP 500 during
 round-trip download), retain the original tag, signed artifact and draft.
 Inspect the failed run and the draft by numeric release ID. A draft can return
@@ -202,3 +202,20 @@ the final PATCH, failures leave the draft intact and the same dispatch can be
 retried after inspection. If PATCH or post-publication verification has an
 ambiguous result, inspect the release ID before any further action; published
 assets are never replaced.
+
+## Windows candidate and installer boundary
+
+The x86-64/ARM64 jobs build on matching Windows hosts through `just windows-build`,
+check the PE machine type and embedded source SHA, and run the candidate CLI.
+They use no compiled dependency cache. PR binaries stay on the runner; only the
+explicit exact-main full run uploads candidates. Ubuntu assembles deterministic
+`.tar.gz` archives containing exactly `voytty.exe`; the manifest and signed
+checksum inventory include both new targets and `voytty-install.ps1`.
+
+The Windows final installer proofs run on both native architectures over a local
+HTTPS fixture, with a temporary current-user trust certificate that is removed
+on exit. They verify Unicode/space-containing destinations, no-clobber behavior,
+manifest/signature tampering, and the production URL boundary. The protected
+signing key, exact candidate selection, immutable publication and draft recovery
+remain shared with Unix. Windows inventories require both Windows installer jobs;
+historical drafts retain their original installer matrix and frozen source verifier.

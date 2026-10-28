@@ -9,8 +9,8 @@ import subprocess
 import sys
 
 SCOPES = ("rust", "transport", "mobile", "relay", "native", "candidate")
-JOBS = {"rust": "rust", "mobile-core": "mobile", "relay": "relay",
-        "candidates-macos": "native", "candidates-linux": "native", "candidate": "candidate"}
+JOBS = {"rust": "rust", "windows": "rust", "mobile-core": "mobile", "relay": "relay",
+        "candidates-macos": "native", "candidates-linux": "native", "candidates-windows": "native", "candidate": "candidate"}
 
 
 def documentation(path: str) -> bool:
@@ -115,7 +115,8 @@ def local_check(base: str) -> None:
     print("Local check plan: " + json.dumps(plan), flush=True)
     commands = [["sh", "tests/source-policy.sh"], ["just", "ci-policy"], ["just", "ci-dependencies"]]
     if plan["rust"]:
-        commands.append(["just", "ci-unix", "false", str(plan["transport"]).lower()])
+        commands.append(["just", "ci-windows", str(plan["transport"]).lower()] if os.name == "nt" else
+                        ["just", "ci-unix", "false", str(plan["transport"]).lower()])
     if plan["relay"]:
         commands.append(["just", "relay-static"])
     for command in commands:

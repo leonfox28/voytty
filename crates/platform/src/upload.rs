@@ -1,10 +1,11 @@
 //! Private effective-user upload staging. Only explicit successful publication persists.
 
 use crate::user_state::{create_new_file, create_or_validate_directory, validate_directory};
+#[cfg(unix)]
+use std::os::unix::fs::DirBuilderExt;
 use std::{
     fs::{self, File},
     io::{self, Write},
-    os::unix::fs::DirBuilderExt,
     path::PathBuf,
 };
 use voytty_core::{
@@ -29,9 +30,21 @@ impl StagedUpload {
         id: TransferId,
         metadata: UploadMetadata,
     ) -> io::Result<Self> {
+        #[cfg(windows)]
+        {
+            let account = crate::account::EffectiveAccount::current().map_err(io::Error::other)?;
+            let name = format!("voytty-upload-{}", crate::windows_security::sid()?);
+            let root = account.home().join(name);
+            let public = root.to_str().ok_or_else(invalid_bytes)?.replace('\\', "/");
+            Self::create_at(root, public, account.uid(), session, id, metadata)
+        }
+        #[cfg(unix)]
         let uid = nix::unistd::geteuid().as_raw();
+        #[cfg(unix)]
         let name = format!("voytty-{uid}");
+        #[cfg(unix)]
         let root = fs::canonicalize("/tmp")?.join(&name);
+        #[cfg(unix)]
         Self::create_at(root, format!("/tmp/{name}"), uid, session, id, metadata)
     }
 
@@ -54,7 +67,10 @@ impl StagedUpload {
             .collect();
         let directory = parent.join(&transfer_name);
         // A collision never reuses or removes another transfer's directory.
+        #[cfg(unix)]
         fs::DirBuilder::new().mode(0o700).create(&directory)?;
+        #[cfg(windows)]
+        crate::windows_security::create_directory(&directory)?;
         let created = (|| {
             validate_directory(&directory, uid).map_err(private_path_error)?;
             create_new_file(&directory.join(".part")).map_err(private_path_error)
@@ -116,7 +132,7 @@ impl StagedUpload {
         fs::rename(self.directory.join(".part"), self.directory.join(filename))?;
         // From this point, even a directory-sync failure has an uncertain committed outcome.
         self.committed = true;
-        File::open(&self.directory)?.sync_all()?;
+        crate::user_state::sync_directory(&self.directory).map_err(private_path_error)?;
         Ok(result)
     }
 }
@@ -140,7 +156,7 @@ fn private_path_error(_: crate::user_state::PathError) -> io::Error {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::{MetadataExt, symlink};

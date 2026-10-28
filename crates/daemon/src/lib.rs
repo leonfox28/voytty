@@ -14,11 +14,11 @@ pub mod config;
 pub mod connection_broker;
 mod connection_progress;
 pub mod device_directory;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod diagnostics;
 pub mod distribution;
 pub mod error;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod handoff;
 pub mod identity;
 pub mod lifecycle;
@@ -28,14 +28,14 @@ pub mod operations;
 pub mod pair_framing;
 pub mod pairing;
 pub mod pairing_service;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod remote_session;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod remote_tunnel;
 pub mod route;
 pub mod service;
 pub mod session;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod session_wire;
 pub mod store;
 pub mod terminal_driver;

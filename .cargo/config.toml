@@ -1,0 +1,8 @@
+# Ship one executable on Windows without requiring the Visual C++ redistributable.
+# Reserve 8 MiB for executable entry points: debug async lifecycle futures exceed
+# the MSVC linker's 1 MiB default. Pages are committed on demand, not up front.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/STACK:8388608"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/STACK:8388608"]

@@ -44,3 +44,7 @@ workspace = true
 name = "daemon_autospawn"
 path = "tests/daemon_autospawn.rs"
 harness = false
+
+[target.'cfg(windows)'.dependencies]
+crossterm = { version = "=0.29.0", default-features = false, features = ["events", "windows", "bracketed-paste"] }
+winsafe = { version = "=0.0.29", features = ["kernel"] }

@@ -1,48 +1,48 @@
 //! Typed local-daemon lifecycle, pairing, and device-service dispatch.
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::future::Future;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::pin::Pin;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::sync::Arc;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use voytty_core::DeviceId;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use voytty_core::{
     AuthorizationSnapshot, AuthorizationStatus, Capabilities, DeviceAlias, DeviceSummary,
     DomainErrorKind,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use voytty_proto::{DecodedFrame, WireKind, encode_message, v2};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use zeroize::{Zeroize, Zeroizing};
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::authorization::AuthorizationRegistry;
 use crate::bootstrap::BootstrapResult;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::config::{ValidatedConfig, validate_setup_profile};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::connection_broker::{
     ConnectionBroker, ConnectionCloseReason, PeerConnectionObservation,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::device_directory::{DeviceDirectory, DeviceProjection};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::error::DaemonError;
 use crate::network::NetworkObservation;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::network::NetworkObserver;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::pairing_service::{LocalPairAcceptInput, LocalPairCreateInput, PairingService};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::remote_session::RemoteSessionService;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::session::{SessionService, SessionSummary, ShutdownOutcome};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::store::StoreHandle;
 
 /// Protocol version projected by readiness and status.
@@ -117,7 +117,7 @@ pub struct SessionImpact {
 }
 
 /// Redacted live transport/session counters merged into a device projection.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DeviceLiveObservation {
     /// Whether one promoted normal-ALPN connection is active.
@@ -134,7 +134,7 @@ pub struct DeviceLiveObservation {
 /// Iroh Endpoint. Isolated same-UID tests can therefore prove durable revoke
 /// ordering without binding UDP, while production composition injects its
 /// existing connection broker.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub trait RemoteDeviceAccess: Send + Sync {
     /// Returns redacted live counters without exposing routes or direct IPs.
     fn observe<'a>(
@@ -152,14 +152,14 @@ pub trait RemoteDeviceAccess: Send + Sync {
 }
 
 /// Production projection of the existing broker and SessionService owners.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone)]
 pub(crate) struct BrokerRemoteDeviceAccess {
     broker: ConnectionBroker,
     sessions: SessionService,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl BrokerRemoteDeviceAccess {
     #[must_use]
     pub(crate) const fn new(broker: ConnectionBroker, sessions: SessionService) -> Self {
@@ -167,7 +167,7 @@ impl BrokerRemoteDeviceAccess {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl RemoteDeviceAccess for BrokerRemoteDeviceAccess {
     fn observe<'a>(
         &'a self,
@@ -201,7 +201,7 @@ impl RemoteDeviceAccess for BrokerRemoteDeviceAccess {
 
 /// Existing store, directory, authorization gate, and remote-close owners used
 /// by same-UID device IPC.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone)]
 pub struct DeviceManagement {
     store: StoreHandle,
@@ -212,7 +212,7 @@ pub struct DeviceManagement {
     revoke_guard_after_first_poll_for_test: Option<tokio::sync::mpsc::UnboundedSender<DeviceId>>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl DeviceManagement {
     /// Composes the already-running owners without opening SQLite or binding an
     /// Endpoint. The directory should be the same instance shared with pairing
@@ -251,41 +251,41 @@ impl DeviceManagement {
 /// Shared lifecycle and live-session service state for one daemon process.
 #[derive(Clone)]
 pub struct DaemonService {
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) version_override: Option<String>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     setup: BootstrapResult,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     started_at_unix: u64,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     sessions: SessionService,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     network: NetworkObserver,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     devices: Option<DeviceManagement>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pairing: Option<PairingService>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     remote_sessions: Option<RemoteSessionService>,
 }
 
 impl DaemonService {
     /// Creates service state from already validated persistent setup.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[must_use]
     pub fn new(setup: BootstrapResult) -> Self {
         Self::with_started_at(setup, now_unix())
     }
 
-    /// Creates the non-Unix placeholder for the current unsupported boundary.
-    #[cfg(not(unix))]
+    /// Creates the unsupported-platform placeholder for the current unsupported boundary.
+    #[cfg(not(any(unix, windows)))]
     #[must_use]
     pub fn new(_setup: BootstrapResult) -> Self {
         Self {}
     }
 
     /// Creates service state with an explicit timestamp for isolated tests.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[doc(hidden)]
     #[must_use]
     pub fn with_started_at(setup: BootstrapResult, started_at_unix: u64) -> Self {
@@ -304,7 +304,7 @@ impl DaemonService {
     }
 
     /// Creates isolated service state around a task-private session service.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[doc(hidden)]
     #[must_use]
     pub fn with_sessions(
@@ -326,7 +326,7 @@ impl DaemonService {
     }
 
     /// Creates production service state around the prepared network observer.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[must_use]
     pub fn with_network(
         setup: BootstrapResult,
@@ -347,7 +347,7 @@ impl DaemonService {
     }
 
     /// Creates isolated session state with an explicit network observer.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[doc(hidden)]
     #[must_use]
     pub fn with_sessions_and_network(
@@ -370,7 +370,7 @@ impl DaemonService {
     }
 
     /// Adds same-UID device management around already-running daemon owners.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[must_use]
     pub fn with_device_management(mut self, devices: DeviceManagement) -> Self {
         self.devices = Some(devices);
@@ -379,7 +379,7 @@ impl DaemonService {
 
     /// Adds the one runtime pairing coordinator shared with the pair-ALPN
     /// network callback.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[must_use]
     pub fn with_pairing(mut self, pairing: PairingService) -> Self {
         self.pairing = Some(pairing);
@@ -387,30 +387,30 @@ impl DaemonService {
     }
 
     /// Adds exact target resolution and outbound Session unary forwarding.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[must_use]
     pub(crate) fn with_remote_sessions(mut self, remote_sessions: RemoteSessionService) -> Self {
         self.remote_sessions = Some(remote_sessions);
         self
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn pairing(&self) -> Option<&PairingService> {
         self.pairing.as_ref()
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) const fn sessions(&self) -> &SessionService {
         &self.sessions
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn remote_sessions(&self) -> Option<&RemoteSessionService> {
         self.remote_sessions.as_ref()
     }
 
-    /// Creates the non-Unix placeholder for isolated cross-platform callers.
-    #[cfg(not(unix))]
+    /// Creates the unsupported-platform placeholder for isolated cross-platform callers.
+    #[cfg(not(any(unix, windows)))]
     #[doc(hidden)]
     #[must_use]
     pub fn with_started_at(_setup: BootstrapResult, _started_at_unix: u64) -> Self {
@@ -432,7 +432,7 @@ impl DaemonService {
         .await
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) async fn dispatch_until_with_progress(
         &self,
         frame: DecodedFrame,
@@ -475,7 +475,7 @@ impl DaemonService {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn dispatch_remote_session_until(
         &self,
         mut frame: DecodedFrame,
@@ -533,7 +533,7 @@ impl DaemonService {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn dispatch_pair_until(
         &self,
         mut frame: DecodedFrame,
@@ -595,7 +595,7 @@ impl DaemonService {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn pair_create_reply(
         &self,
         request_id: u64,
@@ -626,7 +626,7 @@ impl DaemonService {
         reply
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn pair_accept_reply(
         &self,
         request_id: u64,
@@ -684,7 +684,7 @@ impl DaemonService {
         )
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn dispatch_device_until(&self, frame: DecodedFrame, deadline: Instant) -> ServiceReply {
         let request_id = frame.request_id;
         let revoking = frame.kind == WireKind::LocalDeviceRevokeRequest;
@@ -732,7 +732,7 @@ impl DaemonService {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn device_list_reply(
         &self,
         request_id: u64,
@@ -750,7 +750,7 @@ impl DaemonService {
         )
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn device_rename_reply(
         &self,
         request_id: u64,
@@ -776,7 +776,7 @@ impl DaemonService {
         )
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn device_revoke_reply(
         &self,
         request_id: u64,
@@ -870,7 +870,7 @@ impl DaemonService {
         )
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn device_summary(
         &self,
         devices: &DeviceManagement,
@@ -884,7 +884,7 @@ impl DaemonService {
             .ok_or_else(device_not_found)
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn device_summaries(
         &self,
         devices: &DeviceManagement,
@@ -908,7 +908,7 @@ impl DaemonService {
         Ok(summaries)
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn build_version(&self) -> String {
         #[cfg(test)]
         if let Some(version) = &self.version_override {
@@ -917,7 +917,7 @@ impl DaemonService {
         env!("CARGO_PKG_VERSION").to_owned()
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn dispatch_inner(
         &self,
         frame: DecodedFrame,
@@ -1068,7 +1068,7 @@ impl DaemonService {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn device_summary(
     projection: DeviceProjection,
     live: DeviceLiveObservation,
@@ -1100,7 +1100,7 @@ fn device_summary(
     })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn project_device_live_observation(
     peer: PeerConnectionObservation,
     remote_attachment_count: usize,
@@ -1112,12 +1112,12 @@ fn project_device_live_observation(
     })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn bounded_device_count(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn optional_timestamp(value: Option<i64>, field: &str) -> Result<u64, DaemonError> {
     value.map_or(Ok(0), |value| {
         u64::try_from(value).map_err(|_| {
@@ -1129,7 +1129,7 @@ fn optional_timestamp(value: Option<i64>, field: &str) -> Result<u64, DaemonErro
     })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn run_service_blocking_until<R>(
     deadline: Instant,
     operation: impl FnOnce() -> Result<R, DaemonError> + Send + 'static,
@@ -1157,7 +1157,7 @@ where
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn await_service_until<R>(
     deadline: Instant,
     future: impl Future<Output = R>,
@@ -1178,7 +1178,7 @@ async fn await_service_until<R>(
     })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn device_wire_error(error: voytty_proto::WireFieldError) -> DaemonError {
     let kind = if matches!(error, voytty_proto::WireFieldError::InvalidAlias(_)) {
         DomainErrorKind::InvalidDeviceAlias
@@ -1188,12 +1188,12 @@ fn device_wire_error(error: voytty_proto::WireFieldError) -> DaemonError {
     DaemonError::new(kind, error.to_string())
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn pair_operation_wire_error(error: voytty_proto::PairOperationError) -> DaemonError {
     DaemonError::new(DomainErrorKind::MalformedFrame, error.to_string())
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn device_not_found() -> DaemonError {
     DaemonError::new(
         DomainErrorKind::DeviceNotFound,
@@ -1201,18 +1201,18 @@ fn device_not_found() -> DaemonError {
     )
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn now_unix_i64() -> i64 {
     i64::try_from(now_unix()).unwrap_or(i64::MAX)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) struct ServiceReply {
     pub(crate) bytes: Zeroizing<Vec<u8>>,
     pub(crate) stop_after_flush: bool,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl ServiceReply {
     pub(crate) fn message<Message>(
         kind: WireKind,
@@ -1263,7 +1263,7 @@ impl ServiceReply {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn resolved_target_wire(
     target: crate::device_directory::ResolvedSessionTarget,
 ) -> v2::TargetSelector {
@@ -1276,10 +1276,10 @@ fn resolved_target_wire(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) use voytty_client::protocol::protocol_error;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn decode_request<Message>(frame: &DecodedFrame) -> Result<Message, DaemonError>
 where
     Message: prost::Message + Default,
@@ -1287,7 +1287,7 @@ where
     frame.decode_message(frame.kind).map_err(protocol_error)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn protocol_proto() -> v2::ProtocolVersion {
     v2::ProtocolVersion {
         wire_major: voytty_proto::WIRE_MAJOR,
@@ -1299,7 +1299,7 @@ fn protocol_proto() -> v2::ProtocolVersion {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn session_names(sessions: &[SessionSummary]) -> Vec<String> {
     sessions
         .iter()
@@ -1307,7 +1307,7 @@ fn session_names(sessions: &[SessionSummary]) -> Vec<String> {
         .collect()
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn config_from_wire(
     request: &v2::LocalValidateSetupRequest,
 ) -> Result<ValidatedConfig, DaemonError> {
@@ -1319,7 +1319,7 @@ fn config_from_wire(
     )
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

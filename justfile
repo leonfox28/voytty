@@ -1,4 +1,5 @@
 set shell := ["sh", "-eu", "-c"]
+set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 
 default:
     @just --list
@@ -118,3 +119,11 @@ release-publish version:
 # Finish a reviewed release PR: wait, merge exact head, wait main, tag, and publish.
 release version pr:
     sh tools/release/operator.sh finish {{ quote(version) }} {{ quote(pr) }}
+
+# Native Windows x64/ARM64 workspace and transport evidence.
+ci-windows transport='true':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File tools/ci/check-windows.ps1 -Transport {{ quote(transport) }}
+
+# Exact-source unsigned native MSVC candidate; RELEASE_TARGET must match the host.
+windows-build output='release-input':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File tools/release/build-windows.ps1 -OutputDirectory {{ quote(output) }}

@@ -15,7 +15,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use voytty_core::{DeviceId, DomainErrorKind, TransportLimits};
 
 use crate::authorization::AuthorizationRegistry;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::connection_broker::RemoteServiceHandler;
 use crate::connection_broker::{ConnectionBroker, ConnectionIdentity, PairConnection};
 use crate::error::DaemonError;
@@ -561,7 +561,7 @@ impl NetworkStartup {
 
     /// Installs the single later-composed inbound normal service owner before
     /// the supervisor can bind or admit a stream.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn with_service_handler<H>(self, handler: H) -> Result<Self, DaemonError>
     where
         H: RemoteServiceHandler,
@@ -1354,28 +1354,28 @@ fn mutex_lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use std::fs;
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use voytty_platform::account::EffectiveAccount;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use voytty_platform::user_state::UserPaths;
 
     use super::*;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use crate::connection_broker::{InboundAuthenticatedStream, RemoteServiceHandlerFuture};
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use crate::identity::DeviceIdentity;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use crate::store::{StateStore, StoreActor};
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use crate::transport::InfrastructureProfile;
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     struct NoopRemoteServiceHandler;
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     impl RemoteServiceHandler for NoopRemoteServiceHandler {
         fn handle_service_stream(
             &self,
@@ -1462,7 +1462,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn network_startup_installs_the_normal_service_handler_exactly_once_without_binding() {
         let temporary = tempfile::tempdir().expect("temporary network composition root");
         let account = EffectiveAccount::current().expect("effective account");

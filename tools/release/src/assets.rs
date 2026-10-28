@@ -22,16 +22,20 @@ use zeroize::Zeroizing;
 
 // Maintainer publication policy only; installed updaters must not depend on this list.
 // Expanding it requires an explicit future task.
-const PUBLISHED_RELEASE_TARGETS: [&str; 3] = [
+const PUBLISHED_RELEASE_TARGETS: [&str; 5] = [
     "aarch64-apple-darwin",
     "aarch64-unknown-linux-gnu",
     "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
 ];
 use voytty_core::{STATE_SCHEMA_VERSION, WIRE_MAJOR};
 
 const MANIFEST_NAME: &str = "voytty-release.json";
 const SIGNATURE_NAME: &str = "voytty-release.json.sig";
 const INSTALLER_NAME: &str = "voytty-install.sh";
+const WINDOWS_INSTALLER_NAME: &str = "voytty-install.ps1";
+const WINDOWS_INSTALLER_TEMPLATE: &str = include_str!("../../../install/versioned.ps1.in");
 const SBOM_NAME: &str = "voytty-sbom.spdx.json";
 const CHECKSUMS_NAME: &str = "SHA256SUMS";
 const CHECKSUMS_SIGNATURE_NAME: &str = "SHA256SUMS.sig";
@@ -76,7 +80,7 @@ fn create_archive_at_epoch(binary: &Path, output: &Path, epoch: u64) -> Result<(
     header.set_entry_type(tar::EntryType::Regular);
     header.set_cksum();
     archive
-        .append_data(&mut header, "voytty", input)
+        .append_data(&mut header, archive_binary_name(output), input)
         .context("unable to append release binary")?;
     let encoder = archive
         .into_inner()
@@ -88,6 +92,17 @@ fn create_archive_at_epoch(binary: &Path, output: &Path, epoch: u64) -> Result<(
         .sync_all()
         .context("unable to sync release archive")?;
     inspect_archive(output)
+}
+
+fn archive_binary_name(path: &Path) -> &'static str {
+    if path
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().ends_with("-pc-windows-msvc.tar.gz"))
+    {
+        "voytty.exe"
+    } else {
+        "voytty"
+    }
 }
 
 fn inspect_archive(path: &Path) -> Result<()> {
@@ -104,7 +119,7 @@ fn inspect_archive(path: &Path) -> Result<()> {
             .path()
             .context("release archive path is invalid")?
             .as_ref()
-            == Path::new("voytty"),
+            == Path::new(archive_binary_name(path)),
         "release archive path is invalid"
     );
     let header = entry.header();
@@ -190,7 +205,9 @@ pub fn prepare(
             length,
             sha256: digest,
             minimum_macos: apple.then(|| MINIMUM_MACOS.to_owned()),
-            minimum_glibc: (!apple).then(|| MINIMUM_GLIBC.to_owned()),
+            minimum_glibc: target
+                .ends_with("unknown-linux-gnu")
+                .then(|| MINIMUM_GLIBC.to_owned()),
             build: self_check.build,
         });
     }
@@ -228,6 +245,12 @@ pub fn prepare(
     }
     write_new(&output.join(MANIFEST_NAME), &raw_manifest, 0o644)?;
     write_new(&output.join(INSTALLER_NAME), installer.as_bytes(), 0o755)?;
+    let windows_installer = render_windows_installer(&manifest, &raw_manifest, false)?;
+    write_new(
+        &output.join(WINDOWS_INSTALLER_NAME),
+        windows_installer.as_bytes(),
+        0o644,
+    )?;
     write_new(&output.join(SBOM_NAME), &sbom, 0o644)?;
     verify(output, false)
 }
@@ -269,6 +292,45 @@ fn render_installer(
     ensure!(
         rendered.len() <= usize::try_from(MAX_INSTALLER_BYTES).unwrap_or(usize::MAX),
         "generated installer exceeds its size bound"
+    );
+    Ok(rendered)
+}
+
+fn render_windows_installer(
+    manifest: &ReleaseManifest,
+    raw_manifest: &[u8],
+    test_mode: bool,
+) -> Result<String> {
+    let artifacts: Vec<_> = manifest
+        .artifacts
+        .iter()
+        .filter(|a| a.target.ends_with("pc-windows-msvc"))
+        .collect();
+    let mut rendered = WINDOWS_INSTALLER_TEMPLATE.to_owned();
+    replace_token(&mut rendered, "@TAG@", &manifest.tag)?;
+    replace_token(
+        &mut rendered,
+        "@BASE_URL@",
+        &format!("{RELEASE_ORIGIN}/download/{}", manifest.tag),
+    )?;
+    replace_token(
+        &mut rendered,
+        "@MANIFEST_SHA256@",
+        &sha256_hex(raw_manifest),
+    )?;
+    replace_token(
+        &mut rendered,
+        "@TEST_MODE@",
+        if test_mode { "$true" } else { "$false" },
+    )?;
+    replace_token(
+        &mut rendered,
+        "@ARTIFACTS@",
+        &serde_json::to_string(&artifacts)?,
+    )?;
+    ensure!(
+        rendered.len() <= MAX_INSTALLER_BYTES as usize,
+        "Windows installer exceeds its size bound"
     );
     Ok(rendered)
 }
@@ -395,6 +457,12 @@ pub fn verify(directory: &Path, signed: bool) -> Result<()> {
         installer == expected_installer.as_bytes(),
         "generated installer does not match the release manifest"
     );
+    let expected_windows_installer = render_windows_installer(&manifest, &raw_manifest, false)?;
+    ensure!(
+        read_bounded(&directory.join(WINDOWS_INSTALLER_NAME), MAX_INSTALLER_BYTES)?
+            == expected_windows_installer.as_bytes(),
+        "Windows installer differs from authenticated manifest"
+    );
     verify_sbom(directory, &manifest)?;
     if signed {
         let expected_checksums = render_checksums(directory)?;
@@ -432,7 +500,11 @@ pub fn render_test_installer(directory: &Path, output: &Path) -> Result<()> {
     let signature = read_bounded(&directory.join(SIGNATURE_NAME), 64)?;
     let manifest = verify_official_release_manifest(&raw_manifest, &signature)
         .context("signed release manifest verification failed")?;
-    let installer = render_installer(&manifest, &raw_manifest, true)?;
+    let installer = if output.extension().is_some_and(|ext| ext == "ps1") {
+        render_windows_installer(&manifest, &raw_manifest, true)?
+    } else {
+        render_installer(&manifest, &raw_manifest, true)?
+    };
     write_new(output, installer.as_bytes(), 0o755)
 }
 
@@ -469,6 +541,7 @@ fn expected_inventory(signed: bool) -> Result<BTreeSet<String>> {
     }
     names.insert(MANIFEST_NAME.to_owned());
     names.insert(INSTALLER_NAME.to_owned());
+    names.insert(WINDOWS_INSTALLER_NAME.to_owned());
     names.insert(SBOM_NAME.to_owned());
     if signed {
         names.insert(SIGNATURE_NAME.to_owned());
@@ -936,7 +1009,7 @@ mod tests {
     #[test]
     fn desktop_inventory_excludes_mobile_publication() {
         let inventory = expected_inventory(true).expect("inventory");
-        assert_eq!(inventory.len(), 9);
+        assert_eq!(inventory.len(), 12);
         assert!(inventory.contains(CHECKSUMS_SIGNATURE_NAME));
         assert!(!inventory.contains("voytty-android-arm64.apk"));
         assert!(!inventory.contains("voytty-android.json"));
@@ -969,7 +1042,9 @@ mod tests {
                     length: 42,
                     sha256: "ab".repeat(32),
                     minimum_macos: apple.then(|| MINIMUM_MACOS.to_owned()),
-                    minimum_glibc: (!apple).then(|| MINIMUM_GLIBC.to_owned()),
+                    minimum_glibc: target
+                        .ends_with("unknown-linux-gnu")
+                        .then(|| MINIMUM_GLIBC.to_owned()),
                     build: ReleaseBuildIdentity {
                         version: version.to_owned(),
                         target: (*target).to_owned(),

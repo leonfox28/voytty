@@ -12,13 +12,26 @@ use iroh::endpoint::{Connection, RecvStream, SendStream, presets};
 use iroh::{Endpoint, RelayMode, tls::CaTlsConfig};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+#[cfg(unix)]
+use tokio::net::UnixListener as TestListener;
 use voytty_client::handshake::{read_one_frame, write_handshake_message};
 use voytty_core::{AuthGeneration, Capabilities, ConnectionWelcome, DeviceAlias, TransportLimits};
+#[cfg(windows)]
+use voytty_platform::local::AsyncListener as TestListener;
 use voytty_platform::user_state::UserPaths;
 use voytty_proto::{WireKind, encode_message, v2};
 
 const ECHO_REQUEST: u64 = 10_000;
 const ERROR_REQUEST: u64 = 20_000;
+
+fn remove_fixture_socket(socket: &std::path::Path) {
+    #[cfg(unix)]
+    std::fs::remove_file(socket).expect("remove fixture socket");
+    // Direct named-pipe listeners have no filesystem entry. The production
+    // daemon's ownership marker is separately exercised by its lifecycle test.
+    #[cfg(windows)]
+    assert!(!socket.try_exists().expect("inspect fixture socket"));
+}
 
 fn list_request(target: DeviceId, id: u64) -> Vec<u8> {
     encode_message(
@@ -116,7 +129,9 @@ impl Fixture {
         let home = state.path().join("home");
         std::fs::create_dir(&home).expect("home");
         let paths = UserPaths::for_test(
-            nix::unistd::Uid::effective().as_raw(),
+            voytty_platform::account::EffectiveAccount::current()
+                .expect("current account")
+                .uid(),
             home.clone(),
             home.join(".voytty"),
             state.path().join("run"),
@@ -312,7 +327,7 @@ impl Fixture {
         tokio::task::JoinHandle<Result<(), DaemonError>>,
     ) {
         let socket = self._state.path().join("tunnel.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).expect("tunnel listener");
+        let listener = TestListener::bind(&socket).expect("tunnel listener");
         let broker = self.broker.clone();
         let remote = self.remote;
         let server = tokio::spawn(async move {
@@ -346,7 +361,7 @@ impl Fixture {
             .await
             .expect("frontend closure releases the tunnel")
             .expect("tunnel task");
-        std::fs::remove_file(socket).expect("remove fixture socket");
+        remove_fixture_socket(&socket);
         error
     }
 
@@ -607,7 +622,7 @@ async fn expired_half_close_releases_tunnel_and_retires_unanswered_idle_candidat
         .expect("tunnel completed")
         .expect("tunnel task did not panic")
         .expect_err("closed frontend is reported by the pump");
-    std::fs::remove_file(socket).expect("fixture socket");
+    remove_fixture_socket(&socket);
     let next = fixture.query(3).await;
     let connections = fixture.connections.load(Ordering::SeqCst);
     fixture.close().await;

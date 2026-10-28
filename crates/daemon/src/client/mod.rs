@@ -4,35 +4,35 @@
 //! owns frontend attachment epochs, correlation, recovery, and control budgets.
 
 pub mod ipc;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod session;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod transport;
 pub mod view;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use ipc::LocalPairingClient;
 pub use ipc::{LocalClient, LocalDeviceClient};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use session::{LocalAttachmentEvent, LocalTakeoverRetryToken, SessionClient};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) use transport::{RemoteDaemonRestarter, UnixAttachmentConnector};
 
 /// Creates a desktop upload connector using the existing opaque daemon tunnel.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn upload_connector(
     socket: impl Into<std::path::PathBuf>,
 ) -> std::sync::Arc<dyn voytty_client::upload::UploadConnector> {
     std::sync::Arc::new(transport::UnixAttachmentConnector::new(socket))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(super) use voytty_client::protocol::{
     decode_response, malformed, resource_error, service_error,
 };
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(super) use voytty_client::protocol::DEFAULT_DEADLINE;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use transport::{connect_error, daemon_io};

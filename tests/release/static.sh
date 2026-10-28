@@ -187,7 +187,7 @@ grep -Fq "sh tools/release/find-green-main-ci.sh \"\$commit\"" "$workflow" \
     || fail "tag validation bypasses the shared exact-main CI lookup"
 
 macos_build_job=$(sed -n '/^  candidates-macos:/,/^  candidates-linux:/p' "$ci_workflow")
-linux_build_job=$(sed -n '/^  candidates-linux:/,/^  dependencies:/p' "$ci_workflow")
+linux_build_job=$(sed -n '/^  candidates-linux:/,/^  candidates-windows:/p' "$ci_workflow")
 for native_job in "$macos_build_job" "$linux_build_job"; do
     printf '%s\n' "$native_job" | grep -Fq 'sh tools/release/build-native.sh release-input' \
         || fail "main candidates bypass the shared shipped-binary owner"
@@ -223,8 +223,8 @@ for candidate_boundary in 'sh tools/release/find-candidate.sh' \
 done
 grep -Fq "release-candidate-\${{ github.sha }}-\${{ github.run_attempt }}" "$ci_workflow" \
     || fail "main must retain an immutable candidate for each assembly attempt"
-if grep -Eq 'macos-15-intel|windows-latest|x86_64-apple-darwin|ci-windows' "$ci_workflow" "$workflow"; then
-    fail "Intel macOS and Windows require an explicit future task"
+if grep -Eq 'macos-15-intel|x86_64-apple-darwin' "$ci_workflow" "$workflow"; then
+    fail "Intel macOS requires an explicit future task"
 fi
 if grep -Eq 'relay-image.yml|packages: write|docker/build-push-action' "$workflow"; then
     fail "native releases must not publish relay images"
@@ -246,7 +246,7 @@ main_release_gates=$(grep -Fxc \
     "$ci_workflow" || true)
 [ "$main_release_gates" -eq 1 ] \
     || fail "only explicit full main validation may assemble a publication candidate"
-for native_job in candidates-macos candidates-linux; do
+for native_job in candidates-macos candidates-linux candidates-windows; do
     sed -n '/^  gate:/,$p' "$ci_workflow" | grep -Fxq "      - $native_job" \
         || fail "the CI gate must account for every selected native build: $native_job"
 done
@@ -268,7 +268,7 @@ if ! [ "$checkout_line" -lt "$source_line" ] \
     fail "source-policy must run after checkout and before Rust tooling/compilation"
 fi
 linux_readiness_job=$(sed -n \
-    '/^  candidates-linux:/,/^  dependencies:/p' "$ci_workflow")
+    '/^  candidates-linux:/,/^  candidates-windows:/p' "$ci_workflow")
 linux_policy_job=$linux_readiness_job
 {
     linux_first_steps=$(printf '%s\n' "$linux_policy_job" \
@@ -304,7 +304,7 @@ grep -Fq 'name: CI gate' "$ci_workflow" \
     || fail "CI lacks the stable branch-protection gate"
 grep -Fq 'if: always()' "$ci_workflow" \
     || fail "CI gate must aggregate failed, cancelled, and skipped owners"
-[ "$(grep -Fc 'timeout-minutes:' "$ci_workflow")" -eq 10 ] \
+[ "$(grep -Fc 'timeout-minutes:' "$ci_workflow")" -eq 12 ] \
     || fail "every CI job must have an explicit timeout"
 grep -Fq 'actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7' "$ci_workflow" \
     || fail "CI must use the pinned cache owner"
@@ -405,3 +405,20 @@ case "$public_key" in
 esac
 
 echo "release workflow and installer policy verified"
+
+# Windows is a native owner and must preserve the exact-SHA publication boundary.
+for target in x86_64-pc-windows-msvc aarch64-pc-windows-msvc; do
+    grep -Fq "target: $target" "$ci_workflow" || fail "missing Windows native checks: $target"
+    grep -Fq "target: $target" "$workflow" || fail "missing Windows installer evidence: $target"
+done
+grep -Fq 'just ci-windows' "$ci_workflow" || fail "Windows checks must use the shared recipe"
+grep -Fq 'just windows-build release-input' "$ci_workflow" || fail "Windows candidates must use the shared build owner"
+grep -Fq 'tests/release/installer-windows.ps1' "$workflow" || fail "Windows installers must run native acceptance"
+windows_job=$(sed -n '/^  candidates-windows:/,/^  dependencies:/p' "$ci_workflow")
+[ "$(printf '%s\n' "$windows_job" | grep -Fc 'uses: actions/upload-artifact@')" -eq 1 ] || fail "Windows must have one gated candidate upload"
+printf '%s\n' "$windows_job" | grep -A1 -F -- '- name: Upload the main native candidate' \
+    | grep -Fxq "        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'" \
+    || fail "Windows PR binaries must not be uploaded"
+if printf '%s\n' "$windows_job" | grep -Eq 'path: target|compiled-native|actions/cache'; then
+    fail "Windows candidates must be cold builds without product caches"
+fi

@@ -17,12 +17,12 @@ fn main() -> ExitCode {
         };
     }
     if cli.internal_handoff() {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         return match voytty_daemon::handoff::run_internal_handoff() {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => ExitCode::FAILURE,
         };
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         return ExitCode::FAILURE;
     }
     if cli.internal_daemon() || cli.internal_daemon_foreground() {

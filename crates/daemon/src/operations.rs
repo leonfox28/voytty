@@ -3,7 +3,7 @@
 use std::fmt;
 use std::fs;
 use std::path::Path;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use voytty_client::progress::{ProgressHistory, ProgressObserver};
@@ -17,17 +17,17 @@ use voytty_core::{
 use voytty_platform::user_state::UserPaths;
 
 use crate::bootstrap::BootstrapResult;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::bootstrap::bootstrap_with_lock_held;
 use crate::client::{LocalClient, LocalDeviceClient};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::client::{
     LocalPairingClient, RemoteDaemonRestarter, SessionClient, UnixAttachmentConnector,
 };
 use crate::config::{TerminalIdentity, ValidatedConfig};
 use crate::device_directory::ResolvedSessionTarget;
 use crate::error::DaemonError;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::lifecycle::acquire_lifecycle_lock;
 use crate::lifecycle::{DaemonLauncher, probe_readiness};
 use crate::pairing::PairTicketText;
@@ -303,7 +303,7 @@ pub struct UninstallResult {
     pub previous_device_id: Option<DeviceId>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn require_update_daemon_compatible(
     version: &str,
     wire_major: u32,
@@ -343,7 +343,7 @@ fn confirmation_required(_: &SessionImpact) -> Result<(), DaemonError> {
 
 /// The post-commit policy consumes authenticated release identity, never the
 /// version of the old updater still executing in this process.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn finish_update_startup<
     F: std::future::Future<Output = Result<DaemonReadiness, DaemonError>>,
 >(
@@ -401,14 +401,14 @@ pub struct LocalRuntime {
     launcher: DaemonLauncher,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone)]
 struct RuntimeDaemonRestarter {
     paths: UserPaths,
     launcher: DaemonLauncher,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl RemoteDaemonRestarter for RuntimeDaemonRestarter {
     fn ensure_running<'a>(
         &'a self,
@@ -432,7 +432,7 @@ impl fmt::Debug for LocalRuntime {
 
 impl LocalRuntime {
     /// Opens upload streams through this runtime's existing local daemon socket.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub fn upload_connector(&self) -> Arc<dyn voytty_client::upload::UploadConnector> {
         crate::client::upload_connector(self.paths.socket())
     }
@@ -485,7 +485,7 @@ impl LocalRuntime {
 
     /// Configures future login only; setup and the lifetime daemon lock stay unchanged.
     pub async fn autostart_enable(&self) -> Result<String, DaemonError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let owner = self.autostart_owner()?;
             crate::bootstrap::validate_committed_setup(&self.paths)?;
@@ -499,13 +499,13 @@ impl LocalRuntime {
                     .into(),
             )
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         Err(unsupported_command_platform())
     }
 
     /// Cancels future login startup without stopping the current daemon or Sessions.
     pub async fn autostart_disable(&self) -> Result<String, DaemonError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let owner = self.autostart_owner()?;
             // Do not create state on an unconfigured account merely to disable.
@@ -520,13 +520,13 @@ impl LocalRuntime {
                     .into(),
             )
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         Err(unsupported_command_platform())
     }
 
     /// Reads login registration and setup without starting or creating anything.
     pub fn autostart_status(&self) -> Result<String, DaemonError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let status = self
                 .autostart_owner()?
@@ -537,17 +537,17 @@ impl LocalRuntime {
             }
             Ok(status)
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         Err(unsupported_command_platform())
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn autostart_owner(&self) -> Result<voytty_platform::autostart::Autostart, DaemonError> {
         voytty_platform::autostart::Autostart::current(&self.paths)
             .map_err(|detail| DaemonError::new(DomainErrorKind::UnsupportedPlatform, detail))
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn remove_autostart(&self) -> Result<(), DaemonError> {
         // Unsupported hosts cannot have a native registration created by voytty.
         if let Some(owner) = voytty_platform::autostart::Autostart::for_cleanup(&self.paths) {
@@ -566,7 +566,7 @@ impl LocalRuntime {
         &self,
         value: Option<&str>,
     ) -> Result<TerminalIdentity, DaemonError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let requested = value
                 .map(|value| value.parse::<TerminalIdentity>())
@@ -595,7 +595,7 @@ impl LocalRuntime {
             }
             Ok(config.terminal_identity)
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = value;
             Err(unsupported_command_platform())
@@ -620,7 +620,7 @@ impl LocalRuntime {
         confirm: impl FnMut(&SessionImpact) -> Result<(), DaemonError>,
         progress: impl FnMut(LifecycleStage),
     ) -> Result<UpdateResult, DaemonError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let executable = self.launcher.executable();
             crate::distribution::validate_managed_executable(executable, self.paths.uid())?;
@@ -634,7 +634,7 @@ impl LocalRuntime {
                 progress,
             )
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (exact_tag, approved, confirm, progress);
             Err(unsupported_command_platform())
@@ -642,7 +642,7 @@ impl LocalRuntime {
     }
 
     /// Stops in the detached owner after the frontend hands over ownership.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) async fn apply_stop(
         &self,
         approved: bool,
@@ -655,7 +655,7 @@ impl LocalRuntime {
 
     /// Restarts in the detached owner, whose replacement start survives the
     /// end of the invoking terminal.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) async fn apply_restart(
         &self,
         approved: bool,
@@ -671,7 +671,7 @@ impl LocalRuntime {
         self.ensure().await
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) async fn apply_prepared_update(
         &self,
         prepared: crate::distribution::PreparedRelease,
@@ -789,7 +789,7 @@ impl LocalRuntime {
         expected_device_id: Option<DeviceId>,
         force: bool,
     ) -> Result<UninstallResult, DaemonError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let executable = self.launcher.executable();
             crate::distribution::validate_managed_executable(executable, self.paths.uid())?;
@@ -804,7 +804,7 @@ impl LocalRuntime {
                 previous_device_id: reset.previous_device_id,
             })
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (expected_device_id, force);
             Err(unsupported_command_platform())
@@ -850,13 +850,13 @@ impl LocalRuntime {
     /// Creates a bounded one-time pairing ticket through the configured daemon.
     pub async fn pair_create(&self, ttl_seconds: u32) -> Result<PairTicketText, DaemonError> {
         self.ensure_configured_daemon().await?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             LocalPairingClient::new(self.paths.socket())
                 .create(ttl_seconds)
                 .await
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = ttl_seconds;
             Err(unsupported_command_platform())
@@ -877,14 +877,14 @@ impl LocalRuntime {
             })
             .transpose()?;
         self.ensure_configured_daemon().await?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             LocalPairingClient::new(self.paths.socket())
                 .accept(ticket, alias.as_ref())
                 .await
                 .map(Into::into)
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             drop((ticket, alias));
             Err(unsupported_command_platform())
@@ -1203,7 +1203,7 @@ impl LocalRuntime {
     ) -> Result<IdentityResetResult, DaemonError> {
         let preflight = self.identity_reset_preflight().await?;
         if !preflight.state_present {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             self.remove_autostart()?;
             return Ok(IdentityResetResult {
                 removed: false,
@@ -1227,7 +1227,7 @@ impl LocalRuntime {
         .await
         .map_err(|_| identity_reset_stop_timeout())??;
 
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             wait_until_identity_reset_stop(&self.paths, stop_deadline).await?;
             if !managed_root_exists(&self.paths)? {
@@ -1275,7 +1275,7 @@ impl LocalRuntime {
                 previous_device_id: current_device_id,
             })
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = current_device_id;
             Err(unsupported_command_platform())
@@ -1303,7 +1303,7 @@ impl LocalRuntime {
         viewport: Option<TerminalSize>,
         base_colors: voytty_core::terminal::TerminalColorProfile,
     ) -> Result<PreparedTerminalView, DaemonError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let view_target = if let Some(device_id) = target.device_id() {
                 let devices = LocalDeviceClient::new(self.paths.socket().to_path_buf())
@@ -1344,7 +1344,7 @@ impl LocalRuntime {
             .await?;
             PreparedTerminalView::new(client.into_inner(), takeover, view_target)
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (target, selector, create_main, takeover, viewport);
             Err(unsupported_command_platform())
@@ -1365,7 +1365,7 @@ impl LocalRuntime {
         confirm: impl FnMut(&SessionImpact) -> Result<(), DaemonError>,
         progress: impl FnMut(LifecycleStage),
     ) -> Result<Option<SessionImpact>, DaemonError> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             // An already stopped daemon needs no owner process.
             if self.running_impact().await?.is_none() {
@@ -1379,7 +1379,7 @@ impl LocalRuntime {
                 progress,
             )
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (approved, confirm, progress);
             Err(unsupported_command_platform())
@@ -1403,7 +1403,7 @@ impl LocalRuntime {
         if matches!(self.observe().await?, ObservedState::NotConfigured) {
             return Err(not_setup_for_command());
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             crate::handoff::restart(
                 self.launcher.executable(),
@@ -1413,7 +1413,7 @@ impl LocalRuntime {
                 progress,
             )
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (approved, confirm, progress);
             Err(unsupported_command_platform())
@@ -1423,7 +1423,7 @@ impl LocalRuntime {
     /// Obtains any required approval, hands mutation ownership to the detached
     /// owner, then stops a daemon that was running. Work admitted after the
     /// observation is presented in the same invocation before it can be ended.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn hand_off_and_stop(
         &self,
         running: Option<SessionImpact>,
@@ -1467,7 +1467,7 @@ impl LocalRuntime {
     }
 
     /// Current Session impact, or `None` when no daemon is listening.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn running_impact(&self) -> Result<Option<SessionImpact>, DaemonError> {
         match LocalClient::new(self.paths.socket())
             .update_preflight()
@@ -1610,11 +1610,11 @@ fn not_setup_for_command() -> DaemonError {
     )
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn unsupported_command_platform() -> DaemonError {
     DaemonError::new(
         DomainErrorKind::UnsupportedPlatform,
-        "public daemon commands are Unix-only in the current milestone",
+        "public daemon commands require a supported Unix or Windows host",
     )
 }
 
@@ -1758,7 +1758,7 @@ fn partial_public_identity(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn ensure_daemon_ownership_released(paths: &UserPaths) -> Result<(), DaemonError> {
     use voytty_platform::user_state::{ExistingLockState, inspect_existing_lock};
 
@@ -1773,7 +1773,7 @@ fn ensure_daemon_ownership_released(paths: &UserPaths) -> Result<(), DaemonError
             ));
         }
     }
-    if voytty_platform::local_unix::inspect_daemon_socket(paths)
+    if voytty_platform::local::inspect_daemon_socket(paths)
         .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?
     {
         return Err(DaemonError::new(
@@ -1784,7 +1784,7 @@ fn ensure_daemon_ownership_released(paths: &UserPaths) -> Result<(), DaemonError
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn wait_until_identity_reset_stop(
     paths: &UserPaths,
     deadline: Instant,
@@ -2012,7 +2012,7 @@ fn inspect_optional_file(path: &Path, uid: u32, failures: &mut Vec<String>) {
 }
 
 fn inspect_local_ipc(paths: &UserPaths, daemon_running: bool) -> DoctorCheck {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         use voytty_platform::user_state::{ExistingLockState, inspect_existing_lock};
 
@@ -2024,8 +2024,8 @@ fn inspect_local_ipc(paths: &UserPaths, daemon_running: bool) -> DoctorCheck {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound && !daemon_running => Ok(()),
             Err(error) => Err(format!("{}: {error}", paths.runtime_dir().display())),
         };
-        let socket = voytty_platform::local_unix::inspect_daemon_socket(paths)
-            .map_err(|error| error.to_string());
+        let socket =
+            voytty_platform::local::inspect_daemon_socket(paths).map_err(|error| error.to_string());
         let lock = inspect_existing_lock(paths.daemon_lock(), paths.uid())
             .map_err(|error| error.to_string());
 
@@ -2059,13 +2059,13 @@ fn inspect_local_ipc(paths: &UserPaths, daemon_running: bool) -> DoctorCheck {
             },
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (paths, daemon_running);
         DoctorCheck {
             name: "local_ipc",
             ok: false,
-            detail: "Unix local daemon integration is unsupported on this platform".to_owned(),
+            detail: "local daemon integration is unsupported on this platform".to_owned(),
         }
     }
 }
@@ -2090,7 +2090,7 @@ pub async fn setup_and_ensure(
     requested: &ValidatedConfig,
     launcher: &DaemonLauncher,
 ) -> Result<BootstrapResult, DaemonError> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         paths
             .prepare_state_directories()
@@ -2110,17 +2110,17 @@ pub async fn setup_and_ensure(
         launcher.ensure(paths).await?;
         Ok(result)
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (paths, requested, launcher);
         Err(DaemonError::new(
             DomainErrorKind::UnsupportedPlatform,
-            "local daemon setup is Unix-only in the current milestone",
+            "local daemon setup requires a supported Unix or Windows host",
         ))
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn validate_running_setup(
     paths: &UserPaths,
     requested: &ValidatedConfig,
@@ -2138,13 +2138,13 @@ async fn validate_running_setup(
 async fn wait_until_stopped(paths: &UserPaths) -> Result<(), DaemonError> {
     let started = Instant::now();
     loop {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let ownership_released = match ensure_daemon_ownership_released(paths) {
             Ok(()) => true,
             Err(error) if error.kind() == DomainErrorKind::Cancelled => false,
             Err(error) => return Err(error),
         };
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         let ownership_released = true;
         // Do not open a new readiness connection while the retiring daemon
         // still owns its lock or socket: listener shutdown may accept and
@@ -2172,7 +2172,7 @@ fn log_error(error: std::io::Error) -> DaemonError {
     DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string())
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn autostart_error(detail: String) -> DaemonError {
     DaemonError::new(DomainErrorKind::PathUnsafe, detail)
 }
@@ -2187,7 +2187,7 @@ mod tests {
     use voytty_core::{Capabilities, DeviceId};
     #[test]
     fn distribution_lifecycle_requires_force_for_active_sessions() {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let update_impact = SessionImpact {
                 active_session_count: 1,
@@ -2260,7 +2260,7 @@ mod tests {
         assert!(!declined);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn committed_update_starts_configured_state_and_checks_installed_identity() {
         use voytty_core::release::{ReleaseClassification, ReleaseManifest};
@@ -2367,7 +2367,7 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn update_rejects_every_incompatible_running_daemon_identity_field() {
         let build = voytty_core::BuildIdentity::current();

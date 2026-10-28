@@ -11,17 +11,20 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::Shutdown;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::Child;
 use std::time::{Duration, Instant};
+#[cfg(windows)]
+use voytty_platform::local::IsolatedStream as UnixStream;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use voytty_core::DomainErrorKind;
 use voytty_diagnostics::{
     Event as DiagnosticEvent, Kind, Level, Operation, Outcome, Recorder, Stage,
 };
-use voytty_platform::local_unix::{spawn_isolated_command, take_isolated_channel};
+use voytty_platform::local::{spawn_isolated_command, take_isolated_channel};
 use voytty_platform::user_state::UserPaths;
 
 use crate::distribution::{PreparedRelease, ReleaseSelection};
@@ -604,5 +607,5 @@ impl HandoffInteraction for Worker<'_> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;

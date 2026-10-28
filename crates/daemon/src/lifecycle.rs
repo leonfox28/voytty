@@ -1,36 +1,36 @@
 //! Per-user daemon singleflight launch, detached entry, and graceful cleanup.
 
 use std::fmt;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::path::Path;
 use std::time::Duration;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use voytty_core::DomainErrorKind;
 use voytty_platform::account::EffectiveAccount;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use voytty_platform::user_state::FileLock;
 use voytty_platform::user_state::UserPaths;
 
 use crate::client::LocalClient;
 use crate::error::DaemonError;
 use crate::service::DaemonReadiness;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::service::DaemonService;
 
 /// Hidden product argument used only to enter the detached daemon child.
 pub const INTERNAL_DAEMON_ARGUMENT: &str = "--internal-daemon";
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const START_TIMEOUT: Duration = Duration::from_secs(5);
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const LOCK_POLL: Duration = Duration::from_millis(20);
 const READINESS_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const RECOVERY_REBIND_BACKOFF: Duration = Duration::from_millis(20);
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone, Copy)]
 enum DaemonNetworkMode {
     Production,
@@ -87,13 +87,13 @@ impl DaemonLauncher {
     }
 
     /// Ensures one daemon using this launch target.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn ensure(&self, paths: &UserPaths) -> Result<DaemonReadiness, DaemonError> {
         ensure_daemon_with(paths, &self.executable, &self.internal_argument).await
     }
 
-    /// Returns the current platform limitation on non-Unix targets.
-    #[cfg(not(unix))]
+    /// Returns the current platform limitation on unsupported targets.
+    #[cfg(not(any(unix, windows)))]
     pub async fn ensure(&self, _paths: &UserPaths) -> Result<DaemonReadiness, DaemonError> {
         let _ = (&self.executable, &self.internal_argument);
         Err(unsupported())
@@ -109,13 +109,13 @@ pub fn production_user_paths() -> Result<UserPaths, DaemonError> {
 }
 
 /// Returns readiness, starting at most one detached daemon when stopped.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub async fn ensure_current_daemon(paths: &UserPaths) -> Result<DaemonReadiness, DaemonError> {
     DaemonLauncher::current()?.ensure(paths).await
 }
 
 /// Singleflight launcher with an explicit executable/argument for isolated harnesses.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[doc(hidden)]
 pub async fn ensure_daemon_with(
     paths: &UserPaths,
@@ -135,7 +135,7 @@ pub async fn ensure_daemon_with(
     }
 
     let mut command =
-        voytty_platform::local_unix::detached_command(executable, paths, internal_argument)
+        voytty_platform::local::detached_command(executable, paths, internal_argument)
             .map_err(platform_error)?;
     let mut child = command.spawn().map_err(|error| {
         DaemonError::new(
@@ -174,22 +174,22 @@ pub async fn ensure_daemon_with(
     }
 }
 
-#[cfg(not(unix))]
-/// Returns the current platform limitation on non-Unix targets.
+#[cfg(not(any(unix, windows)))]
+/// Returns the current platform limitation on unsupported targets.
 pub async fn ensure_current_daemon(_paths: &UserPaths) -> Result<DaemonReadiness, DaemonError> {
     Err(unsupported())
 }
 
 /// Product hidden entry: detach before runtime initialization, then serve.
 pub fn run_internal_daemon() -> Result<(), DaemonError> {
-    #[cfg(unix)]
-    voytty_platform::local_unix::detach_current_process().map_err(platform_error)?;
+    #[cfg(any(unix, windows))]
+    voytty_platform::local::detach_current_process().map_err(platform_error)?;
     run_internal_daemon_foreground()
 }
 
 /// Service-manager entry: retains the original PID and never calls setsid or forks.
 pub fn run_internal_daemon_foreground() -> Result<(), DaemonError> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         let paths = production_user_paths()?;
         let _diagnostics = crate::diagnostics::install(&paths);
@@ -217,14 +217,14 @@ pub fn run_internal_daemon_foreground() -> Result<(), DaemonError> {
         }
         result
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         Err(unsupported())
     }
 }
 
 /// Runs one already-detached product daemon against explicit paths.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[doc(hidden)]
 pub fn run_daemon(paths: &UserPaths) -> Result<(), DaemonError> {
     run_daemon_with_network_mode(paths, DaemonNetworkMode::Production, None)
@@ -234,7 +234,7 @@ pub fn run_daemon(paths: &UserPaths) -> Result<(), DaemonError> {
 ///
 /// This explicit harness entry never prepares or binds an Iroh Endpoint. Product
 /// startup always enters through [`run_daemon`] and retains the network owner.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[doc(hidden)]
 pub fn run_local_only_daemon_for_test(paths: &UserPaths) -> Result<(), DaemonError> {
     run_daemon_with_network_mode(paths, DaemonNetworkMode::LocalOnlyTest, None)
@@ -245,7 +245,7 @@ pub fn run_local_only_daemon_for_test(paths: &UserPaths) -> Result<(), DaemonErr
 /// The injected service changes only PTY spawning. This entry retains the
 /// production local IPC, Session registry, terminal driver, and cleanup paths,
 /// and never prepares or binds an Iroh Endpoint.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[doc(hidden)]
 pub fn run_local_only_daemon_with_sessions_for_test(
     paths: &UserPaths,
@@ -254,7 +254,7 @@ pub fn run_local_only_daemon_with_sessions_for_test(
     run_daemon_with_network_mode(paths, DaemonNetworkMode::LocalOnlyTest, Some(sessions))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn run_daemon_with_network_mode(
     paths: &UserPaths,
     network_mode: DaemonNetworkMode,
@@ -289,7 +289,7 @@ fn run_daemon_with_network_mode(
         DaemonNetworkMode::LocalOnlyTest => None,
     };
     let (listener, socket_ownership) =
-        voytty_platform::local_unix::bind_owned_daemon_socket(paths, &daemon_lock)
+        voytty_platform::local::bind_owned_daemon_socket(paths, &daemon_lock)
             .map_err(platform_error)?;
     let (service, network, _store_actor) = match network_inputs {
         Some((authorizations, identity)) => {
@@ -409,10 +409,10 @@ fn run_daemon_with_network_mode(
     )
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn acquire_daemon_lock(
     paths: &UserPaths,
-) -> Result<voytty_platform::local_unix::DaemonLock, DaemonError> {
+) -> Result<voytty_platform::local::DaemonLock, DaemonError> {
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
         if Instant::now() >= deadline {
@@ -422,7 +422,7 @@ fn acquire_daemon_lock(
             ));
         }
         if let Some(lock) =
-            voytty_platform::local_unix::DaemonLock::try_acquire(paths).map_err(platform_error)?
+            voytty_platform::local::DaemonLock::try_acquire(paths).map_err(platform_error)?
         {
             return Ok(lock);
         }
@@ -433,13 +433,13 @@ fn acquire_daemon_lock(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[allow(clippy::too_many_arguments)]
 fn run_owned_daemon_listener(
     paths: &UserPaths,
-    daemon_lock: &voytty_platform::local_unix::DaemonLock,
-    mut listener: std::os::unix::net::UnixListener,
-    mut socket_ownership: voytty_platform::local_unix::DaemonSocketOwnership,
+    daemon_lock: &voytty_platform::local::DaemonLock,
+    mut listener: voytty_platform::local::Listener,
+    mut socket_ownership: voytty_platform::local::DaemonSocketOwnership,
     service: std::sync::Arc<DaemonService>,
     mut limits: crate::local_ipc::LocalIpcLimits,
     cleanup_timeout: Duration,
@@ -488,7 +488,7 @@ fn run_owned_daemon_listener(
                     Some(network) => runtime.block_on(network.shutdown_until(cleanup_deadline)),
                     None => Ok(()),
                 };
-                let socket_cleanup = voytty_platform::local_unix::remove_owned_daemon_socket(
+                let socket_cleanup = voytty_platform::local::remove_owned_daemon_socket(
                     paths,
                     daemon_lock,
                     &socket_ownership,
@@ -521,7 +521,7 @@ fn run_owned_daemon_listener(
                         "network cleanup failed after fatal local listener exit"
                     );
                 }
-                voytty_platform::local_unix::remove_owned_daemon_socket(
+                voytty_platform::local::remove_owned_daemon_socket(
                     paths,
                     daemon_lock,
                     &socket_ownership,
@@ -551,7 +551,7 @@ fn run_owned_daemon_listener(
                 }
                 limits = limits.without_accept_failure_injection();
                 let rebound = loop {
-                    match voytty_platform::local_unix::rebind_owned_daemon_socket(
+                    match voytty_platform::local::rebind_owned_daemon_socket(
                         paths,
                         daemon_lock,
                         &socket_ownership,
@@ -580,20 +580,20 @@ fn run_owned_daemon_listener(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn spawn_inside_runtime<T>(runtime: &tokio::runtime::Runtime, spawn: impl FnOnce() -> T) -> T {
     let _runtime_guard = runtime.enter();
     spawn()
 }
 
 /// Runs the exact owned-listener recovery loop with deterministic limits.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[doc(hidden)]
 pub fn run_owned_daemon_listener_for_test(
     paths: &UserPaths,
-    daemon_lock: voytty_platform::local_unix::DaemonLock,
-    listener: std::os::unix::net::UnixListener,
-    socket_ownership: voytty_platform::local_unix::DaemonSocketOwnership,
+    daemon_lock: voytty_platform::local::DaemonLock,
+    listener: voytty_platform::local::Listener,
+    socket_ownership: voytty_platform::local::DaemonSocketOwnership,
     service: std::sync::Arc<DaemonService>,
     limits: crate::local_ipc::LocalIpcLimits,
     cleanup_timeout: Duration,
@@ -625,7 +625,7 @@ pub(crate) async fn probe_readiness(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) async fn acquire_lifecycle_lock(
     paths: &UserPaths,
     started: Instant,
@@ -646,15 +646,15 @@ pub(crate) async fn acquire_lifecycle_lock(
     }
 }
 
-#[cfg(unix)]
-fn platform_error(error: voytty_platform::local_unix::LocalPlatformError) -> DaemonError {
+#[cfg(any(unix, windows))]
+fn platform_error(error: voytty_platform::local::LocalPlatformError) -> DaemonError {
     let kind = platform_error_kind(&error);
     DaemonError::new(kind, error.to_string())
 }
 
-#[cfg(unix)]
-fn platform_error_kind(error: &voytty_platform::local_unix::LocalPlatformError) -> DomainErrorKind {
-    use voytty_platform::local_unix::LocalPlatformError;
+#[cfg(any(unix, windows))]
+fn platform_error_kind(error: &voytty_platform::local::LocalPlatformError) -> DomainErrorKind {
+    use voytty_platform::local::LocalPlatformError;
     match error {
         LocalPlatformError::Path(_) | LocalPlatformError::UnsafeSocket(_) => {
             DomainErrorKind::PathUnsafe
@@ -666,11 +666,11 @@ fn platform_error_kind(error: &voytty_platform::local_unix::LocalPlatformError) 
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn unsupported() -> DaemonError {
     DaemonError::new(
         DomainErrorKind::UnsupportedPlatform,
-        "local daemon lifecycle is Unix-only in the current milestone",
+        "local daemon lifecycle requires Unix or Windows",
     )
 }
 

@@ -110,15 +110,20 @@ pub const fn preparing() -> UploadProgress {
 /// Encodes one validated upload path as a plain paste, with no modifiers or Enter.
 #[must_use]
 pub fn paste_bytes(file: &UploadedFile, modes: &voytty_core::terminal::TerminalModes) -> Vec<u8> {
+    let path = if file.path().get(1..3) == Some(":/") {
+        format!("'{}'", file.path())
+    } else {
+        file.path().to_owned()
+    };
     if modes.bracketed_paste {
         [
             b"\x1b[200~".as_slice(),
-            file.path().as_bytes(),
+            path.as_bytes(),
             b"\x1b[201~".as_slice(),
         ]
         .concat()
     } else {
-        file.path().as_bytes().to_vec()
+        path.as_bytes().to_vec()
     }
 }
 
@@ -441,6 +446,25 @@ fn source_invalid() -> ClientError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn windows_upload_paste_quotes_spaces_and_preserves_bracketed_mode() {
+        let file = voytty_core::upload::UploadedFile::new(
+            "C:/Users/用户 name/voytty-upload-S-1-5-21-1/a/b/file.txt".into(),
+            0,
+        )
+        .expect("Windows path");
+        let mut modes = voytty_core::terminal::TerminalModes::default();
+        assert_eq!(
+            super::paste_bytes(&file, &modes),
+            format!("'{}'", file.path()).as_bytes()
+        );
+        modes.bracketed_paste = true;
+        assert_eq!(
+            super::paste_bytes(&file, &modes),
+            format!("\x1b[200~'{}'\x1b[201~", file.path()).as_bytes()
+        );
+    }
+
     use super::*;
     use std::sync::Mutex;
     use voytty_core::{AttachmentId, SessionId};

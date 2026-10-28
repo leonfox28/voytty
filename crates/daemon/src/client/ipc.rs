@@ -1,5 +1,10 @@
 //! Same-UID unary clients; daemon lifecycle remains with the command runtime.
+#[cfg(any(unix, windows))]
 #[cfg(unix)]
+use tokio::net::UnixStream as LocalStream;
+#[cfg(windows)]
+use voytty_platform::local::Stream as LocalStream;
+
 use super::{
     DEFAULT_DEADLINE, connect_error, daemon_io, decode_response, malformed, resource_error,
     service_error,
@@ -10,48 +15,48 @@ use crate::{
     error::DaemonError,
     service::{DaemonReadiness, DaemonStatus, SessionImpact, ValidatedSetupStatus},
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::{
     network::{AddressServiceState, NetworkDiagnostic, NetworkObservation, NetworkState},
     pairing::PairTicketText,
     remote_session::{SessionUnaryResponseStatus, validate_session_unary_response},
     service::{ProtocolStatus, protocol_error},
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use ring::rand::{SecureRandom, SystemRandom};
 use std::{
     fmt,
     path::{Path, PathBuf},
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use voytty_client::progress::{LocalProgressDecoder, ProgressObserver};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use voytty_client::unary::{SessionUnaryClient, SessionUnaryRequest, SessionUnaryTransport};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use voytty_core::{DEFAULT_PAIR_TTL_SECONDS, EphemeralOperationId, PairFingerprint};
 use voytty_core::{DeviceAlias, DeviceId, DeviceSummary, DomainErrorKind, SessionId, SessionName};
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use voytty_core::{OperationId, OperationLease};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use zeroize::{Zeroize, Zeroizing};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const PAIRING_DEADLINE: Duration = Duration::from_secs(15);
 
 /// Same-UID local daemon unary client. It never starts a daemon.
 pub struct LocalClient {
     progress: ProgressObserver,
     socket: PathBuf,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     next_request_id: AtomicU64,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     sessions: SessionUnaryClient,
 }
 
@@ -59,7 +64,7 @@ impl fmt::Debug for LocalClient {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut debug = formatter.debug_struct("LocalClient");
         debug.field("socket", &"[REDACTED]");
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             let mutation_target_count = self.sessions.cached_target_count();
             debug
@@ -73,14 +78,14 @@ impl fmt::Debug for LocalClient {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 enum LocalRemoteAttemptError {
     PreWrite(DaemonError),
     PostWrite(DaemonError),
     Complete(DaemonError),
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LocalRemoteRequestClass {
     ReadOnly,
@@ -88,7 +93,7 @@ enum LocalRemoteRequestClass {
     Mutation,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl LocalRemoteRequestClass {
     fn for_kind(kind: WireKind) -> Result<Self, DaemonError> {
         match kind {
@@ -112,9 +117,9 @@ impl LocalClient {
         Self {
             progress: ProgressObserver::default(),
             socket: socket.into(),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             next_request_id: AtomicU64::new(1),
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             sessions: SessionUnaryClient::default(),
         }
     }
@@ -131,7 +136,7 @@ impl LocalClient {
     }
 
     /// Probes daemon readiness.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn readiness(&self) -> Result<DaemonReadiness, DaemonError> {
         let frame = self
             .request(
@@ -150,7 +155,7 @@ impl LocalClient {
     }
 
     /// Reads current daemon status.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn status(&self) -> Result<DaemonStatus, DaemonError> {
         let frame = self
             .request(
@@ -184,7 +189,7 @@ impl LocalClient {
     }
 
     /// Validates requested setup against the running daemon without opening SQLite.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn validate_setup(
         &self,
         requested: &ValidatedConfig,
@@ -217,7 +222,7 @@ impl LocalClient {
     }
 
     /// Requests graceful shutdown; the response is flushed before listener shutdown.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn stop(&self, force: bool) -> Result<SessionImpact, DaemonError> {
         let frame = self
             .request(
@@ -240,7 +245,7 @@ impl LocalClient {
     }
 
     /// Reads the schema-only manual-update impact without stopping the daemon.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn update_preflight(&self) -> Result<SessionImpact, DaemonError> {
         let frame = self
             .request(
@@ -261,7 +266,7 @@ impl LocalClient {
 
     /// Resolves one exact user selector inside the daemon and returns a frozen
     /// target token containing no alias.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn resolve_session_target(
         &self,
         selector: &str,
@@ -281,13 +286,13 @@ impl LocalClient {
     }
 
     /// Lists live sessions on the local daemon through one strict unary request.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn list_sessions(&self) -> Result<Vec<crate::session::SessionSummary>, DaemonError> {
         self.sessions.list_sessions(self).await
     }
 
     /// Lists live sessions on one already-resolved exact target.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn list_sessions_at(
         &self,
         target: ResolvedSessionTarget,
@@ -296,7 +301,7 @@ impl LocalClient {
     }
 
     /// Creates a named account-login-shell session.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn create_session(
         &self,
         name: &SessionName,
@@ -309,7 +314,7 @@ impl LocalClient {
     }
 
     /// Creates a named account-login-shell session on one exact target.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn create_session_at(
         &self,
         target: ResolvedSessionTarget,
@@ -323,7 +328,7 @@ impl LocalClient {
     }
 
     /// Creates a Session with observations available before PTY startup.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn create_session_at_with_colors(
         &self,
         target: ResolvedSessionTarget,
@@ -345,7 +350,7 @@ impl LocalClient {
     }
 
     /// Renames a live session without changing its identity.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn rename_session(
         &self,
         session_id: SessionId,
@@ -355,7 +360,7 @@ impl LocalClient {
     }
 
     /// Renames a live session on one exact target without changing its identity.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn rename_session_at(
         &self,
         target: ResolvedSessionTarget,
@@ -368,7 +373,7 @@ impl LocalClient {
     }
 
     /// Explicitly closes one live session.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn close_session(
         &self,
         session_id: SessionId,
@@ -377,7 +382,7 @@ impl LocalClient {
     }
 
     /// Explicitly closes one live session on an exact target.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn close_session_at(
         &self,
         target: ResolvedSessionTarget,
@@ -388,7 +393,7 @@ impl LocalClient {
             .await
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn request_remote_preencoded(
         &self,
         target: DeviceId,
@@ -444,7 +449,7 @@ impl LocalClient {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn request_remote_attempt(
         &self,
         bytes: &[u8],
@@ -465,7 +470,7 @@ impl LocalClient {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn request_remote_bytes_once(
         &self,
         bytes: &[u8],
@@ -479,16 +484,15 @@ impl LocalClient {
                 "local forwarding deadline elapsed before connect",
             )));
         }
-        let mut stream =
-            tokio::time::timeout(remaining, tokio::net::UnixStream::connect(&self.socket))
-                .await
-                .map_err(|_| {
-                    LocalRemoteAttemptError::PreWrite(DaemonError::new(
-                        DomainErrorKind::DeadlineExceeded,
-                        "local forwarding deadline elapsed before connect",
-                    ))
-                })?
-                .map_err(|error| LocalRemoteAttemptError::PreWrite(connect_error(error)))?;
+        let mut stream = tokio::time::timeout(remaining, LocalStream::connect(&self.socket))
+            .await
+            .map_err(|_| {
+                LocalRemoteAttemptError::PreWrite(DaemonError::new(
+                    DomainErrorKind::DeadlineExceeded,
+                    "local forwarding deadline elapsed before connect",
+                ))
+            })?
+            .map_err(|error| LocalRemoteAttemptError::PreWrite(connect_error(error)))?;
 
         let mut written = 0;
         while written < bytes.len() {
@@ -565,7 +569,7 @@ impl LocalClient {
         .map_err(LocalRemoteAttemptError::PostWrite)
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn request<Message: prost::Message>(
         &self,
         request_kind: WireKind,
@@ -577,7 +581,7 @@ impl LocalClient {
             .await
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn request_with_retry<Message: prost::Message>(
         &self,
         request_kind: WireKind,
@@ -589,7 +593,7 @@ impl LocalClient {
             .await
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn request_encoded<Message: prost::Message>(
         &self,
         request_kind: WireKind,
@@ -613,7 +617,7 @@ impl LocalClient {
             .await
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn request_pair_accept(
         &self,
         mut message: v2::LocalPairAcceptRequest,
@@ -645,7 +649,7 @@ impl LocalClient {
         .await
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn request_preencoded(
         &self,
         bytes: &[u8],
@@ -696,7 +700,7 @@ impl LocalClient {
         Err(last_error.unwrap_or_else(|| resource_error("local request had no attempt")))
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn request_bytes_once(
         &self,
         bytes: &[u8],
@@ -723,13 +727,13 @@ impl LocalClient {
         })?
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn request_bytes_once_inner(
         &self,
         bytes: &[u8],
         request_write_started: &mut bool,
     ) -> Result<DecodedFrame, DaemonError> {
-        let mut stream = tokio::net::UnixStream::connect(&self.socket)
+        let mut stream = LocalStream::connect(&self.socket)
             .await
             .map_err(connect_error)?;
         // A cancelled write_all may have delivered a complete request. Retain
@@ -753,7 +757,7 @@ impl LocalClient {
 #[derive(Debug)]
 #[doc(hidden)]
 pub struct LocalDeviceClient {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     client: LocalClient,
 }
 
@@ -761,13 +765,13 @@ impl LocalDeviceClient {
     /// Creates a non-spawning device client for one daemon socket.
     #[must_use]
     pub fn new(socket: impl Into<PathBuf>) -> Self {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             Self {
                 client: LocalClient::new(socket),
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = socket;
             Self {}
@@ -775,7 +779,7 @@ impl LocalDeviceClient {
     }
 
     /// Lists the directional outbound/inbound projection of every device.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn list(&self) -> Result<Vec<DeviceSummary>, DaemonError> {
         let frame = self
             .client
@@ -795,7 +799,7 @@ impl LocalDeviceClient {
     }
 
     /// Sets the exact outbound alias for one exact DeviceId.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn rename(
         &self,
         device_id: DeviceId,
@@ -822,7 +826,7 @@ impl LocalDeviceClient {
     }
 
     /// Revokes only the inbound authorization for one exact DeviceId.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub async fn revoke(&self, device_id: DeviceId) -> Result<DeviceSummary, DaemonError> {
         let frame = self
             .client
@@ -844,13 +848,13 @@ impl LocalDeviceClient {
     }
 
     /// Returns the current platform limitation.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     pub async fn list(&self) -> Result<Vec<DeviceSummary>, DaemonError> {
         Err(unsupported())
     }
 
     /// Returns the current platform limitation.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     pub async fn rename(
         &self,
         _device_id: DeviceId,
@@ -860,7 +864,7 @@ impl LocalDeviceClient {
     }
 
     /// Returns the current platform limitation.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     pub async fn revoke(&self, _device_id: DeviceId) -> Result<DeviceSummary, DaemonError> {
         Err(unsupported())
     }
@@ -868,14 +872,14 @@ impl LocalDeviceClient {
 
 /// Hidden same-UID pairing adapter used by integration tests and the command
 /// composition. It never starts a daemon or opens an Iroh endpoint itself.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug)]
 #[doc(hidden)]
 pub struct LocalPairingClient {
     client: LocalClient,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl LocalPairingClient {
     /// Creates a non-spawning pairing client for one daemon socket.
     #[must_use]
@@ -942,7 +946,7 @@ impl LocalPairingClient {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn random_pair_operation_id() -> Result<EphemeralOperationId, DaemonError> {
     let mut bytes = [0_u8; EphemeralOperationId::LENGTH];
     SystemRandom::new().fill(&mut bytes).map_err(|_| {
@@ -954,19 +958,19 @@ fn random_pair_operation_id() -> Result<EphemeralOperationId, DaemonError> {
     Ok(EphemeralOperationId::from_array(bytes))
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 impl LocalClient {
-    /// Returns the current platform limitation on non-Unix targets.
+    /// Returns the current platform limitation on unsupported targets.
     pub async fn readiness(&self) -> Result<DaemonReadiness, DaemonError> {
         Err(unsupported())
     }
 
-    /// Returns the current platform limitation on non-Unix targets.
+    /// Returns the current platform limitation on unsupported targets.
     pub async fn status(&self) -> Result<DaemonStatus, DaemonError> {
         Err(unsupported())
     }
 
-    /// Returns the current platform limitation on non-Unix targets.
+    /// Returns the current platform limitation on unsupported targets.
     pub async fn validate_setup(
         &self,
         _requested: &ValidatedConfig,
@@ -974,12 +978,12 @@ impl LocalClient {
         Err(unsupported())
     }
 
-    /// Returns the current platform limitation on non-Unix targets.
+    /// Returns the current platform limitation on unsupported targets.
     pub async fn stop(&self, _force: bool) -> Result<SessionImpact, DaemonError> {
         Err(unsupported())
     }
 
-    /// Returns the current platform limitation on non-Unix targets.
+    /// Returns the current platform limitation on unsupported targets.
     pub async fn update_preflight(&self) -> Result<SessionImpact, DaemonError> {
         Err(unsupported())
     }
@@ -1063,12 +1067,12 @@ impl LocalClient {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn local_device_wire_error(error: voytty_proto::WireFieldError) -> DaemonError {
     malformed(format!("invalid local device response: {error}"))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn protocol_status(protocol: Option<v2::ProtocolVersion>) -> Result<ProtocolStatus, DaemonError> {
     let protocol = protocol.ok_or_else(|| malformed("local response omitted protocol"))?;
     Ok(ProtocolStatus {
@@ -1078,7 +1082,7 @@ fn protocol_status(protocol: Option<v2::ProtocolVersion>) -> Result<ProtocolStat
     })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn network_observation(
     response: &v2::LocalStatusResponse,
     device_id: voytty_core::DeviceId,
@@ -1123,7 +1127,7 @@ fn network_observation(
     })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn address_service_state(value: &str) -> Result<AddressServiceState, DaemonError> {
     match value {
         "" | "disabled" => Ok(AddressServiceState::Disabled),
@@ -1135,21 +1139,21 @@ fn address_service_state(value: &str) -> Result<AddressServiceState, DaemonError
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use voytty_client::protocol::resolved_target_from_wire;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use voytty_client::protocol::resolved_target_wire;
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn unsupported() -> DaemonError {
     DaemonError::new(
         DomainErrorKind::UnsupportedPlatform,
-        "local daemon IPC is Unix-only in the current milestone",
+        "local daemon IPC requires Unix or Windows",
     )
 }
 
-#[cfg(unix)]
-async fn read_one(stream: &mut tokio::net::UnixStream) -> Result<DecodedFrame, DaemonError> {
+#[cfg(any(unix, windows))]
+async fn read_one(stream: &mut LocalStream) -> Result<DecodedFrame, DaemonError> {
     read_one_with_progress(
         stream,
         LocalProgressDecoder::new(0, ProgressObserver::default()),
@@ -1157,9 +1161,9 @@ async fn read_one(stream: &mut tokio::net::UnixStream) -> Result<DecodedFrame, D
     .await
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn read_one_with_progress(
-    stream: &mut tokio::net::UnixStream,
+    stream: &mut LocalStream,
     mut progress: LocalProgressDecoder,
 ) -> Result<DecodedFrame, DaemonError> {
     let mut decoder = FrameDecoder::new();
@@ -1192,7 +1196,7 @@ async fn read_one_with_progress(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl SessionUnaryTransport for LocalClient {
     fn request(
         &self,

@@ -51,7 +51,7 @@ pub fn install(paths: &UserPaths) -> Guard {
 
 pub(crate) fn register_daemon(
     paths: &UserPaths,
-    lock: &voytty_platform::local_unix::DaemonLock,
+    lock: &voytty_platform::local::DaemonLock,
 ) -> std::io::Result<()> {
     if let Some((installed, store)) = STORE.get()
         && installed.state_root() == paths.state_root()
@@ -230,7 +230,7 @@ pub(crate) fn configured(paths: &UserPaths) -> bool {
         && voytty_platform::user_state::validate_regular_file(paths.config(), paths.uid()).is_ok()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -265,11 +265,11 @@ mod tests {
         voytty_platform::user_state::atomic_write(paths.config(), paths.uid(), |_| Ok(()))
             .expect("owned configuration commit marker");
         let _guard = install(&paths);
-        let lock = voytty_platform::local_unix::DaemonLock::try_acquire(&paths)
+        let lock = voytty_platform::local::DaemonLock::try_acquire(&paths)
             .expect("daemon lock")
             .expect("exclusive");
         let (_listener, _ownership) =
-            voytty_platform::local_unix::bind_owned_daemon_socket(&paths, &lock).expect("socket");
+            voytty_platform::local::bind_owned_daemon_socket(&paths, &lock).expect("socket");
         register_daemon(&paths, &lock).expect("registration");
         std::fs::remove_file(paths.logs().join("diagnostics.json")).expect("lost control");
         voytty_diagnostics::record(Event::new(Kind::DaemonReady));

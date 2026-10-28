@@ -338,7 +338,9 @@ mod tests {
     use crate::session::SessionSummary;
     use std::collections::{BTreeMap, VecDeque};
     use std::fs;
-    use std::path::{Path, PathBuf};
+    #[cfg(unix)]
+    use std::path::Path;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, MutexGuard};
     use std::time::Duration;
@@ -663,7 +665,9 @@ mod tests {
         let home = temporary.path().join("home");
         fs::create_dir(&home).expect("test home");
         let paths = UserPaths::for_test(
-            nix::unistd::Uid::effective().as_raw(),
+            voytty_platform::account::EffectiveAccount::current()
+                .expect("current account")
+                .uid(),
             home.clone(),
             home.join(".voytty"),
             temporary.path().join("run"),
@@ -1669,10 +1673,16 @@ mod tests {
         working_directory: PathBuf,
         spawn_count: Arc<AtomicUsize>,
     ) -> SessionService {
-        let cat = [Path::new("/bin/cat"), Path::new("/usr/bin/cat")]
+        #[cfg(unix)]
+        let program = [Path::new("/bin/cat"), Path::new("/usr/bin/cat")]
             .into_iter()
             .find(|path| path.is_file())
             .expect("POSIX cat fixture")
+            .to_path_buf();
+        #[cfg(windows)]
+        let program = voytty_platform::account::EffectiveAccount::current()
+            .expect("Windows fixture account")
+            .shell()
             .to_path_buf();
         SessionService::with_spawner(
             own_device_id,
@@ -1680,11 +1690,12 @@ mod tests {
             move |size, requested| {
                 spawn_count.fetch_add(1, Ordering::AcqRel);
                 let cwd = requested.unwrap_or(&working_directory).to_path_buf();
+                let command = ExplicitPtyCommand::new(&program, &cwd);
+                #[cfg(windows)]
+                let command = command.arg("-NoLogo").arg("-NoProfile").arg("-NonInteractive")
+                    .arg("-Command").arg("while ($null -ne ($line = [Console]::ReadLine())) { [Console]::WriteLine($line) }");
                 let session = PtyHost::new()
-                    .spawn(
-                        ExplicitPtyCommand::new(&cat, &cwd),
-                        PtySize::new(size.rows, size.columns),
-                    )
+                    .spawn(command, PtySize::new(size.rows, size.columns))
                     .map_err(|_| {
                         DaemonError::new(
                             DomainErrorKind::StoreUnavailable,

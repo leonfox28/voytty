@@ -101,16 +101,25 @@ pub struct UploadedFile {
 impl UploadedFile {
     /// Requires a safe generated absolute path with no shell or paste controls.
     pub fn new(path: String, size: u64) -> Result<Self, DomainErrorKind> {
+        let unix = path.starts_with("/tmp/voytty-")
+            && path
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"/._-".contains(&byte));
+        // Windows hosts use their account profile, which may contain spaces and
+        // Unicode. Clients quote these paths for the hosted PowerShell shell.
+        let windows = path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+            && path.get(1..3) == Some(":/")
+            && path.contains("/voytty-upload-S-1-")
+            && path[3..]
+                .chars()
+                .all(|c| !c.is_control() && !"'\"`$;&|<>*?:\\".contains(c));
         if size > MAX_UPLOAD_BYTES
             || path.len() > MAX_UPLOAD_PATH_BYTES
-            || !path.starts_with("/tmp/voytty-")
+            || !(unix || windows)
             || path
                 .split('/')
                 .skip(1)
                 .any(|part| part.is_empty() || part == "." || part == "..")
-            || !path
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"/._-".contains(&byte))
         {
             return Err(DomainErrorKind::MalformedFrame);
         }
@@ -163,6 +172,22 @@ mod tests {
                 .extension(),
             ""
         );
+    }
+
+    #[test]
+    fn windows_paths_allow_unicode_profiles_but_reject_controls_and_shell_syntax() {
+        let valid = "C:/Users/用户 name/voytty-upload-S-1-5-21-123/session/transfer/file.pdf";
+        assert!(UploadedFile::new(valid.into(), 0).is_ok());
+        for path in [
+            valid.replace("用户 name", "../escape"),
+            valid.replace("file.pdf", "$(whoami)"),
+            valid.replace("file.pdf", "file\r\n"),
+            valid.replace("file.pdf", "file'"),
+            valid.replace("file.pdf", "a:stream"),
+            valid.replace("C:/", "//server/"),
+        ] {
+            assert!(UploadedFile::new(path.clone(), 0).is_err(), "{path}");
+        }
     }
 
     #[test]

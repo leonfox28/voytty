@@ -231,3 +231,12 @@ Kotlin 编译与检查 task 的耗时。hosted 稳态收益仍需 main 首次填
 这是本地 Linux arm64 证据，不替代 GitHub runner 的验证。历史 main 日志没有保留实际更新
 错误，因此不能单靠该日志断言它必然属于同一原因；修复覆盖两项测试共用的初始化竞态，新增
 阶段断言也防止把更早发生的失败误认为预期的回滚测试结果。
+
+## Windows scope restored (2026-10-28)
+
+The explicit Windows support task adds native x86-64 and ARM64 Rust, PE candidate
+and final installer owners. The previous Windows pause remains historical context.
+Both Windows Rust jobs follow the existing `rust` selection and both candidates
+follow `native`; the stable `CI gate` checks their results. Quick main pushes and
+exact-main unsigned candidate selection are unchanged. Windows candidate jobs start
+cold and upload only on explicit full main runs. No new compiled cache is saved.

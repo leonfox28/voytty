@@ -118,7 +118,7 @@ impl StartupProgress {
 
 /// The two initial waits share scheduling, input and output ownership.
 pub(super) enum InactivePresentation<'a> {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     None,
     Startup(&'a mut StartupProgress),
     Synchronizing {
@@ -150,7 +150,7 @@ impl InactivePresentation<'_> {
         size: TerminalSize,
     ) -> Result<(), CliError> {
         match self {
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             Self::None => Ok(()),
             Self::Startup(progress) => progress.present(output, presenter, size),
             Self::Synchronizing {

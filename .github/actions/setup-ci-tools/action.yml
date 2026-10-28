@@ -12,6 +12,7 @@ runs:
       with:
         path: |
           ~/.cargo/bin/just
+          ~/.cargo/bin/just.exe
           ~/.cargo/bin/cargo-deny
           ~/go/bin/actionlint
         key: ci-tools-v2-${{ runner.os }}-${{ runner.arch }}-${{ inputs.profile }}-rust-1.98.0-just-1.42.4-deny-0.20.2-actionlint-1.7.12
@@ -42,6 +43,7 @@ runs:
       with:
         path: |
           ~/.cargo/bin/just
+          ~/.cargo/bin/just.exe
           ~/.cargo/bin/cargo-deny
           ~/go/bin/actionlint
         key: ${{ steps.tools.outputs.cache-primary-key }}

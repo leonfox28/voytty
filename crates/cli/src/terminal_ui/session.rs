@@ -983,7 +983,7 @@ fn presentation_state(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     include!("session_tests.rs");

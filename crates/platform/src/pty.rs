@@ -17,11 +17,20 @@ struct InputStop {
     stopped: AtomicBool,
     #[cfg(unix)]
     wake: Option<mio::Waker>,
+    #[cfg(windows)]
+    master: NativeMaster,
 }
 
 impl InputStop {
     fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
+        #[cfg(windows)]
+        if let Some(master) = self.master.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            // ClosePseudoConsole releases the input pipe and attached process
+            // tree. Older Windows versions wait for output to drain, so the
+            // reader must keep running while this separate closer owns it.
+            std::thread::spawn(move || drop(master));
+        }
         #[cfg(unix)]
         if let Some(wake) = &self.wake {
             let _ = wake.wake();
@@ -33,6 +42,23 @@ impl InputStop {
 const HOSTED_TERM: &str = "xterm-256color";
 #[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
 const HOSTED_COLORTERM: &str = "truecolor";
+
+#[cfg(windows)]
+type NativeMaster = Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>;
+#[cfg(not(windows))]
+type NativeMaster = Box<dyn MasterPty + Send>;
+
+fn resize_master(master: &NativeMaster, size: PtySize) -> Result<(), PtyError> {
+    #[cfg(windows)]
+    let guard = master.lock().unwrap_or_else(|error| error.into_inner());
+    #[cfg(windows)]
+    let master = guard
+        .as_ref()
+        .ok_or_else(|| operation_error(PtyOperation::Resize, "PTY is closed"))?;
+    master
+        .resize(to_portable_size(size))
+        .map_err(|error| operation_error(PtyOperation::Resize, error))
+}
 
 /// Identity advertised to child programs; terminal capabilities stay unchanged.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -340,7 +366,11 @@ fn is_closed_pty_error(error: &io::Error) -> bool {
     {
         error.raw_os_error() == Some(nix::libc::EIO)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        matches!(error.raw_os_error(), Some(109 | 232 | 233))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = error;
         false
@@ -374,7 +404,7 @@ impl PtyHost {
         self.spawn_builder(builder, size)
     }
 
-    /// Spawns the effective Unix account's configured interactive login shell.
+    /// Spawns the effective account's interactive shell (login shell on Unix).
     ///
     /// If `working_directory` is absent, the account home is used. The account
     /// database, not daemon environment variables or cwd, supplies all defaults.
@@ -404,7 +434,25 @@ impl PtyHost {
             self.spawn_builder(builder, size)
         }
 
-        #[cfg(not(all(unix, not(any(target_os = "android", target_os = "redox")))))]
+        #[cfg(windows)]
+        {
+            let account = crate::account::EffectiveAccount::current()
+                .map_err(|error| operation_error(PtyOperation::Spawn, error))?;
+            let directory = working_directory.unwrap_or(account.home());
+            validate_directory(directory, PtyPathKind::WorkingDirectory)?;
+            let mut builder = CommandBuilder::new(account.shell());
+            builder.arg("-NoLogo");
+            builder.cwd(directory);
+            builder.env("TERM", "xterm-256color");
+            builder.env("COLORTERM", "truecolor");
+            builder.env("TERM_PROGRAM", identity.as_str());
+            builder.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+            self.spawn_builder(builder, size)
+        }
+        #[cfg(not(any(
+            windows,
+            all(unix, not(any(target_os = "android", target_os = "redox")))
+        )))]
         {
             let _ = (working_directory, identity);
             Err(PtyError::UnsupportedPlatform {
@@ -429,7 +477,7 @@ impl PtyHost {
             .master
             .take_writer()
             .map_err(|error| operation_error(PtyOperation::TakeWriter, error))?;
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         let input_stopped = Arc::new(InputStop::default());
         #[cfg(unix)]
         let (reader, writer, input_stopped) = unix_io::interruptible(&*pair.master, reader, writer)
@@ -439,8 +487,17 @@ impl PtyHost {
             .spawn_command(builder)
             .map_err(|error| operation_error(PtyOperation::Spawn, error))?;
 
+        #[cfg(windows)]
+        let master = Arc::new(Mutex::new(Some(pair.master)));
+        #[cfg(not(windows))]
+        let master = pair.master;
+        #[cfg(windows)]
+        let input_stopped = Arc::new(InputStop {
+            stopped: AtomicBool::new(false),
+            master: Arc::clone(&master),
+        });
         Ok(PtySession {
-            master: pair.master,
+            master,
             reader: Some(PtyReader { inner: reader }),
             writer,
             child,
@@ -455,7 +512,7 @@ impl PtyHost {
 /// Dropping this value does not invoke the child killer. Session owners must use
 /// [`Self::close_explicitly`] when termination is intended.
 pub struct PtySession {
-    master: Box<dyn MasterPty + Send>,
+    master: NativeMaster,
     reader: Option<PtyReader>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
@@ -469,7 +526,7 @@ pub struct PtySession {
 /// prevent the session owner from terminating and reaping the root child.
 #[doc(hidden)]
 pub struct PtyIo {
-    master: Box<dyn MasterPty + Send>,
+    master: NativeMaster,
     writer: Box<dyn Write + Send>,
 }
 
@@ -485,9 +542,7 @@ impl PtyIo {
     /// Resizes the native PTY after validating non-zero dimensions.
     pub fn resize(&self, size: PtySize) -> Result<(), PtyError> {
         validate_size(size)?;
-        self.master
-            .resize(to_portable_size(size))
-            .map_err(|error| operation_error(PtyOperation::Resize, error))
+        resize_master(&self.master, size)
     }
 }
 
@@ -554,6 +609,8 @@ impl PtyChild {
             Some(status) => {
                 let status = map_exit_status(&status);
                 self.finished = Some(status.clone());
+                #[cfg(windows)]
+                self.input_stopped.stop();
                 Ok(PtyChildState::Exited(status))
             }
             None => Ok(PtyChildState::Running),
@@ -572,6 +629,8 @@ impl PtyChild {
             .map_err(|error| operation_error(PtyOperation::Wait, error))?;
         let status = map_exit_status(&status);
         self.finished = Some(status.clone());
+        #[cfg(windows)]
+        self.input_stopped.stop();
         Ok(status)
     }
 
@@ -582,9 +641,12 @@ impl PtyChild {
             return Ok(status);
         }
 
-        self.child
-            .kill()
-            .map_err(|error| operation_error(PtyOperation::Close, error))?;
+        if let Err(error) = self.child.kill() {
+            if let PtyChildState::Exited(status) = self.try_wait()? {
+                return Ok(status);
+            }
+            return Err(operation_error(PtyOperation::Close, error));
+        }
         self.wait()
     }
 }
@@ -646,9 +708,7 @@ impl PtySession {
     /// Resizes the PTY after validating non-zero character dimensions.
     pub fn resize(&self, size: PtySize) -> Result<(), PtyError> {
         validate_size(size)?;
-        self.master
-            .resize(to_portable_size(size))
-            .map_err(|error| operation_error(PtyOperation::Resize, error))
+        resize_master(&self.master, size)
     }
 
     /// Returns the root child's process identifier when the platform exposes it.
@@ -671,6 +731,8 @@ impl PtySession {
             Some(status) => {
                 let status = map_exit_status(&status);
                 self.finished = Some(status.clone());
+                #[cfg(windows)]
+                self.input_stopped.stop();
                 Ok(PtyChildState::Exited(status))
             }
             None => Ok(PtyChildState::Running),
@@ -689,6 +751,8 @@ impl PtySession {
             .map_err(|error| operation_error(PtyOperation::Wait, error))?;
         let status = map_exit_status(&status);
         self.finished = Some(status.clone());
+        #[cfg(windows)]
+        self.input_stopped.stop();
         Ok(status)
     }
 
@@ -701,15 +765,21 @@ impl PtySession {
             return Ok(status);
         }
 
-        self.child
-            .kill()
-            .map_err(|error| operation_error(PtyOperation::Close, error))?;
+        if let Err(error) = self.child.kill() {
+            if let PtyChildState::Exited(status) = self.try_wait()? {
+                return Ok(status);
+            }
+            return Err(operation_error(PtyOperation::Close, error));
+        }
         self.wait()
     }
 }
 
 fn validate_size(size: PtySize) -> Result<(), PtyError> {
-    if size.rows == 0 || size.columns == 0 {
+    if size.rows == 0
+        || size.columns == 0
+        || (cfg!(windows) && (size.rows > i16::MAX as u16 || size.columns > i16::MAX as u16))
+    {
         Err(PtyError::InvalidSize(size))
     } else {
         Ok(())

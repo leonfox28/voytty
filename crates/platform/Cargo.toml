@@ -6,7 +6,11 @@ license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
+tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 voytty-diagnostics.workspace = true
@@ -28,3 +32,11 @@ harness = false
 
 [lints]
 workspace = true
+
+[target.'cfg(windows)'.dependencies]
+interprocess = { version = "=2.4.7", features = ["tokio"] }
+widestring = "=1.2.1"
+win-custody = "=0.1.1"
+winsafe = { version = "=0.0.29", features = ["advapi"] }
+dirs = "=6.0.0"
+ring.workspace = true

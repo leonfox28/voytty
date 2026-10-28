@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
@@ -19,9 +19,9 @@ use iroh::SecretKey;
 use tokio::sync::watch;
 #[cfg(all(unix, test))]
 use voytty_core::terminal::TerminalHistoryWindowAnchor;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use voytty_core::terminal::TerminalHistoryWindowQuery;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use voytty_core::terminal::TerminalHostEffect;
 #[cfg(all(unix, test))]
 use voytty_core::terminal::TerminalSurfaceHistoryWindowResult;
@@ -45,7 +45,7 @@ use crate::terminal_driver::{
     TerminalAttachment, TerminalDriver, TerminalDriverConfig, TerminalDriverError,
     TerminalDriverInterrupt, TerminalDriverOwnership, spawn_background_reaper,
 };
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::terminal_driver::{TerminalEffectBroker, TerminalHistoryRead};
 
 const OPERATION_RESULTS_PER_EPOCH: usize = 128;
@@ -92,14 +92,14 @@ pub enum AttachmentLifecycle {
 }
 
 /// Read-only upload authority; dropping it never detaches a terminal.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) struct UploadAdmission {
     pub(crate) generation: u64,
     pub(crate) lifecycle: watch::Receiver<AttachmentLifecycle>,
     pub(crate) detached: Arc<AtomicBool>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl UploadAdmission {
     pub(crate) fn is_current(&self) -> bool {
         !self.detached.load(Ordering::Acquire)
@@ -127,7 +127,7 @@ pub struct PreparedAttachment {
     /// Initial full host-authoritative state.
     pub snapshot: TerminalSurfaceSnapshot,
     /// Initial merged resume update when an exact host checkpoint matched.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) initial_delta: Option<TerminalSurfaceDelta>,
 }
 
@@ -145,7 +145,7 @@ pub(crate) struct InitialTerminal {
 }
 
 /// Fully validated remote-only attachment preparation arguments.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) struct RemoteAttachmentRequest {
     pub(crate) base_colors: TerminalColorProfile,
     pub(crate) selector: Option<SessionSelector>,
@@ -182,11 +182,11 @@ pub struct SessionAttachment {
     detached: Arc<AtomicBool>,
     revisions: watch::Receiver<Revision>,
     lifecycle: watch::Receiver<AttachmentLifecycle>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     effect_broker: TerminalEffectBroker,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     effect_wakeup: watch::Receiver<()>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     final_update: FinalAttachmentUpdateSlot,
 }
 
@@ -214,13 +214,13 @@ impl SessionAttachment {
     }
 
     /// Subscribes to payload-free transient host-effect wakeups.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn effect_watch(&self) -> watch::Receiver<()> {
         self.effect_wakeup.clone()
     }
 
     /// Takes only a transient effect bound to this exact attachment.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn take_host_effect(&self) -> Result<Option<TerminalHostEffect>, DaemonError> {
         self.effect_broker
             .take_for(self.attachment_id)
@@ -267,7 +267,7 @@ impl SessionAttachment {
     }
 
     /// Produces the final drained terminal update before a terminal lifecycle event.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn final_update_until(
         &self,
         deadline: Instant,
@@ -318,7 +318,7 @@ impl SessionAttachment {
         result
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn begin_history_window_until(
         &self,
         query: TerminalHistoryWindowQuery,
@@ -333,7 +333,7 @@ impl SessionAttachment {
             })
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn validate_history_controller_until(
         &self,
         deadline: Instant,
@@ -408,7 +408,7 @@ impl SessionAttachment {
 
     /// Moves an active authenticated remote controller checkpoint into the
     /// SessionActor's sole resume cell and releases its controller lease.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn detach_for_remote_resume_until(
         &self,
         deadline: Instant,
@@ -516,7 +516,7 @@ impl SessionService {
         lock(&self.replay, "operation replay")?.issue(principal)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn with_child_cleanup_blocked_for_test(
         &self,
         session_id: SessionId,
@@ -530,13 +530,13 @@ impl SessionService {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn panic_next_creation_after_spawn_for_test(&self) {
         self.panic_creation_after_spawn
             .store(true, Ordering::Release);
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn panic_next_creation_cleanup_for_test(&self) {
         self.panic_next_creation_cleanup
             .store(true, Ordering::Release);
@@ -787,7 +787,7 @@ impl SessionService {
 
     /// Prepares one authenticated remote attachment with an optional exact
     /// latest-state resume baseline. Local adapters never call this path.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn prepare_remote_attach_until(
         &self,
         principal: AttachmentPrincipal,
@@ -829,7 +829,7 @@ impl SessionService {
     }
 
     /// Checks existing controller authority without creating an attachment or lease.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn admit_upload_until(
         &self,
         principal: AttachmentPrincipal,
@@ -928,7 +928,7 @@ impl SessionService {
 
     /// Counts current attachments owned by one remote endpoint without
     /// detaching them, releasing controller leases, or changing Session state.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) fn remote_attachment_count_until(
         &self,
         device_id: DeviceId,
@@ -965,7 +965,7 @@ impl SessionService {
         Ok(total)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn detach_remote_principal_until_observed(
         &self,
         device_id: DeviceId,
@@ -1870,12 +1870,12 @@ impl RegistryInner {
         SessionId::from_array(random_16())
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn inject_session_id_candidates(&self, candidates: impl IntoIterator<Item = SessionId>) {
         cleanup_lock(&self.candidate_ids).extend(candidates);
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn fail_next_provisional_registration(&self) {
         self.fail_provisional_registration
             .store(true, Ordering::Release);
@@ -2637,7 +2637,7 @@ struct ActorAttachment {
     color_sequence: u64,
     pending_color_snapshot: Option<TerminalSurfaceSnapshot>,
     principal: AttachmentPrincipal,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     resume_view_id: Option<ResumeViewId>,
     terminal: TerminalAttachment,
     ever_active: bool,
@@ -2744,7 +2744,7 @@ enum SessionCommand {
         resume: Option<RemoteResumeRequest>,
         reply: SyncSender<Result<PreparedAttachment, DaemonError>>,
     },
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     DetachForRemoteResume {
         meta: CommandMeta,
         attachment_id: AttachmentId,
@@ -2761,7 +2761,7 @@ enum SessionCommand {
         attachment_id: AttachmentId,
         reply: SyncSender<Result<Option<AttachmentUpdate>, DaemonError>>,
     },
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     FinalUpdate {
         meta: CommandMeta,
         attachment_id: AttachmentId,
@@ -2773,20 +2773,20 @@ enum SessionCommand {
         known_revision: Revision,
         reply: SyncSender<Result<TerminalSurfaceSnapshot, DaemonError>>,
     },
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     HistoryWindow {
         meta: CommandMeta,
         attachment_id: AttachmentId,
         query: TerminalHistoryWindowQuery,
         reply: SyncSender<Result<TerminalHistoryRead, DaemonError>>,
     },
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     ValidateHistoryController {
         meta: CommandMeta,
         attachment_id: AttachmentId,
         reply: SyncSender<Result<(), DaemonError>>,
     },
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     AdmitUpload {
         meta: CommandMeta,
         principal: AttachmentPrincipal,
@@ -2820,13 +2820,13 @@ enum SessionCommand {
         processed: Option<SyncSender<()>>,
         reply: SyncSender<Result<PrincipalDetachOutcome, DaemonError>>,
     },
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     CountRemoteAttachments {
         meta: CommandMeta,
         device_id: DeviceId,
         reply: SyncSender<Result<usize, DaemonError>>,
     },
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     BlockPtyEffect {
         meta: CommandMeta,
         entered: SyncSender<()>,
@@ -2834,7 +2834,7 @@ enum SessionCommand {
         executions: Arc<AtomicUsize>,
         reply: SyncSender<Result<(), DaemonError>>,
     },
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     PanicWorker,
     Wake,
 }
@@ -2989,7 +2989,7 @@ impl SessionActor {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn block_pty_effect_for_test(
         &self,
         deadline: Instant,
@@ -3006,7 +3006,7 @@ impl SessionActor {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn panic_worker_for_test(&self, deadline: Instant) -> Result<(), DaemonError> {
         self.commands
             .try_send(SessionCommand::PanicWorker)
@@ -3407,7 +3407,7 @@ fn dispatch_command(
         } => respond(actor, meta, reply, || {
             prepare_attach(actor, runtime, principal, takeover, resume, base_colors)
         }),
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         SessionCommand::DetachForRemoteResume {
             meta,
             attachment_id,
@@ -3452,7 +3452,7 @@ fn dispatch_command(
             attachment_id,
             reply,
         } => respond(actor, meta, reply, || next_update(runtime, attachment_id)),
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         SessionCommand::FinalUpdate {
             meta,
             attachment_id,
@@ -3466,7 +3466,7 @@ fn dispatch_command(
         } => respond(actor, meta, reply, || {
             sync_latest(runtime, attachment_id, known_revision)
         }),
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         SessionCommand::HistoryWindow {
             meta,
             attachment_id,
@@ -3478,7 +3478,7 @@ fn dispatch_command(
                 history_window(runtime, attachment_id, query, deadline)
             })
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         SessionCommand::ValidateHistoryController {
             meta,
             attachment_id,
@@ -3486,7 +3486,7 @@ fn dispatch_command(
         } => respond(actor, meta, reply, || {
             require_existing_visual_sync_controller(runtime, attachment_id).map(|_| ())
         }),
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         SessionCommand::AdmitUpload {
             meta,
             principal,
@@ -3580,7 +3580,7 @@ fn dispatch_command(
             }
             Ok(outcome)
         }),
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         SessionCommand::CountRemoteAttachments {
             meta,
             device_id,
@@ -3588,7 +3588,7 @@ fn dispatch_command(
         } => respond(actor, meta, reply, || {
             Ok(count_remote_attachments(runtime, device_id))
         }),
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         SessionCommand::BlockPtyEffect {
             meta,
             entered,
@@ -3605,7 +3605,7 @@ fn dispatch_command(
                 .map_err(|_| synchronization_error("test PTY-effect release"))?;
             Ok(())
         }),
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         SessionCommand::PanicWorker => panic!("injected session actor worker panic"),
         SessionCommand::Wake => {}
     }
@@ -3636,11 +3636,11 @@ fn prepare_attach(
     base_colors: TerminalColorProfile,
 ) -> Result<PreparedAttachment, DaemonError> {
     reap_detached(actor, runtime)?;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let resume_view_id = resume.map(|request| request.view_id);
     let resumed_terminal = take_resume_terminal(actor, runtime, principal, resume);
     if runtime.controller.is_some() && !takeover {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if let Some(request) = resume
             && let Some(controller) = runtime.controller
             && runtime
@@ -3693,9 +3693,9 @@ fn prepare_attach(
             .map_err(map_driver_error)?;
     }
     let mut terminal = resumed_terminal.unwrap_or_else(|| driver.attach());
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let effect_broker = terminal.effect_broker();
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let effect_wakeup = effect_broker.subscribe();
     let revisions = terminal.revision_watch();
     let initial_state = if resume.is_some() && terminal.checkpoint_revision().is_some() {
@@ -3716,9 +3716,9 @@ fn prepare_attach(
         let revision = snapshot.revision;
         (snapshot, None, revision)
     };
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let (snapshot, initial_delta, initial_revision) = initial_state;
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     let (snapshot, _, initial_revision) = initial_state;
     let target = if runtime.controller.is_none() {
         runtime.next_generation = runtime
@@ -3747,7 +3747,7 @@ fn prepare_attach(
             color_sequence: 0,
             pending_color_snapshot: None,
             principal,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             resume_view_id,
             terminal,
             ever_active: false,
@@ -3771,15 +3771,15 @@ fn prepare_attach(
             detached,
             revisions,
             lifecycle: lifecycle_receiver,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             effect_broker,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             effect_wakeup,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             final_update,
         }),
         snapshot,
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         initial_delta,
     })
 }
@@ -3805,7 +3805,7 @@ fn take_resume_terminal(
     })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn detach_for_remote_resume(
     actor: &SessionActor,
     runtime: &mut SessionRuntime,
@@ -3963,7 +3963,7 @@ fn next_update(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn final_update(
     runtime: &mut SessionRuntime,
     attachment_id: AttachmentId,
@@ -4025,7 +4025,7 @@ fn sync_latest(
     Ok(snapshot)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn history_window(
     runtime: &SessionRuntime,
     attachment_id: AttachmentId,
@@ -4345,7 +4345,7 @@ fn reconcile_effect_target(runtime: &SessionRuntime) -> Result<(), DaemonError> 
         .map_err(map_driver_error)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn count_remote_attachments(runtime: &SessionRuntime, device_id: DeviceId) -> usize {
     runtime
         .attachments

@@ -74,7 +74,7 @@ impl ReleaseSelection {
 /// Prepared candidate whose bytes and identity are authenticated before daemon contact.
 pub struct PreparedRelease {
     _temporary: TempDir,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     candidate: PathBuf,
     manifest: ReleaseManifest,
     artifact: ReleaseArtifact,
@@ -105,14 +105,14 @@ impl PreparedRelease {
     }
 
     /// Candidate file retained by this owner until activation completes.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[must_use]
     pub(crate) fn candidate(&self) -> &Path {
         &self.candidate
     }
 
     /// Authenticated manifest retained for post-activation metadata.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[must_use]
     pub(crate) const fn manifest(&self) -> &ReleaseManifest {
         &self.manifest
@@ -480,7 +480,7 @@ pub(crate) fn validate_managed_executable(path: &Path, uid: u32) -> Result<(), D
 }
 
 /// Re-runs the side-effect-free identity check against the activated path.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn verify_activated_candidate(
     candidate: &Path,
     manifest: &ReleaseManifest,
@@ -498,7 +498,7 @@ pub(crate) fn verify_activated_candidate(
 }
 
 /// Refuses an invocation superseded by another executable activation.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn verify_updater_executable(executable: &Path) -> Result<(), DaemonError> {
     let observed = run_candidate_self_check(executable).map_err(DaemonError::from)?;
     if observed != ReleaseSelfCheck::current() {
@@ -642,7 +642,7 @@ fn prepare_with(
 
     Ok(PreparedRelease {
         _temporary: temporary,
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         candidate,
         manifest,
         artifact,
@@ -653,7 +653,12 @@ fn extract_candidate(archive: &[u8], directory: &Path) -> Result<PathBuf, Distri
     let decoder = GzDecoder::new(Cursor::new(archive));
     let mut archive = Archive::new(decoder);
     let entries = archive.entries().map_err(|_| DistributionError::Archive)?;
-    let candidate = directory.join("voytty");
+    let binary_name = if cfg!(windows) {
+        "voytty.exe"
+    } else {
+        "voytty"
+    };
+    let candidate = directory.join(binary_name);
     let mut found = false;
     for entry in entries {
         let mut entry = entry.map_err(|_| DistributionError::Archive)?;
@@ -662,7 +667,7 @@ fn extract_candidate(archive: &[u8], directory: &Path) -> Result<PathBuf, Distri
                 .path()
                 .map_err(|_| DistributionError::Archive)?
                 .as_ref()
-                != Path::new("voytty")
+                != Path::new(binary_name)
             || !entry.header().entry_type().is_file()
         {
             return Err(DistributionError::Archive);

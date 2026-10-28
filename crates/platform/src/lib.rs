@@ -3,12 +3,12 @@
 pub mod account;
 #[cfg(unix)]
 pub mod autostart;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod diagnostics;
 #[cfg(unix)]
 pub mod local_unix;
 pub mod pty;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod upload;
 pub mod user_state;
 
@@ -35,6 +35,18 @@ pub const fn current() -> PlatformFacts {
 pub const fn build_identity() -> voytty_core::BuildIdentity {
     voytty_core::BuildIdentity::current()
 }
+
+#[cfg(unix)]
+pub use local_unix as local;
+#[cfg(windows)]
+#[path = "local_windows.rs"]
+pub mod local;
+#[cfg(windows)]
+mod windows_security;
+
+#[cfg(windows)]
+#[path = "autostart_windows.rs"]
+pub mod autostart;
 
 #[cfg(test)]
 mod tests {

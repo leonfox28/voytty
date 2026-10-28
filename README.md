@@ -26,7 +26,8 @@ of the mobile applications. See [repository boundaries](docs/mobile-repository.m
 This is still a development build. The Linux real-Iroh remote Session target
 exists but its hosted runtime result and public multi-process CLI evidence are
 pending; macOS development runs compile that target without executing it.
-Windows is not a terminal runtime in this milestone.
+Windows x86-64 and ARM64 use a native ConPTY host and console frontend; see
+[Windows support](docs/windows.md) for requirements and validation boundaries.
 
 ## Install
 
@@ -102,9 +103,8 @@ for all public product crates; CLI, daemon and protocol artifacts advance togeth
 The mobile app has an independent version and pins an exact public-core commit. Relay image publication is currently paused.
 
 A GitHub Release tag must equal `v` plus Cargo's resolved workspace version.
-Default releases include macOS arm64 and Linux arm64/x64. macOS Intel,
-Windows CI/distribution, and relay image publication require an explicit future
-task before being restored. Internal validation tools such as the isolated Relay
+Default releases include macOS arm64, Linux arm64/x64, and Windows x86-64/ARM64.
+macOS Intel and relay image publication remain paused. Internal validation tools such as the isolated Relay
 handshake probe are not product deliverables and keep their own non-product
 version.
 
@@ -117,7 +117,7 @@ version.
 - `install/` and `tools/release/` — the reviewed bootstrap/template and private
   signed native-asset assembler.
 - `.github/workflows/release.yml` — protected exact-tag native Release workflow
-  for the three supported Unix targets, reusing exact main CI candidates.
+  for the five supported native targets, reusing exact main CI candidates.
 - `docs/development.md` — exact local toolchain baseline and repeatable commands.
 - `docs/releasing.md` — one-PR version preparation, exact main candidates, signing,
   publication, and resumable operator commands.

@@ -649,7 +649,7 @@ impl CliError {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 enum TerminalRequestKind {
     Attach {
         target: String,
@@ -664,7 +664,7 @@ enum TerminalRequestKind {
     },
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 enum TerminalRequestKind {
     Attach,
     Create,
@@ -678,13 +678,13 @@ pub struct TerminalRequest {
 impl fmt::Debug for TerminalRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let operation = match self.kind {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             TerminalRequestKind::Attach { .. } => "attach",
-            #[cfg(not(unix))]
+            #[cfg(not(any(unix, windows)))]
             TerminalRequestKind::Attach => "attach",
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             TerminalRequestKind::Create { .. } => "create-and-attach",
-            #[cfg(not(unix))]
+            #[cfg(not(any(unix, windows)))]
             TerminalRequestKind::Create => "create-and-attach",
         };
         formatter
@@ -887,7 +887,7 @@ async fn device(
 }
 
 async fn connect(arguments: ConnectArgs) -> Result<CommandOutcome, CliError> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     let kind = {
         let create_main = arguments.session.is_none();
         let selector = arguments.session;
@@ -898,7 +898,7 @@ async fn connect(arguments: ConnectArgs) -> Result<CommandOutcome, CliError> {
             takeover: arguments.takeover,
         }
     };
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     let kind = {
         let _ = arguments;
         TerminalRequestKind::Attach
@@ -919,13 +919,13 @@ async fn session(
             .map(|sessions| render_sessions(sessions, &arguments.target))
             .map(CommandOutcome::Text),
         SessionCommand::Create(arguments) => {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             let kind = TerminalRequestKind::Create {
                 target: arguments.target,
                 name: arguments.name,
                 working_directory: arguments.cwd,
             };
-            #[cfg(not(unix))]
+            #[cfg(not(any(unix, windows)))]
             let kind = {
                 let _ = arguments;
                 TerminalRequestKind::Create
@@ -1122,7 +1122,38 @@ fn read_pair_ticket(
         eprintln!();
         result
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        eprint!("Pair ticket: ");
+        io::stderr()
+            .flush()
+            .map_err(|e| CliError::Io(e.to_string()))?;
+        let input = winsafe::HSTD::GetStdHandle(winsafe::co::STD_HANDLE::INPUT)
+            .map_err(|e| CliError::Io(e.to_string()))?
+            .leak();
+        let original = input
+            .GetConsoleMode()
+            .map_err(|e| CliError::Io(e.to_string()))?;
+        input
+            .SetConsoleMode(original & !winsafe::co::CONSOLE::ENABLE_ECHO_INPUT)
+            .map_err(|e| CliError::Io(e.to_string()))?;
+        struct Restore(winsafe::HSTD, winsafe::co::CONSOLE);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = self.0.SetConsoleMode(self.1);
+            }
+        }
+        let guard = Restore(input, original);
+        let result = read_pair_ticket_line(&mut io::stdin().lock());
+        let restored = guard
+            .0
+            .SetConsoleMode(guard.1)
+            .map_err(|e| CliError::Io(e.to_string()));
+        eprintln!();
+        restored?;
+        result
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         Err(CliError::Usage(
             "no-echo pair ticket input is unavailable on this platform".to_owned(),
@@ -1220,7 +1251,7 @@ impl<T: std::os::fd::AsFd + ?Sized> Drop for EchoGuard<'_, T> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn read_pair_ticket_line(reader: &mut impl Read) -> Result<PairTicketText, CliError> {
     let mut bytes = Zeroizing::new(Vec::with_capacity(256));
     loop {

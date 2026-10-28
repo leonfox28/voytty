@@ -135,13 +135,15 @@ fn open_file(path: &Path) -> Result<PreparedSource, ClientError> {
             "Choose a regular file; folders cannot be uploaded",
         ));
     }
+    #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
     // Also fence replacement by a FIFO between metadata and open. Regular file
     // reads are unaffected by O_NONBLOCK; the opened descriptor is checked below.
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(nix::libc::O_NONBLOCK)
-        .open(path)
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(nix::libc::O_NONBLOCK);
+    let file = options.open(path)
         .map_err(|_| local_error("Copied file cannot be opened"))?;
     let info = file
         .metadata()

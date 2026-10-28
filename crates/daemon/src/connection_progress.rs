@@ -54,7 +54,7 @@ fn recorder_with_log(
     })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) mod local {
     use std::{future::Future, time::Instant};
     use tokio::io::{AsyncWrite, AsyncWriteExt};

@@ -80,3 +80,8 @@ harness = false
 
 [lints]
 workspace = true
+
+[[test]]
+name = "windows_lifecycle"
+path = "tests/windows_lifecycle.rs"
+harness = false

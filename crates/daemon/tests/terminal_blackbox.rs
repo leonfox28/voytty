@@ -15,6 +15,7 @@ use voytty_core::terminal::{ActiveScreen, TerminalSize, TerminalSurfaceDeltaResu
 use voytty_daemon::terminal_driver::{TerminalDriver, TerminalDriverConfig};
 #[cfg(unix)]
 use voytty_platform::pty::{ExplicitPtyCommand, PtyChildState, PtyHost, PtySize};
+#[cfg(unix)]
 use voytty_terminal::TerminalModel;
 
 #[cfg(unix)]
