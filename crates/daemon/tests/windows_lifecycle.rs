@@ -6,7 +6,7 @@ mod windows {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
     use voytty_core::terminal::{TerminalSize, TerminalSurfaceRow};
-    use voytty_core::{Revision, SessionName, SessionSelector};
+    use voytty_core::{SessionName, SessionSelector};
     use voytty_daemon::bootstrap::bootstrap;
     use voytty_daemon::config::{ValidatedInfrastructure, validate_setup_input};
     use voytty_daemon::lifecycle::{DaemonLauncher, run_local_only_daemon_for_test};
@@ -130,33 +130,26 @@ mod windows {
         view.write_input(b"[Console]::WriteLine(('NATIVE-' + 'POWERSHELL-OK'))\r".to_vec())
             .await?;
         let deadline = Instant::now() + Duration::from_secs(15);
-        let mut revision = Revision::ZERO;
         loop {
             let event = view
                 .read_event(deadline.saturating_duration_since(Instant::now()))
                 .await?;
             let contents = match event {
                 LocalAttachmentEvent::Snapshot(snapshot) => {
-                    revision = snapshot.revision;
+                    view.snapshot_applied(snapshot.revision).await?;
                     text(&snapshot.surface.rows)
                 }
-                LocalAttachmentEvent::Delta(delta) => {
-                    revision = delta.to_revision;
-                    delta
-                        .row_patches
-                        .iter()
-                        .map(|patch| text(std::slice::from_ref(&patch.replacement)))
-                        .collect::<String>()
-                }
+                LocalAttachmentEvent::Delta(delta) => delta
+                    .row_patches
+                    .iter()
+                    .map(|patch| text(std::slice::from_ref(&patch.replacement)))
+                    .collect::<String>(),
                 LocalAttachmentEvent::SyncRequired(_) => continue,
                 LocalAttachmentEvent::LeaseLost(_) | LocalAttachmentEvent::SessionEnded(_) => {
                     return Err("session ended before output".into());
                 }
                 _ => String::new(),
             };
-            if revision != Revision::ZERO {
-                view.snapshot_applied(revision).await?;
-            }
             if contents.contains("NATIVE-POWERSHELL-OK") {
                 break;
             }
@@ -178,16 +171,11 @@ mod windows {
             None,
         )
         .await?;
-        assert!(
-            text(
-                &attached
-                    .take_initial_snapshot()
-                    .ok_or("reattach snapshot")?
-                    .surface
-                    .rows
-            )
-            .contains("NATIVE-POWERSHELL-OK")
-        );
+        let restored = attached
+            .take_initial_snapshot()
+            .ok_or("reattach snapshot")?;
+        assert!(text(&restored.surface.rows).contains("NATIVE-POWERSHELL-OK"));
+        attached.snapshot_applied(restored.revision).await?;
         attached.detach().await?;
         client.close_session(created.session_id).await?;
         assert!(client.list_sessions().await?.is_empty());

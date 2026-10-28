@@ -26,6 +26,9 @@ folder or an explicit `--cwd`. Dimensions must fit ConPTY's signed 16-bit range.
 Closing a Session closes its ConPTY on a separate thread while output continues
 to drain; this releases blocked input and attached processes. It also accommodates
 [ClosePseudoConsole's blocking behavior on older Windows versions](https://learn.microsoft.com/en-us/windows/console/closepseudoconsole).
+The pinned [portable-pty patch](../vendor/portable-pty/VOYTTY.md) disables cursor
+inheritance so new hosted terminals can close even before their first output has
+been processed; startup never depends on a frontend's cursor report.
 
 State is stored in `<profile>/.voytty`, with the endpoint marker in
 `<profile>/.voytty-run`. Managed directories/files use protected user/SYSTEM DACLs.

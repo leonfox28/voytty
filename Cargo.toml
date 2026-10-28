@@ -11,7 +11,7 @@ members = [
     "tools/release",
 ]
 resolver = "3"
-exclude = ["vendor/noq-proto", "vendor/iroh"]
+exclude = ["vendor/noq-proto", "vendor/iroh", "vendor/portable-pty"]
 
 [patch.crates-io]
 # Correct multipath idle expiry and active-path stateless reset handling.
@@ -20,6 +20,9 @@ noq-proto = { path = "vendor/noq-proto" }
 # Opt-in reset recovery across an exclusively owned Endpoint's restart.
 # Provenance and ownership requirements: vendor/iroh/VOYTTY.md.
 iroh = { path = "vendor/iroh" }
+# Hosted ConPTY sessions do not inherit the frontend's cursor or initialization.
+# Provenance and shutdown regression: vendor/portable-pty/VOYTTY.md.
+portable-pty = { path = "vendor/portable-pty" }
 
 [workspace.package]
 version = "0.1.46"

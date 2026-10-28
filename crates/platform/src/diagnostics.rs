@@ -363,7 +363,7 @@ impl Sink for Store {
         for file in files {
             file.sync_data()?;
         }
-        fs::File::open(self.paths.logs())?.sync_all()
+        user_state::sync_directory(self.paths.logs()).map_err(io::Error::other)
     }
 }
 fn exists(path: &Path) -> io::Result<bool> {
@@ -378,6 +378,33 @@ fn exists(path: &Path) -> io::Result<bool> {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    struct AuditedSink {
+        store: Store,
+        errors: Mutex<Vec<String>>,
+    }
+    impl AuditedSink {
+        fn observe<T>(&self, operation: &str, result: io::Result<T>) -> io::Result<T> {
+            if let Err(error) = &result {
+                self.errors
+                    .lock()
+                    .expect("sink errors")
+                    .push(format!("{operation}: {error:?}"));
+            }
+            result
+        }
+    }
+    impl Sink for AuditedSink {
+        fn append(&self, detail: bool, bytes: &[u8]) -> io::Result<()> {
+            self.observe("append", self.store.append(detail, bytes))
+        }
+        fn control(&self) -> io::Result<Control> {
+            self.observe("control", self.store.control())
+        }
+        fn flush(&self) -> io::Result<()> {
+            self.observe("flush", self.store.flush())
+        }
+    }
     use voytty_diagnostics::{Event, Filter, Kind, Recorder};
 
     fn fixture(limit: u64) -> (tempfile::TempDir, Store) {
@@ -408,11 +435,19 @@ mod tests {
             .map(|_| {
                 let store = store.clone();
                 std::thread::spawn(move || {
-                    let recorder = Recorder::new(Arc::new(store)).expect("recorder");
+                    let sink = Arc::new(AuditedSink {
+                        store,
+                        errors: Mutex::new(Vec::new()),
+                    });
+                    let recorder = Recorder::new(sink.clone()).expect("recorder");
                     for _ in 0..50 {
                         recorder.record(Event::new(Kind::ConnectionStarted));
                     }
-                    assert!(recorder.flush(Duration::from_secs(5)));
+                    assert!(
+                        recorder.flush(Duration::from_secs(5)),
+                        "sink errors: {:?}",
+                        sink.errors.lock().expect("sink errors")
+                    );
                 })
             })
             .collect();

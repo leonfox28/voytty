@@ -64,6 +64,13 @@ fn private_state_acl_lock_atomic_replace_and_foreign_grants() {
     atomic_write(paths.config(), 0, |file| file.write_all(b"old")).expect("initial bytes");
     atomic_write(paths.config(), 0, |file| file.write_all(b"new")).expect("atomic replacement");
     assert_eq!(std::fs::read(paths.config()).expect("read"), b"new");
+    // Windows flushes file handles, while directory flushing is a Unix boundary.
+    use voytty_diagnostics::Sink;
+    let diagnostics = voytty_platform::diagnostics::Store::new(paths.clone());
+    diagnostics
+        .append(false, b"private diagnostic fixture\n")
+        .expect("diagnostic append");
+    diagnostics.flush().expect("diagnostic durability barrier");
     let first = FileLock::try_acquire(paths.lifecycle_lock(), 0)
         .expect("lock")
         .expect("first owner");
@@ -145,31 +152,24 @@ fn conpty_input_resize_exit_and_blocked_input_cleanup() {
         let _ = drained.send(());
     });
     let mut output = Vec::new();
-    let mut answered = 0;
     let deadline = Instant::now() + Duration::from_secs(15);
-    let mut wait_for = |session: &mut voytty_platform::pty::PtySession, marker: &[u8]| {
+    let mut wait_for = |marker: &[u8]| {
         while !output.windows(marker.len()).any(|bytes| bytes == marker) {
             output.extend(
                 receiver
                     .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                     .expect("bounded ConPTY output"),
             );
-            let queries = output
-                .windows(4)
-                .filter(|bytes| *bytes == b"\x1b[6n")
-                .count();
-            while answered < queries {
-                session
-                    .write_input(b"\x1b[1;1R")
-                    .expect("cursor inheritance response");
-                answered += 1;
-            }
+            assert!(
+                !output.windows(4).any(|bytes| bytes == b"\x1b[6n"),
+                "a fresh hosted terminal must not wait for the frontend's cursor"
+            );
         }
     };
-    wait_for(&mut session, b"WINDOWS-READY");
+    wait_for(b"WINDOWS-READY");
     session.resize(PtySize::new(32, 100)).expect("resize");
     session.write_input(b"hello\r").expect("input");
-    wait_for(&mut session, b"WINDOWS-REPLY:hello");
+    wait_for(b"WINDOWS-REPLY:hello");
     let status = loop {
         match session.try_wait().expect("poll child") {
             PtyChildState::Exited(status) => break status,
