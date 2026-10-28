@@ -40,6 +40,7 @@ mod windows {
             run_local_only_daemon_for_test(&paths(&root))?;
             return Ok(());
         }
+        println!("Windows lifecycle: isolated child handoff");
         let temporary = tempfile::Builder::new()
             .prefix("voytty Windows ")
             .tempdir()?;
@@ -63,6 +64,7 @@ mod windows {
         let status = helper.wait()?;
         assert_eq!(&exchange?, b"pong");
         assert!(status.success(), "isolated handoff child succeeded");
+        println!("Windows lifecycle: bootstrap and detached daemon");
         let setup = validate_setup_input("windows-fixture", ValidatedInfrastructure::OfficialN0)?;
         let first = bootstrap(&paths, &setup)?;
         let second = bootstrap(&paths, &setup)?;
@@ -104,6 +106,7 @@ mod windows {
             inspect_existing_lock(paths.daemon_lock(), 0)?,
             ExistingLockState::Locked
         );
+        println!("Windows lifecycle: create and attach PowerShell session");
         let created = client
             .create_session(
                 &SessionName::new("native")?,
@@ -162,6 +165,7 @@ mod windows {
             }
         }
         view.detach().await?;
+        println!("Windows lifecycle: reattach retained session");
         assert_eq!(
             client.list_sessions().await?.len(),
             1,
@@ -189,6 +193,7 @@ mod windows {
         assert!(client.list_sessions().await?.is_empty());
         client.stop(true).await?;
         wait_stopped(paths).await?;
+        println!("Windows lifecycle: restart empty daemon");
         launcher.ensure(paths).await?;
         assert!(
             client.list_sessions().await?.is_empty(),

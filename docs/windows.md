@@ -4,6 +4,10 @@ voytty targets native `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`.
 32-bit x86 and ARM are outside this implementation. Windows uses the same CLI,
 semantic terminal model, Iroh pairing, authorization, remote sessions and upload
 protocol as Unix. The executable statically links the C runtime.
+Both Windows executable targets reserve 8 MiB of stack for CLI/daemon entry
+points, including the larger unoptimized async lifecycle futures. This is virtual
+address reservation; stack pages are committed on demand. See Microsoft's
+[/STACK option](https://learn.microsoft.com/en-us/cpp/build/reference/stack-stack-allocations).
 
 ConPTY requires Windows 10 version 1809 or newer. The native CI baseline is
 Windows Server 2025 x64 and Windows 11 ARM64. Cross-compilation on macOS checks

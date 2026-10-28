@@ -24,6 +24,15 @@ use voytty_proto::{WireKind, encode_message, v2};
 const ECHO_REQUEST: u64 = 10_000;
 const ERROR_REQUEST: u64 = 20_000;
 
+fn remove_fixture_socket(socket: &std::path::Path) {
+    #[cfg(unix)]
+    std::fs::remove_file(socket).expect("remove fixture socket");
+    // Direct named-pipe listeners have no filesystem entry. The production
+    // daemon's ownership marker is separately exercised by its lifecycle test.
+    #[cfg(windows)]
+    assert!(!socket.try_exists().expect("inspect fixture socket"));
+}
+
 fn list_request(target: DeviceId, id: u64) -> Vec<u8> {
     encode_message(
         WireKind::SessionListRequest,
@@ -352,7 +361,7 @@ impl Fixture {
             .await
             .expect("frontend closure releases the tunnel")
             .expect("tunnel task");
-        std::fs::remove_file(socket).expect("remove fixture socket");
+        remove_fixture_socket(&socket);
         error
     }
 
@@ -613,7 +622,7 @@ async fn expired_half_close_releases_tunnel_and_retires_unanswered_idle_candidat
         .expect("tunnel completed")
         .expect("tunnel task did not panic")
         .expect_err("closed frontend is reported by the pump");
-    std::fs::remove_file(socket).expect("fixture socket");
+    remove_fixture_socket(&socket);
     let next = fixture.query(3).await;
     let connections = fixture.connections.load(Ordering::SeqCst);
     fixture.close().await;

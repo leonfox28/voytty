@@ -18,6 +18,9 @@ $binary = [IO.Path]::GetFullPath('target/release/voytty.exe')
 $bytes = [IO.File]::ReadAllBytes($binary)
 $offset = [BitConverter]::ToInt32($bytes, 0x3C)
 if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A -or [BitConverter]::ToUInt32($bytes, $offset) -ne 0x4550 -or [BitConverter]::ToUInt16($bytes, $offset + 4) -ne $machine) { throw 'Native PE architecture mismatch' }
+# PE32+ optional header: Magic at +0, SizeOfStackReserve at +72.
+$optionalHeader = $offset + 24
+if ([BitConverter]::ToUInt16($bytes, $optionalHeader) -ne 0x20B -or [BitConverter]::ToUInt64($bytes, $optionalHeader + 72) -ne 8388608) { throw 'Native PE stack reservation mismatch' }
 $identity = & $binary --internal-release-self-check
 if ($LASTEXITCODE -ne 0) { throw 'Candidate self-check failed' }
 $record = $identity | ConvertFrom-Json
