@@ -23,6 +23,10 @@ use voytty_proto::{WireKind, encode_message, v2};
 
 const ECHO_REQUEST: u64 = 10_000;
 const ERROR_REQUEST: u64 = 20_000;
+// Each case owns a complete TLS relay and endpoint pair. Keep unrelated fixture
+// lifecycles from competing for the bounded operations being measured; streams
+// within a fixture still run concurrently, including the live-sibling cases.
+static FIXTURE_SLOT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 fn remove_fixture_socket(socket: &std::path::Path) {
     #[cfg(unix)]
@@ -94,10 +98,12 @@ struct Fixture {
     accepted: tokio::sync::mpsc::UnboundedReceiver<Connection>,
     store: StoreActor,
     _state: tempfile::TempDir,
+    _fixture_slot: tokio::sync::SemaphorePermit<'static>,
 }
 
 impl Fixture {
     async fn new() -> Self {
+        let fixture_slot = FIXTURE_SLOT.acquire().await.expect("fixture slot");
         let mut config = iroh_relay::server::ServerConfig::default();
         config.relay = Some(iroh_relay::server::testing::relay_config());
         let relay = iroh_relay::server::Server::spawn(config)
@@ -119,10 +125,13 @@ impl Fixture {
             .bind()
             .await
             .expect("host");
-        tokio::time::timeout(Duration::from_secs(5), host.online())
-            .await
-            .expect("online");
-        let endpoint = builder().bind().await.expect("controller");
+        let endpoint = tokio::time::timeout(Duration::from_secs(5), async {
+            let endpoint = builder().bind().await.expect("controller");
+            tokio::join!(host.online(), endpoint.online());
+            endpoint
+        })
+        .await
+        .expect("both relay endpoints online");
         let remote = DeviceId::from_array(*host.id().as_bytes());
         let local = DeviceId::from_array(*endpoint.id().as_bytes());
         let state = tempfile::tempdir().expect("isolated state");
@@ -294,6 +303,7 @@ impl Fixture {
             accepted,
             store,
             _state: state,
+            _fixture_slot: fixture_slot,
         }
     }
 

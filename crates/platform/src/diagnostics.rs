@@ -440,14 +440,21 @@ mod tests {
                         errors: Mutex::new(Vec::new()),
                     });
                     let recorder = Recorder::new(sink.clone()).expect("recorder");
-                    for _ in 0..50 {
-                        recorder.record(Event::new(Kind::ConnectionStarted));
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    // Keep all four writers concurrent without letting one
+                    // fifty-record burst repeatedly reacquire the non-fair file
+                    // lock before its peers wake. Durability barriers yield
+                    // between batches within the original total flush deadline.
+                    for _ in 0..5 {
+                        for _ in 0..10 {
+                            recorder.record(Event::new(Kind::ConnectionStarted));
+                        }
+                        assert!(
+                            recorder.flush(deadline.saturating_duration_since(Instant::now())),
+                            "sink errors: {:?}",
+                            sink.errors.lock().expect("sink errors")
+                        );
                     }
-                    assert!(
-                        recorder.flush(Duration::from_secs(5)),
-                        "sink errors: {:?}",
-                        sink.errors.lock().expect("sink errors")
-                    );
                 })
             })
             .collect();
