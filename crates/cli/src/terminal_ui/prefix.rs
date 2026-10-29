@@ -101,6 +101,9 @@ impl CommandMode {
         self.expire(now);
         match event {
             HostInputEvent::TerminalReply { .. } => Ok(Vec::new()),
+            // A terminal may report focus when an application enables reporting
+            // during a repaint. This is not an attempted command key.
+            HostInputEvent::FocusReport(_) => Ok(vec![PrefixAction::Input(event)]),
             HostInputEvent::Bytes(bytes) => self.feed(&bytes, now, report_events),
             HostInputEvent::EnhancedKey(ref key) => {
                 let action = match self.key(KeyInput::Enhanced(key), now, report_events)? {
@@ -346,6 +349,7 @@ mod tests {
                             HostInputEvent::Bytes(bytes)
                             | HostInputEvent::ForwardedBytes(bytes)
                             | HostInputEvent::Opaque(bytes)
+                            | HostInputEvent::FocusReport(bytes)
                             | HostInputEvent::Paste(bytes) => forwarded.extend(bytes),
                             HostInputEvent::EnhancedKey(key) => forwarded.extend(key.raw),
                             HostInputEvent::LegacyCtrlC => forwarded.push(3),
@@ -383,6 +387,43 @@ mod tests {
     }
 
     #[test]
+    fn focus_reports_preserve_pending_command_and_forward_the_original_bytes() {
+        for prefix in [b"\x1d".as_slice(), b"\x1b[93;5u\x1b[93;5:3u"] {
+            for report in [b"\x1b[I".as_slice(), b"\x1b[O", b"\x9bI", b"\x9bO"] {
+                let input = [prefix, report, b"."].concat();
+                for chunk_size in [1, input.len()] {
+                    assert_eq!(
+                        run(&input, chunk_size),
+                        (vec![LocalCommand::Detach], report.to_vec()),
+                    );
+                }
+                assert_eq!(run(report, 1), (Vec::new(), report.to_vec()));
+            }
+        }
+    }
+
+    #[test]
+    fn focus_reports_do_not_extend_the_command_deadline() {
+        let now = Instant::now();
+        let mut mode = CommandMode::new();
+        mode.feed(b"\x1d", now, false).expect("prefix");
+        let report = HostInputEvent::FocusReport(b"\x1b[I".to_vec());
+        assert_eq!(
+            mode.route(report.clone(), now + CONTROL_PREFIX_TIMEOUT / 2, false)
+                .expect("focus report"),
+            vec![PrefixAction::Input(report)],
+        );
+        assert_eq!(mode.deadline(), Some(now + CONTROL_PREFIX_TIMEOUT));
+        assert_eq!(
+            mode.feed(b".", now + CONTROL_PREFIX_TIMEOUT, false)
+                .expect("expired prefix"),
+            vec![PrefixAction::Input(HostInputEvent::ForwardedBytes(
+                b".".to_vec()
+            ))],
+        );
+    }
+
+    #[test]
     fn cancellation_consumes_unknown_key_lifecycle_and_whole_utf8_scalar() {
         for input in [
             b"\x1dxok".as_slice(),
@@ -390,6 +431,7 @@ mod tests {
             b"\x1b[93;5u\x1b[120u\x1b[120;1:2u\x1b[93;5:3u\x1b[120;1:3uok",
             b"\x1d\x1b[120;1;46u\x1b[120;1:3uok",
             b"\x1d\x1b[99;0uok",
+            b"\x1d\x1b[1Iok", // A parameterized CSI I is not a focus report.
             b"\x1d\x1b[5~ok",
             b"\x1d\x1b.ok",
             b"\x1d\x1bOPok",

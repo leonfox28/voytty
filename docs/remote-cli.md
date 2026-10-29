@@ -266,10 +266,15 @@ The fixed local command prefix is `Ctrl+]`:
 - `Ctrl+] v` uploads one copied file or clipboard image in a remote view.
 - `Ctrl+] c` cancels that upload. `Ctrl+V` remains ordinary paste.
 - `Ctrl+] Ctrl+]` sends one literal Ctrl+] key using the existing child encoding.
+- The desktop CLI status bar shows `Ctrl+] command: . detach` while the prefix
+  is pending, with upload/cancel hints on remote views. The hint temporarily
+  replaces upload progress and disappears after a command, cancellation, or timeout.
 - An unknown command or a one-second timeout cancels locally. The attempted
   command is not replayed to the Session.
 - Legacy and already-reported enhanced keys use the same command dispatcher.
   Prefix handling does not change the terminal's keyboard-reporting mode.
+- Terminal focus reports keep their normal forwarding and do not cancel a
+  pending prefix command.
 - Input-method text is not remapped to a physical key: a Chinese `。` does not
   trigger the period command.
 

@@ -618,6 +618,7 @@ mod unix {
         } = context;
         // Fail the initial paint before polling an operation that can create a
         // Session. Once submitted, subsequent paint failures retain its result.
+        presentation.set_command_pending(prefix.deadline().is_some());
         presentation.present(output, presenter, *physical_size)?;
         tokio::pin!(future);
         let mut pending_cancellation = None;
@@ -631,10 +632,10 @@ mod unix {
                 .is_none()
                 .then(|| host_colors.deadline())
                 .flatten();
-            if prefix.deadline().is_some_and(|deadline| now >= deadline) {
+            let prefix_deadline = prefix.deadline();
+            if prefix_deadline.is_some_and(|deadline| now >= deadline) {
                 prefix.cancel();
             }
-            let prefix_deadline = prefix.deadline();
             let cancellation = tokio::select! {
                 biased;
                 result = &mut future => return match pending_cancellation {
@@ -702,6 +703,7 @@ mod unix {
                 prefix.clear_pending();
                 presentation.cancelling();
             }
+            presentation.set_command_pending(prefix.deadline().is_some());
             if let Err(error) = presentation.present(output, presenter, *physical_size) {
                 if preserve_submitted_result {
                     let cancellation = pending_cancellation.unwrap_or_else(|| {
@@ -1683,6 +1685,7 @@ mod unix {
 
     struct StatusRenderer {
         upload: Option<upload::UploadStatus>,
+        command_pending: bool,
         initial_synchronizing: bool,
         target: TerminalViewTarget,
         physical_size: TerminalSize,
@@ -1694,6 +1697,7 @@ mod unix {
         fn new(target: TerminalViewTarget, physical_size: TerminalSize) -> Self {
             Self {
                 upload: None,
+                command_pending: false,
                 initial_synchronizing: false,
                 target,
                 physical_size,
@@ -1735,11 +1739,21 @@ mod unix {
 
         fn composed_text(&self, transport_state: TerminalViewTransportState) -> Option<String> {
             let left = self.left_text(transport_state)?;
-            let Some(upload) = &self.upload else {
+            let width = usize::from(self.physical_size.columns);
+            let right = if self.command_pending {
+                upload::truncate(
+                    if self.is_remote() {
+                        "Ctrl+] command: . detach  v upload  c cancel"
+                    } else {
+                        "Ctrl+] command: . detach"
+                    },
+                    width,
+                )
+            } else if let Some(upload) = &self.upload {
+                upload.text(width)
+            } else {
                 return Some(left);
             };
-            let width = usize::from(self.physical_size.columns);
-            let right = upload.text(width);
             let right_width = unicode_width::UnicodeWidthStr::width(right.as_str());
             let left = upload::truncate(&left, width.saturating_sub(right_width + 1));
             let padding = width
@@ -2599,6 +2613,7 @@ mod unix {
     enum HostInputEvent {
         Bytes(Vec<u8>),
         Opaque(Vec<u8>),
+        FocusReport(Vec<u8>),
         ForwardedBytes(Vec<u8>),
         LegacyCtrlC,
         EnhancedKey(EnhancedKey),
@@ -2843,6 +2858,11 @@ mod unix {
                                 reply,
                                 bytes: raw.len(),
                             });
+                        } else if matches!(
+                            raw.as_slice(),
+                            b"\x1b[I" | b"\x1b[O" | b"\x9bI" | b"\x9bO"
+                        ) {
+                            events.push(HostInputEvent::FocusReport(raw));
                         } else if let Some(key) = EnhancedKey::parse(raw.clone()) {
                             events.push(HostInputEvent::EnhancedKey(key));
                         } else {
@@ -5329,6 +5349,68 @@ mod unix {
                     }
                 }
             }
+        }
+
+        #[test]
+        fn command_status_is_bounded_and_restores_the_underlying_status() {
+            for route in [TerminalViewRoute::Local, TerminalViewRoute::Remote] {
+                for width in [1, 8, 24, 80, 240, 320] {
+                    for screen in [ActiveScreen::Main, ActiveScreen::Alternate] {
+                        let physical = TerminalSize::new(24, width);
+                        let layout = ChromeLayout::new(physical, screen);
+                        let snapshot = test_snapshot(layout.child, screen, Revision::new(2));
+                        let viewport = ViewportController::with_layout(layout, None);
+                        let mut status = StatusRenderer::new(
+                            TerminalViewTarget::for_display("服务器", route),
+                            physical,
+                        );
+                        if route == TerminalViewRoute::Remote {
+                            status.upload = Some(upload::UploadStatus::preparing());
+                        }
+                        let normal = status.composed_text(TerminalViewTransportState::Active);
+                        status.command_pending = true;
+                        let text = status
+                            .composed_text(TerminalViewTransportState::Active)
+                            .expect("command status");
+                        assert_eq!(
+                            unicode_width::UnicodeWidthStr::width(text.as_str()),
+                            usize::from(width),
+                        );
+                        if width >= 80 {
+                            assert!(text.contains("Ctrl+] command: . detach"));
+                            assert_eq!(
+                                text.contains("v upload"),
+                                route == TerminalViewRoute::Remote
+                            );
+                            assert!(!text.contains("Preparing upload"));
+                        }
+                        let frame = ComposedFrame::compose(
+                            &snapshot.surface,
+                            None,
+                            &viewport,
+                            &status,
+                            TerminalViewTransportState::Active,
+                        )
+                        .expect("command status frame");
+                        assert_eq!(frame.layout.content_size, layout.child);
+                        assert_eq!(frame.modes, snapshot.surface.modes);
+                        status.command_pending = false;
+                        assert_eq!(
+                            status.composed_text(TerminalViewTransportState::Active),
+                            normal,
+                        );
+                    }
+                }
+            }
+            let mut one_row = StatusRenderer::new(
+                TerminalViewTarget::for_display("Mac", TerminalViewRoute::Local),
+                TerminalSize::new(1, 80),
+            );
+            one_row.command_pending = true;
+            assert_eq!(
+                one_row.composed_text(TerminalViewTransportState::Active),
+                None
+            );
         }
 
         #[test]
