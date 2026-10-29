@@ -57,6 +57,14 @@ impl TerminalUiSession {
         let mut upload_tick = tokio::time::interval(voytty_core::upload::UPLOAD_PROGRESS_INTERVAL);
         upload_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         'terminal: loop {
+            if self
+                .prefix
+                .deadline()
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                self.prefix.cancel();
+            }
+            self.refresh_command_status()?;
             self.host_colors
                 .flush_commands(&mut self.presenter, &mut stdout.lock())?;
             if matches!(
@@ -80,14 +88,6 @@ impl TerminalUiSession {
                 ) {
                     break Err(error);
                 }
-                continue;
-            }
-            if self
-                .prefix
-                .deadline()
-                .is_some_and(|deadline| Instant::now() >= deadline)
-            {
-                self.prefix.cancel();
                 continue;
             }
             let prefix_deadline = self.prefix.deadline();
@@ -229,10 +229,11 @@ impl TerminalUiSession {
                                         ),
                                     )?
                                 };
+                                self.refresh_command_status()?;
                                 for action in actions {
                                     if self.upload.is_none() && self.status_renderer.upload.as_ref().is_some_and(upload::UploadStatus::is_error) {
                                         self.status_renderer.upload = None;
-                                        self.paint_upload_status()?;
+                                        self.paint_status()?;
                                     }
                                     let host_event = match action {
                                         PrefixAction::Input(event) => event,
@@ -255,7 +256,7 @@ impl TerminalUiSession {
                                     { continue; }
                                     match host_event {
                                         HostInputEvent::TerminalReply { .. } => {},
-                                        HostInputEvent::Bytes(bytes) | HostInputEvent::ForwardedBytes(bytes) | HostInputEvent::Opaque(bytes) => {
+                                        HostInputEvent::Bytes(bytes) | HostInputEvent::ForwardedBytes(bytes) | HostInputEvent::Opaque(bytes) | HostInputEvent::FocusReport(bytes) => {
                                             if let Err(error) = invalidate_selection_stdout(
                                                 &mut self.selection,
                                                 &mut self.viewport,
@@ -767,7 +768,7 @@ impl TerminalUiSession {
         };
         if let Some(problem) = problem {
             self.status_renderer.upload = Some(upload::UploadStatus::notice(problem.into(), false));
-            return self.paint_upload_status();
+            return self.paint_status();
         }
         match self.writer.upload_origin().await {
             Ok(origin) => {
@@ -785,7 +786,7 @@ impl TerminalUiSession {
                     Some(upload::UploadStatus::notice(error.detail().into(), false))
             }
         }
-        self.paint_upload_status()
+        self.paint_status()
     }
 
     async fn poll_upload(&mut self, stdin: &impl AsFd) -> Result<(), CliError> {
@@ -853,10 +854,18 @@ impl TerminalUiSession {
         {
             self.status_renderer.upload = None;
         }
-        self.paint_upload_status()
+        self.paint_status()
     }
 
-    fn paint_upload_status(&mut self) -> Result<(), CliError> {
+    fn refresh_command_status(&mut self) -> Result<(), CliError> {
+        if self.status_renderer.command_pending != self.prefix.deadline().is_some() {
+            self.paint_status()?;
+        }
+        Ok(())
+    }
+
+    fn paint_status(&mut self) -> Result<(), CliError> {
+        self.status_renderer.command_pending = self.prefix.deadline().is_some();
         present_surface_stdout(
             &self.surface,
             &mut self.presenter,

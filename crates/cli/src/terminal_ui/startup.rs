@@ -129,6 +129,12 @@ pub(super) enum InactivePresentation<'a> {
 }
 
 impl InactivePresentation<'_> {
+    pub(super) fn set_command_pending(&mut self, pending: bool) {
+        if let Self::Synchronizing { status, .. } = self {
+            status.command_pending = pending;
+        }
+    }
+
     pub(super) fn cancelling(&mut self) {
         if let Self::Startup(progress) = self {
             progress.cancelling = true;

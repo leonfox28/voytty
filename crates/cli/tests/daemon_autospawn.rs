@@ -988,6 +988,14 @@ async fn run_local_terminal_child(
             ["starting", "terminal_ready"],
             "actual local attachment must persist its complete ordered startup"
         );
+        let baseline = presentation_count.load(Ordering::Acquire);
+        master_writer.write_all(b"\x1d").expect("legacy prefix");
+        wait_for_command_status(&captured, &presentation_count, baseline, true).await;
+        let baseline = presentation_count.load(Ordering::Acquire);
+        master_writer
+            .write_all(b"x")
+            .expect("cancel legacy command");
+        wait_for_command_status(&captured, &presentation_count, baseline, false).await;
     }
     if matches!(
         mode,
@@ -1019,16 +1027,26 @@ async fn run_local_terminal_child(
             ),
             "the application-neutral child must enable enhanced keyboard reporting"
         );
+        let baseline = presentation_count.load(Ordering::Acquire);
         master_writer
-            .write_all(b"\x1b[93;5u\x1b[93;5:2u\x1b[93;5:3u\x1b[120u\x1b[120;1:2u\x1b[120;1:3u")
+            .write_all(b"\x1b[93;5u\x1b[93;5:2u\x1b[93;5:3u")
+            .expect("enhanced prefix lifecycle");
+        wait_for_command_status(&captured, &presentation_count, baseline, true).await;
+        let baseline = presentation_count.load(Ordering::Acquire);
+        master_writer
+            .write_all(b"\x1b[120u\x1b[120;1:2u\x1b[120;1:3u")
             .expect("unknown command lifecycle");
+        wait_for_command_status(&captured, &presentation_count, baseline, false).await;
         // A deliberate pending command must expire without ever reaching the
         // child. This covers the actual event loop's timeout owner, not only
         // the pure command state machine.
+        let baseline = presentation_count.load(Ordering::Acquire);
         master_writer
             .write_all(b"\x1b[93;5u\x1b[93;5:3u")
             .expect("prefix timeout");
-        tokio::time::sleep(std::time::Duration::from_millis(1_150)).await;
+        wait_for_command_status(&captured, &presentation_count, baseline, true).await;
+        let baseline = presentation_count.load(Ordering::Acquire);
+        wait_for_command_status(&captured, &presentation_count, baseline, false).await;
         assert_eq!(
             current_controller_revision(runtime).await,
             quiescent_revision,
@@ -1219,8 +1237,8 @@ async fn run_local_terminal_child(
             .expect("cancel resized terminal child");
     } else if mode == "enhanced-prefix" {
         master_writer
-            .write_all(b"\x1b[93;5u\x1b[93;5:3u\x1b[46u")
-            .expect("enhanced prefix and encoded command key");
+            .write_all(b"\x1b[93;5u\x1b[I\x1b[93;5:3u\x1b[O\x1b[46u")
+            .expect("enhanced prefix and command key across focus reports");
     } else {
         master_writer
             .write_all(b"\x1d.")
@@ -1344,6 +1362,46 @@ async fn wait_for_terminal_progress(
             revision_baseline.get(),
             presentation_count.load(Ordering::Acquire),
             presentation_baseline,
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_command_status(
+    captured: &Mutex<Vec<u8>>,
+    presentation_count: &AtomicUsize,
+    baseline: usize,
+    pending: bool,
+) {
+    let deadline = std::time::Instant::now() + TERMINAL_TEST_TIMEOUT;
+    let mut observed = baseline;
+    loop {
+        let count = presentation_count.load(Ordering::Acquire);
+        if count > observed {
+            observed = count;
+            let bytes = captured.lock().expect("command status output").clone();
+            let rows = outer_terminal::project_outer_rows(&bytes);
+            // The replay fixture reserves the final six columns for its fence.
+            let status: String = rows[23][..74]
+                .iter()
+                .map(|cell| {
+                    if cell.contents.is_empty() {
+                        " "
+                    } else {
+                        cell.contents.as_str()
+                    }
+                })
+                .collect();
+            if (pending && status.contains("Ctrl+] command:"))
+                || (!pending && status.trim_end() == "cli-host | local")
+            {
+                return;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "command status did not become pending={pending}",
         );
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
