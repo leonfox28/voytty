@@ -1,6 +1,7 @@
 //! Iroh infrastructure selection for voytty endpoints.
 
 use std::fmt;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use iroh::{
     Endpoint, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey,
@@ -8,7 +9,7 @@ use iroh::{
         AddrFilter, DnsAddressLookup, N0_DNS_ENDPOINT_ORIGIN_PROD, N0_DNS_PKARR_RELAY_PROD,
         PkarrPublisher, PkarrResolver,
     },
-    endpoint::{Builder, presets},
+    endpoint::{BindOpts, Builder, presets},
 };
 
 use crate::config::ValidatedInfrastructure;
@@ -212,6 +213,27 @@ impl InfrastructureProfile {
             .relay_mode(self.relay_mode())
             .addr_filter(AddrFilter::relay_only())
             .alpns(vec![VOYTTY_ALPN.to_vec(), VOYTTY_PAIR_ALPN.to_vec()])
+    }
+
+    /// Builds a host endpoint with a saved UDP port. Zero preserves Iroh's defaults.
+    ///
+    /// IPv4 is required; IPv6 remains optional, including on IPv4-only hosts.
+    /// Neither family falls back to a random port when a fixed bind fails.
+    #[must_use]
+    pub fn endpoint_builder_with_udp_port(&self, secret_key: SecretKey, udp_port: u16) -> Builder {
+        let builder = self.endpoint_builder(secret_key);
+        if udp_port == 0 {
+            return builder;
+        }
+        builder
+            .clear_ip_transports()
+            .bind_addr((Ipv4Addr::UNSPECIFIED, udp_port))
+            .expect("one valid IPv4 wildcard binding")
+            .bind_addr_with_opts(
+                (Ipv6Addr::UNSPECIFIED, udp_port),
+                BindOpts::default().set_is_required(false),
+            )
+            .expect("one valid IPv6 wildcard binding")
     }
 
     fn relay_mode(&self) -> RelayMode {

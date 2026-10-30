@@ -11,8 +11,10 @@ the complete current command surface.
 
 | Command | Starts a daemon | Purpose |
 | --- | --- | --- |
-| `voytty setup --name <name>` | yes | Idempotently create/validate state and wait for readiness |
-| `voytty setup --name <name> --profile self-hosted --relay-url <https-url>` | yes | Select one explicit self-hosted Relay profile |
+| `voytty setup --name <name>` | first initialization only | Create state and wait for readiness; later invocations preserve it |
+| `voytty setup --name <name> --profile self-hosted --relay-url <https-url>` | first initialization only | Select one explicit self-hosted Relay profile |
+| `voytty setup --show` | no | Show saved configuration without creating state |
+| `voytty setup --terminal-identity <voytty/ghostty> --udp-port <0-65535>` | no, when configured | Update explicitly selected preferences atomically |
 | `voytty status` | no | Report running, configured/stopped, or not configured |
 | `voytty doctor` | no | Check account home/shell, committed state, socket/lock state, and lifecycle limits |
 | `voytty daemon stop [-y|--yes]` | no | Flush a graceful stop response; stopped is success |
@@ -28,8 +30,12 @@ is omitted from help.
 First setup defaults to `official-n0`. Noninteractive setup requires `--name`;
 interactive setup prompts for a missing name without asking for a profile.
 Explicit self-hosted setup also needs `--relay-url`, prompted interactively if
-omitted. Repeating setup without overrides returns
-the existing public identity and starts the daemon only when it is stopped.
+omitted. Optional `--terminal-identity` and `--udp-port` are saved before first
+startup. On a configured host, repeated setup shows saved configuration or updates
+only specified preferences, preserving identity and pairings. It never starts or
+restarts a daemon. `setup --show` inspects without any initialization; use
+`daemon restart` to explicitly start a configured host. Changes to the committed
+device name or infrastructure remain conflicts.
 
 Stop/restart proceed directly with no live Sessions. Otherwise the CLI lists
 the names and asks for English `[y/N]` confirmation; `-y`/`--yes` skips input.
@@ -101,7 +107,7 @@ runtime initialization. Optional login startup uses a separate hidden foreground
 entry that skips `setsid()` and reuses the same daemon lock and body. It creates
 no Session, PTY, shell or terminal window. No restart-on-exit policy is installed.
 See [login autostart](autostart.md). By default, a crash/reboot still requires an
-explicit setup/restart or configured pair/device/connect/Session operation to
+explicit restart or configured pair/device/connect/Session operation to
 invoke the on-demand launcher.
 
 Local IPC uses the shared bounded protobuf framing. The daemon authorizes the
@@ -190,6 +196,14 @@ The profiles cannot be mixed. The current production network owner consumes
 this validated choice; `OfficialN0` remains the default and recommended
 profile. The optional self-hosted profile is not an additional M7-M8 acceptance
 workflow.
+
+The optional top-level `udp_port` integer controls the host's local UDP listener,
+independently of its infrastructure profile. Missing or `0` means automatic
+allocation; `1` through `65535` selects a fixed port. Change it with
+`voytty setup --udp-port <port>` after setup and restart the daemon when ready,
+or include `--udp-port` in the initial setup invocation.
+See [fixed UDP listen ports](remote-cli.md#fixed-udp-listen-port) for persistence,
+dual-stack binding, port conflicts, and firewall/NAT behavior.
 
 ## Deliberate exclusions
 

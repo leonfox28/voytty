@@ -24,7 +24,7 @@ use crate::client::{LocalClient, LocalDeviceClient};
 use crate::client::{
     LocalPairingClient, RemoteDaemonRestarter, SessionClient, UnixAttachmentConnector,
 };
-use crate::config::{TerminalIdentity, ValidatedConfig};
+use crate::config::{SetupPreferences, ValidatedConfig};
 use crate::device_directory::ResolvedSessionTarget;
 use crate::error::DaemonError;
 #[cfg(any(unix, windows))]
@@ -34,6 +34,26 @@ use crate::pairing::PairTicketText;
 use crate::service::{DaemonReadiness, DaemonStatus, SessionImpact};
 
 const IDENTITY_RESET_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Saved setup after initialization or a host preference update.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SetupResult {
+    /// Completed initialization and started a daemon.
+    Initialized(BootstrapResult),
+    /// Saved preferences on an already configured host without contacting its daemon.
+    Configured(ValidatedConfig),
+}
+
+impl SetupResult {
+    /// Saved configuration after this operation.
+    #[must_use]
+    pub fn config(&self) -> &ValidatedConfig {
+        match self {
+            Self::Initialized(setup) => &setup.config,
+            Self::Configured(config) => config,
+        }
+    }
+}
 
 /// Side-effect-free observation of local setup and daemon state.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -556,50 +576,20 @@ impl LocalRuntime {
         Ok(())
     }
 
-    /// Validates or creates setup and explicitly ensures one daemon.
-    pub async fn setup(&self, requested: &ValidatedConfig) -> Result<BootstrapResult, DaemonError> {
-        setup_and_ensure(&self.paths, requested, &self.launcher).await
+    /// Reads saved setup preferences without probing or starting a daemon or creating state.
+    pub fn setup_config(&self) -> Result<Option<ValidatedConfig>, DaemonError> {
+        saved_setup_config(&self.paths)
     }
 
-    /// Reads or changes the local host's identity for new sessions without starting a daemon.
-    pub async fn terminal_identity(
+    /// Initializes this host and starts its daemon, or updates existing preferences in place.
+    /// Existing identity/infrastructure must match; omitted preferences are preserved.
+    /// An already configured daemon is never contacted, started, or restarted.
+    pub async fn setup(
         &self,
-        value: Option<&str>,
-    ) -> Result<TerminalIdentity, DaemonError> {
-        #[cfg(any(unix, windows))]
-        {
-            let requested = value
-                .map(|value| value.parse::<TerminalIdentity>())
-                .transpose()
-                .map_err(|detail| DaemonError::new(DomainErrorKind::ConfigProfile, detail))?;
-            let require_setup = || {
-                crate::bootstrap::validate_committed_files_exist(&self.paths).map_err(|error| {
-                    if error.kind() == DomainErrorKind::NotSetup {
-                        not_setup_for_command()
-                    } else {
-                        error
-                    }
-                })
-            };
-            require_setup()?;
-            let _lock = if requested.is_some() {
-                Some(acquire_lifecycle_lock(&self.paths, Instant::now()).await?)
-            } else {
-                None
-            };
-            require_setup()?;
-            let mut config = crate::config::load_config(&self.paths)?;
-            if let Some(identity) = requested {
-                config.terminal_identity = identity;
-                crate::config::write_config(&self.paths, &config)?;
-            }
-            Ok(config.terminal_identity)
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = value;
-            Err(unsupported_command_platform())
-        }
+        requested: &ValidatedConfig,
+        preferences: SetupPreferences,
+    ) -> Result<SetupResult, DaemonError> {
+        apply_setup(&self.paths, requested, preferences, &self.launcher).await
     }
 
     /// Authenticates, preflights, and atomically installs one explicit update.
@@ -2077,46 +2067,68 @@ const fn lifecycle_limitation() -> &'static str {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        "login autostart is opt-in via voytty daemon autostart; setup/restart also starts on demand"
+        "login autostart is opt-in via voytty daemon autostart; first setup/restart also starts on demand"
     }
 }
 
-/// Validates or creates setup and explicitly ensures one daemon.
-///
-/// A double readiness probe under `lifecycle.lock` prevents offline SQLite
-/// bootstrap from racing a concurrently launched daemon's `StoreActor`.
-pub async fn setup_and_ensure(
+fn saved_setup_config(paths: &UserPaths) -> Result<Option<ValidatedConfig>, DaemonError> {
+    match crate::bootstrap::validate_committed_files_exist(paths) {
+        Ok(()) => crate::config::load_config(paths).map(Some),
+        Err(error) if error.kind() == DomainErrorKind::NotSetup => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+// Serialize all preference updates with initialization, reset, and other lifecycle
+// mutations. Reload the latest config under the lock so omitted values cannot be lost.
+async fn apply_setup(
     paths: &UserPaths,
     requested: &ValidatedConfig,
+    preferences: SetupPreferences,
     launcher: &DaemonLauncher,
-) -> Result<BootstrapResult, DaemonError> {
+) -> Result<SetupResult, DaemonError> {
     #[cfg(any(unix, windows))]
     {
         paths
             .prepare_state_directories()
             .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?;
-        if probe_readiness(paths).await?.is_some() {
-            return validate_running_setup(paths, requested).await;
-        }
-
         let lifecycle = acquire_lifecycle_lock(paths, Instant::now()).await?;
-        if probe_readiness(paths).await?.is_some() {
-            drop(lifecycle);
-            return validate_running_setup(paths, requested).await;
+        if let Some(mut config) = saved_setup_config(paths)? {
+            if !config.same_setup(requested) {
+                return Err(DaemonError::new(
+                    DomainErrorKind::AlreadyConfiguredConflict,
+                    "requested device name or infrastructure differs from committed config.toml",
+                ));
+            }
+            let before = config.clone();
+            preferences.apply(&mut config);
+            if config != before {
+                crate::config::write_config(paths, &config)?;
+            }
+            return Ok(SetupResult::Configured(config));
         }
-        let result = bootstrap_with_lock_held(paths, requested)?;
+        // Partial-state recovery must not open SQLite beside a running daemon.
+        let mut setup = if probe_readiness(paths).await?.is_some() {
+            validate_running_setup(paths, requested).await?
+        } else {
+            let mut initial = requested.clone();
+            preferences.apply(&mut initial);
+            bootstrap_with_lock_held(paths, &initial)?
+        };
+        let before = setup.config.clone();
+        preferences.apply(&mut setup.config);
+        if setup.config != before {
+            crate::config::write_config(paths, &setup.config)?;
+        }
         crate::distribution::write_install_metadata(paths, launcher.executable(), None)?;
         drop(lifecycle);
         launcher.ensure(paths).await?;
-        Ok(result)
+        Ok(SetupResult::Initialized(setup))
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = (paths, requested, launcher);
-        Err(DaemonError::new(
-            DomainErrorKind::UnsupportedPlatform,
-            "local daemon setup requires a supported Unix or Windows host",
-        ))
+        let _ = (paths, requested, preferences, launcher);
+        Err(unsupported_command_platform())
     }
 }
 

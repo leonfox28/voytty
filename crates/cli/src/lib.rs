@@ -4,17 +4,21 @@ use std::fmt;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum, builder::TypedValueParser};
 use unicode_width::UnicodeWidthStr;
 use voytty_core::{AuthorizationStatus, MAX_TICKET_TEXT_BYTES, SessionId};
-use voytty_daemon::bootstrap::BootstrapResult;
-use voytty_daemon::config::{TerminalIdentity, validate_setup_profile};
+use voytty_daemon::config::{
+    SetupPreferences, TerminalIdentity, ValidatedConfig, validate_setup_profile,
+};
 use voytty_daemon::error::DaemonError;
 use voytty_daemon::operations::{
     CommandDeviceSummary, CommandSessionSummary, LifecycleStage, LocalRuntime, ObservedState,
+    SetupResult,
 };
 use voytty_daemon::pairing::PairTicketText;
-use voytty_daemon::service::{DaemonStatus, SessionImpact};
+#[cfg(test)]
+use voytty_daemon::service::DaemonStatus;
+use voytty_daemon::service::SessionImpact;
 use zeroize::Zeroizing;
 
 mod pair_qr;
@@ -125,9 +129,7 @@ impl Cli {
                 Command::Logs(_)
                     | Command::Status
                     | Command::Doctor
-                    | Command::Config {
-                        command: ConfigCommand::TerminalIdentity { identity: None }
-                    }
+                    | Command::Setup(SetupArgs { show: true, .. })
                     | Command::Daemon {
                         command: DaemonCommand::Autostart {
                             command: AutostartCommand::Status
@@ -191,14 +193,8 @@ impl Cli {
 /// Public commands backed by the same-UID local daemon.
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Configure this device and explicitly start its daemon.
+    /// Initialize this host, or inspect and update its saved configuration.
     Setup(SetupArgs),
-    /// Inspect or change this host's configuration without starting its daemon.
-    Config {
-        /// Configuration operation.
-        #[command(subcommand)]
-        command: ConfigCommand,
-    },
     /// Show setup and daemon state without starting anything.
     Status,
     /// Run local-only diagnostics without starting anything.
@@ -241,16 +237,6 @@ enum Command {
     Uninstall(UninstallArgs),
 }
 
-#[derive(Debug, Subcommand)]
-enum ConfigCommand {
-    /// Show or set the child-program identity for new sessions on this host.
-    TerminalIdentity {
-        /// Omit to show the current value. Changes apply to new sessions without a restart.
-        #[arg(value_parser = TerminalIdentity::VALUES)]
-        identity: Option<String>,
-    },
-}
-
 #[derive(clap::Args)]
 struct SetupArgs {
     /// User-facing device name.
@@ -262,12 +248,25 @@ struct SetupArgs {
     /// HTTPS Relay URL required only by self-hosted profile.
     #[arg(long)]
     relay_url: Option<String>,
+    /// Child-program identity for new sessions; omitted values keep the saved choice.
+    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(TerminalIdentity::VALUES)
+        .try_map(|value| value.parse::<TerminalIdentity>()))]
+    terminal_identity: Option<TerminalIdentity>,
+    /// Local UDP port: 1-65535 for a fixed port, 0 for automatic (default).
+    #[arg(long, value_name = "PORT")]
+    udp_port: Option<u16>,
+    /// Show saved configuration without starting a daemon or changing state.
+    #[arg(long, conflicts_with_all = ["name", "profile", "relay_url", "terminal_identity", "udp_port"])]
+    show: bool,
 }
 
 impl fmt::Debug for SetupArgs {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("SetupArgs")
+            .field("show", &self.show)
+            .field("terminal_identity", &self.terminal_identity)
+            .field("udp_port", &self.udp_port)
             .field("name", &self.name)
             .field("profile", &self.profile)
             .field("relay_url", &"[REDACTED]")
@@ -748,16 +747,6 @@ pub async fn execute(
         Some(Command::Setup(arguments)) => setup(runtime, arguments, interaction)
             .await
             .map(CommandOutcome::Text),
-        Some(Command::Config {
-            command: ConfigCommand::TerminalIdentity { identity },
-        }) => {
-            let configured = runtime.terminal_identity(identity.as_deref()).await?;
-            let mut output = format!("Terminal identity: {}\n", configured.as_str());
-            if identity.is_some() {
-                output.push_str("Applies to new sessions on this host; no daemon restart required. Existing sessions keep their identity.\n");
-            }
-            Ok(CommandOutcome::Text(output))
-        }
         Some(Command::Status) => status(runtime).await.map(CommandOutcome::Text),
         Some(Command::Doctor) => doctor(runtime).await.map(CommandOutcome::Text),
         Some(Command::Pair { command }) => pair(runtime, command, interaction).await,
@@ -1458,44 +1447,46 @@ fn render_sessions(sessions: Vec<CommandSessionSummary>, target: &str) -> String
 
 async fn setup(
     runtime: &LocalRuntime,
-    mut arguments: SetupArgs,
+    arguments: SetupArgs,
     interaction: InteractionMode,
 ) -> Result<String, CliError> {
-    let observed = runtime.observe().await?;
-    // A running self-hosted daemon deliberately does not disclose its Relay
-    // URL in status. Reusing its exact existing setup needs no URL or prompt.
-    if let ObservedState::Running(status) = &observed
-        && arguments.relay_url.is_none()
-        && arguments
-            .name
-            .as_deref()
-            .is_none_or(|name| name == status.device_name)
-        && arguments
-            .profile
-            .is_none_or(|profile| profile.as_str() == status.infrastructure_profile)
-    {
-        return Ok(render_setup_status(status));
+    let existing = runtime.setup_config()?;
+    let preferences = SetupPreferences {
+        terminal_identity: arguments.terminal_identity,
+        udp_port: arguments.udp_port,
+    };
+    let has_overrides = arguments.name.is_some()
+        || arguments.profile.is_some()
+        || arguments.relay_url.is_some()
+        || preferences != SetupPreferences::default();
+    if arguments.show || (!has_overrides && existing.is_some()) {
+        return Ok(existing
+            .as_ref()
+            .map_or_else(|| SETUP_GUIDANCE.to_owned(), render_setup_config));
     }
-    if arguments.name.is_none() && arguments.profile.is_none() && arguments.relay_url.is_none() {
-        match &observed {
-            ObservedState::Running(status) => return Ok(render_setup_status(status)),
-            ObservedState::ConfiguredStopped(setup) => {
-                runtime.ensure_configured_daemon().await?;
-                return Ok(render_setup_result(setup));
-            }
-            ObservedState::NotConfigured => {}
-        }
-    }
-
-    apply_committed_defaults(&observed, &mut arguments);
     let name = required_or_prompt(
-        arguments.name,
+        arguments
+            .name
+            .or_else(|| existing.as_ref().map(|config| config.device_name.clone())),
         "--name <name>",
         "Device name: ",
         interaction,
     )?;
-    let profile = arguments.profile.unwrap_or(ProfileArg::OfficialN0).as_str();
-    let relay_url = if profile == "self-hosted" && arguments.relay_url.is_none() {
+    let profile = arguments
+        .profile
+        .map(ProfileArg::as_str)
+        .unwrap_or_else(|| {
+            existing
+                .as_ref()
+                .map_or("official-n0", |config| config.infrastructure.profile_name())
+        });
+    let relay_url = arguments.relay_url.or_else(|| {
+        existing
+            .as_ref()
+            .filter(|config| config.infrastructure.profile_name() == profile)
+            .and_then(|config| config.infrastructure.relay_url().map(ToString::to_string))
+    });
+    let relay_url = if profile == "self-hosted" && relay_url.is_none() {
         Some(required_or_prompt(
             None,
             "--relay-url <https-url>",
@@ -1503,47 +1494,25 @@ async fn setup(
             interaction,
         )?)
     } else {
-        arguments.relay_url
+        relay_url
     };
     let requested = validate_setup_profile(&name, profile, relay_url.as_deref())?;
-    let result = runtime.setup(&requested).await?;
-    Ok(render_setup_result(&result))
-}
-
-fn apply_committed_defaults(observed: &ObservedState, arguments: &mut SetupArgs) {
-    match observed {
-        ObservedState::ConfiguredStopped(setup) => {
-            if arguments.name.is_none() {
-                arguments.name = Some(setup.config.device_name.clone());
-            }
-            if arguments.profile.is_none() {
-                arguments.profile = Some(match setup.config.infrastructure.profile_name() {
-                    "self-hosted" => ProfileArg::SelfHosted,
-                    _ => ProfileArg::OfficialN0,
-                });
-            }
-            if arguments.relay_url.is_none() {
-                arguments.relay_url = setup
-                    .config
-                    .infrastructure
-                    .relay_url()
-                    .map(ToString::to_string);
-            }
+    let result = runtime.setup(&requested, preferences).await?;
+    let mut output = render_setup_config(result.config());
+    if let SetupResult::Initialized(setup) = result {
+        output.push_str(&format!(
+            "Daemon:            Running\n\nDevice ID: {}\n",
+            setup.endpoint_id
+        ));
+    } else {
+        if preferences.terminal_identity.is_some() {
+            output.push_str("Terminal identity applies to new sessions on this host; existing sessions keep their identity.\n");
         }
-        ObservedState::Running(status) => {
-            if arguments.name.is_none() {
-                arguments.name = Some(status.device_name.clone());
-            }
-            if arguments.profile.is_none() {
-                arguments.profile = Some(if status.infrastructure_profile == "self-hosted" {
-                    ProfileArg::SelfHosted
-                } else {
-                    ProfileArg::OfficialN0
-                });
-            }
+        if preferences.udp_port.is_some() {
+            output.push_str("UDP port applies on the next daemon start. Use `voytty daemon restart` when ready; restarting ends existing sessions.\n");
         }
-        ObservedState::NotConfigured => {}
     }
+    Ok(output)
 }
 
 fn required_or_prompt(
@@ -1730,17 +1699,18 @@ fn logs(runtime: &LocalRuntime, arguments: LogsArgs) -> Result<String, CliError>
     Ok(output)
 }
 
-fn render_setup_result(result: &BootstrapResult) -> String {
+fn render_setup_config(config: &ValidatedConfig) -> String {
+    let port = if config.udp_port == 0 {
+        "0 (automatic)".to_owned()
+    } else {
+        config.udp_port.to_string()
+    };
     format!(
-        "Device:  {}\nSetup:   Configured\nDaemon:  Running\n\nDevice ID: {}\n",
-        result.config.device_name, result.endpoint_id
-    )
-}
-
-fn render_setup_status(status: &DaemonStatus) -> String {
-    format!(
-        "Device:  {}\nSetup:   Configured\nDaemon:  Running\n\nDevice ID: {}\n",
-        status.device_name, status.endpoint_id
+        "Device:            {}\nSetup:             Configured\nInfrastructure:    {}\nTerminal identity: {}\nSaved UDP port:    {}\n",
+        config.device_name,
+        config.infrastructure.profile_name(),
+        config.terminal_identity.as_str(),
+        port,
     )
 }
 

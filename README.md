@@ -45,7 +45,9 @@ Current public commands are:
 
 ```text
 voytty setup [--name <name>] [--profile <official-n0|self-hosted>]
-            [--relay-url <https-url>]
+            [--relay-url <https-url>] [--terminal-identity <voytty|ghostty>]
+            [--udp-port <0-65535>]
+voytty setup --show
 voytty status
 voytty doctor
 voytty pair create
@@ -70,8 +72,9 @@ voytty uninstall [-y|--yes]
 voytty --license
 ```
 
-`setup`, `daemon restart`, and a successful update of a configured installation
-start the daemon. Pair, device, connect, and Session commands start it on demand
+First-time `setup`, `daemon restart`, and a successful update of a configured
+installation start the daemon. Later `setup` invocations only inspect or update
+saved configuration; they never start or restart the daemon. Pair, device, connect, and Session commands start it on demand
 only after validating an
 existing setup. Inspection, logs, stop, help/version, and parse failures never
 start it. With setup complete, bare `voytty` is equivalent to
@@ -80,6 +83,12 @@ guidance. Only omitted `--session` enables atomic creation of `main`; an explici
 `--session main` (like any explicit name/ID) requires an existing Session.
 
 First setup defaults to `official-n0`; `voytty setup --name <name>` is enough.
+UDP listening ports are automatically allocated by default. Hosts behind a
+firewall can select one at initialization with `voytty setup --name <name>
+--udp-port <port>`, or save it later with `voytty setup --udp-port <port>` for
+the next daemon start. `voytty setup --terminal-identity ghostty` changes the
+identity for new sessions; `voytty setup --show` displays saved configuration. See [fixed UDP ports](docs/remote-cli.md#fixed-udp-listen-port)
+for restart, IPv6, firewall, and NAT behavior.
 Commands print human-readable text. Update, daemon stop and daemon restart list
 running Sessions and ask for English `[y/N]` confirmation only when they would
 end live work; use `-y` or `--yes` to confirm directly. `logs -n 100` reads recent
