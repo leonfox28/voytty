@@ -28,9 +28,13 @@ fn runtime(state: &TestState) -> LocalRuntime {
 }
 
 async fn command(runtime: &LocalRuntime, value: Option<&str>) -> String {
-    let mut args = vec!["voytty", "config", "terminal-identity"];
-    args.extend(value);
-    let cli = Cli::try_parse_from(args).expect("parse config command");
+    let mut args = vec!["voytty", "setup"];
+    if let Some(value) = value {
+        args.extend(["--terminal-identity", value]);
+    } else {
+        args.push("--show");
+    }
+    let cli = Cli::try_parse_from(args).expect("parse setup command");
     assert_eq!(cli.records_diagnostics(), value.is_some());
     execute(cli, runtime, InteractionMode::NonInteractive)
         .await
@@ -43,23 +47,23 @@ async fn command(runtime: &LocalRuntime, value: Option<&str>) -> String {
 async fn configuration_is_validated_persisted_and_never_starts_a_daemon() {
     let state = TestState::new();
     let runtime = runtime(&state);
-    for args in [
-        vec!["voytty", "config", "terminal-identity"],
-        vec!["voytty", "config", "terminal-identity", "ghostty"],
-    ] {
-        let error = execute(
-            Cli::try_parse_from(args).expect("parse"),
-            &runtime,
-            InteractionMode::NonInteractive,
-        )
-        .await
-        .expect_err("requires setup");
-        assert!(error.to_string().contains("run `voytty setup`"));
-    }
+    assert!(
+        command(&runtime, None)
+            .await
+            .contains("Run `voytty setup` first")
+    );
+    let error = execute(
+        Cli::try_parse_from(["voytty", "setup", "--terminal-identity", "ghostty"]).expect("parse"),
+        &runtime,
+        InteractionMode::NonInteractive,
+    )
+    .await
+    .expect_err("first setup requires a name");
+    assert!(error.to_string().contains("--name"));
     assert!(!state.paths.state_root().exists());
     assert!(!state.paths.runtime_dir().exists());
     for invalid in ["", "kitty", "Ghostty", "ghostty\n"] {
-        assert!(Cli::try_parse_from(["voytty", "config", "terminal-identity", invalid]).is_err());
+        assert!(Cli::try_parse_from(["voytty", "setup", "--terminal-identity", invalid]).is_err());
     }
     let requested = validate_setup_profile(
         "identity-host",
@@ -71,7 +75,11 @@ async fn configuration_is_validated_persisted_and_never_starts_a_daemon() {
     let key_before = std::fs::read(state.paths.identity()).expect("identity");
     let database_before = std::fs::read(state.paths.database()).expect("database");
     let config_before = std::fs::read(state.paths.config()).expect("config");
-    assert_eq!(command(&runtime, None).await, "Terminal identity: voytty\n");
+    assert!(
+        command(&runtime, None)
+            .await
+            .contains("Terminal identity: voytty\n")
+    );
     assert_eq!(
         std::fs::read(state.paths.config()).expect("config"),
         config_before
@@ -95,27 +103,15 @@ async fn configuration_is_validated_persisted_and_never_starts_a_daemon() {
     let repeated = bootstrap(&state.paths, &requested).expect("repeat setup preserves preference");
     assert_eq!(repeated.device_id, setup.device_id);
     assert_eq!(repeated.config, configured);
-    assert_eq!(
-        command(&runtime, None).await,
-        "Terminal identity: ghostty\n"
+    assert!(
+        command(&runtime, None)
+            .await
+            .contains("Terminal identity: ghostty\n")
     );
     command(&runtime, Some("voytty")).await;
     assert_eq!(
         load_config(&state.paths).expect("restored config"),
         requested
-    );
-    let before = std::fs::read(state.paths.config()).expect("config before invalid request");
-    assert_eq!(
-        runtime
-            .terminal_identity(Some("invalid"))
-            .await
-            .expect_err("runtime validates too")
-            .kind(),
-        DomainErrorKind::ConfigProfile
-    );
-    assert_eq!(
-        std::fs::read(state.paths.config()).expect("config after invalid request"),
-        before
     );
 }
 
@@ -150,10 +146,13 @@ async fn running_host_applies_identity_to_new_shells_and_delivers_their_notifica
     assert_identity_notification(&mut native, "voytty").await;
     command(&runtime, Some("ghostty")).await;
     let repeated = runtime
-        .setup(&requested)
+        .setup(&requested, Default::default())
         .await
         .expect("live setup preserves preference");
-    assert_eq!(repeated.config.terminal_identity, TerminalIdentity::Ghostty);
+    assert_eq!(
+        repeated.config().terminal_identity,
+        TerminalIdentity::Ghostty
+    );
     assert_identity_notification(&mut native, "voytty").await;
 
     let created = client

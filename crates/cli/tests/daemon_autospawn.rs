@@ -78,6 +78,14 @@ fn main() {
     if run_terminal_child_if_requested() {
         return;
     }
+    if let Some(argument) = std::env::args().nth(1)
+        && let Some(encoded) = argument.strip_prefix("--voytty-test-network-setup=")
+    {
+        let paths = daemon_harness::decode_paths(encoded).expect("network fixture paths");
+        voytty_platform::local_unix::detach_current_process().expect("detach fixture");
+        voytty_daemon::lifecycle::run_daemon(&paths).expect("network fixture daemon");
+        return;
+    }
     if daemon_harness::run_child_if_requested() {
         return;
     }
@@ -85,6 +93,28 @@ fn main() {
         .enable_all()
         .build()
         .expect("test runtime");
+    tokio.block_on(command_status_accepts_an_already_presented_frame());
+    let network_state = TestState::new();
+    let network_runtime = LocalRuntime::for_test(
+        network_state.paths.clone(),
+        DaemonLauncher::for_test(
+            std::env::current_exe().expect("fixture executable"),
+            format!(
+                "--voytty-test-network-setup={}",
+                daemon_harness::encode_paths(&network_state.paths)
+            ),
+        ),
+    );
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tokio.block_on(first_setup_uses_udp_port(&network_state, &network_runtime));
+    }));
+    if let Err(payload) = result {
+        tokio.block_on(cleanup_failed_daemon(
+            &network_runtime,
+            &network_state.paths,
+        ));
+        std::panic::resume_unwind(payload);
+    }
     let state = TestState::new();
     let launcher = daemon_harness::launcher(
         &state.paths,
@@ -202,14 +232,112 @@ fn run_terminal_child_if_requested() -> bool {
 }
 
 #[cfg(unix)]
+async fn first_setup_uses_udp_port(state: &TestState, runtime: &LocalRuntime) {
+    use std::net::{Ipv4Addr, UdpSocket};
+    use voytty_core::DomainErrorKind;
+    use voytty_daemon::local_ipc::LocalClient;
+    use voytty_daemon::network::NetworkDiagnostic;
+
+    let occupied = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).expect("reserve UDP port");
+    let port = occupied.local_addr().expect("address").port();
+    let port_text = port.to_string();
+    let output = run(
+        runtime,
+        "first network setup",
+        [
+            "voytty",
+            "setup",
+            "--name",
+            "network-setup",
+            "--udp-port",
+            &port_text,
+            "--terminal-identity",
+            "ghostty",
+        ],
+    )
+    .await;
+    assert!(output.contains("Daemon:            Running"));
+    let saved = voytty_daemon::config::load_config(&state.paths).expect("saved preferences");
+    assert_eq!(saved.udp_port, port);
+    assert_eq!(
+        saved.terminal_identity,
+        voytty_daemon::config::TerminalIdentity::Ghostty
+    );
+    let client = LocalClient::new(state.paths.socket());
+    let wait = |bound: bool| {
+        let client = &client;
+        async move {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    match client.status().await {
+                        Ok(status)
+                            if (bound && status.network.endpoint_bound)
+                                || (!bound
+                                    && !status.network.endpoint_bound
+                                    && status.network.diagnostic
+                                        == Some(NetworkDiagnostic::EndpointBindFailed)) =>
+                        {
+                            return;
+                        }
+                        // A status request can time out while startup is still
+                        // progressing. Wait for the asserted network state within
+                        // the same bounded deadline, not just IPC readiness.
+                        Err(error) => assert_eq!(
+                            error.kind(),
+                            DomainErrorKind::DeadlineExceeded,
+                            "network startup status: {error}"
+                        ),
+                        _ => {}
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("initial network binding deadline");
+        }
+    };
+    // The first daemon must attempt the requested port, even when occupied;
+    // an automatically bound endpoint would never produce this observation.
+    wait(false).await;
+    let ready = client
+        .readiness()
+        .await
+        .expect("local daemon remains ready");
+    drop(occupied);
+    wait(true).await;
+    assert!(UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)).is_err());
+    assert_eq!(client.readiness().await.expect("same daemon"), ready);
+    client.stop(true).await.expect("stop network fixture");
+    wait_for_socket(&state.paths, false).await;
+}
+
+#[cfg(unix)]
 async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     let first = run(
         &runtime,
         "initial setup",
-        ["voytty", "setup", "--name", "cli-host"],
+        [
+            "voytty",
+            "setup",
+            "--name",
+            "cli-host",
+            "--terminal-identity",
+            "ghostty",
+            "--udp-port",
+            "42424",
+        ],
     )
     .await;
-    assert!(first.contains("Device:  cli-host"));
+    assert!(first.contains("Device:            cli-host"));
+    assert!(first.contains("Terminal identity: ghostty"));
+    assert!(first.contains("Saved UDP port:    42424"));
+    assert!(first.contains("Daemon:            Running"));
+    let config = voytty_daemon::config::load_config(&state.paths).expect("initial preferences");
+    assert_eq!(
+        config.terminal_identity,
+        voytty_daemon::config::TerminalIdentity::Ghostty
+    );
+    assert_eq!(config.udp_port, 42424);
     assert!(state.paths.socket().exists(), "setup starts daemon");
     let key = std::fs::read(state.paths.identity()).expect("identity bytes");
     assert_eq!(key.len(), 32);
@@ -231,7 +359,12 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     );
 
     let repeated = run(&runtime, "repeated setup", ["voytty", "setup"]).await;
-    assert_eq!(first, repeated);
+    assert!(first.starts_with(&repeated));
+    assert!(!repeated.contains("Daemon:"));
+    assert_eq!(
+        repeated,
+        run(&runtime, "show setup", ["voytty", "setup", "--show"]).await
+    );
     assert_eq!(
         std::fs::read(state.paths.identity()).expect("stable identity"),
         key
@@ -262,6 +395,31 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
     let doctor = run(&runtime, "stopped doctor", ["voytty", "doctor"]).await;
     assert!(doctor.contains("not attempted"));
     assert!(!state.paths.socket().exists(), "doctor does not restart");
+    let reconfigured = run(
+        &runtime,
+        "stopped setup update",
+        [
+            "voytty",
+            "setup",
+            "--udp-port",
+            "0",
+            "--terminal-identity",
+            "voytty",
+        ],
+    )
+    .await;
+    assert!(reconfigured.contains("Saved UDP port:    0 (automatic)"));
+    assert!(reconfigured.contains("Terminal identity: voytty"));
+    assert!(
+        !state.paths.socket().exists(),
+        "setup updates never restart"
+    );
+    let saved = run(&runtime, "stopped repeated setup", ["voytty", "setup"]).await;
+    assert!(reconfigured.starts_with(&saved));
+    assert!(
+        !state.paths.socket().exists(),
+        "repeated setup never restarts"
+    );
 
     run_non_tty_terminal_child(&state.paths);
     assert!(
@@ -604,7 +762,7 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
         ],
     )
     .await;
-    assert!(configured_again.contains("Device:  cli-host-reset"));
+    assert!(configured_again.contains("Device:            cli-host-reset"));
     let replacement_key = std::fs::read(state.paths.identity()).expect("replacement identity");
     assert_ne!(replacement_key, key, "reset never performs automatic setup");
     let detached = runtime
@@ -990,12 +1148,13 @@ async fn run_local_terminal_child(
         );
         let baseline = presentation_count.load(Ordering::Acquire);
         master_writer.write_all(b"\x1d").expect("legacy prefix");
-        wait_for_command_status(&captured, &presentation_count, baseline, true).await;
+        let pending = wait_for_command_hint_frame(&captured, &presentation_count, baseline).await;
         let baseline = presentation_count.load(Ordering::Acquire);
         master_writer
             .write_all(b"x")
             .expect("cancel legacy command");
         wait_for_command_status(&captured, &presentation_count, baseline, false).await;
+        assert_pending_command_frame(&pending);
     }
     if matches!(
         mode,
@@ -1031,12 +1190,13 @@ async fn run_local_terminal_child(
         master_writer
             .write_all(b"\x1b[93;5u\x1b[93;5:2u\x1b[93;5:3u")
             .expect("enhanced prefix lifecycle");
-        wait_for_command_status(&captured, &presentation_count, baseline, true).await;
+        let pending = wait_for_command_hint_frame(&captured, &presentation_count, baseline).await;
         let baseline = presentation_count.load(Ordering::Acquire);
         master_writer
             .write_all(b"\x1b[120u\x1b[120;1:2u\x1b[120;1:3u")
             .expect("unknown command lifecycle");
         wait_for_command_status(&captured, &presentation_count, baseline, false).await;
+        assert_pending_command_frame(&pending);
         // A deliberate pending command must expire without ever reaching the
         // child. This covers the actual event loop's timeout owner, not only
         // the pure command state machine.
@@ -1044,9 +1204,10 @@ async fn run_local_terminal_child(
         master_writer
             .write_all(b"\x1b[93;5u\x1b[93;5:3u")
             .expect("prefix timeout");
-        wait_for_command_status(&captured, &presentation_count, baseline, true).await;
+        let pending = wait_for_command_hint_frame(&captured, &presentation_count, baseline).await;
         let baseline = presentation_count.load(Ordering::Acquire);
         wait_for_command_status(&captured, &presentation_count, baseline, false).await;
+        assert_pending_command_frame(&pending);
         assert_eq!(
             current_controller_revision(runtime).await,
             quiescent_revision,
@@ -1368,6 +1529,79 @@ async fn wait_for_terminal_progress(
 }
 
 #[cfg(unix)]
+async fn wait_for_command_hint_frame(
+    captured: &Mutex<Vec<u8>>,
+    presentation_count: &AtomicUsize,
+    baseline: usize,
+) -> Vec<u8> {
+    // Only use the committed hint as an input barrier here. Replaying ANSI
+    // through a new PTY can outlast the real one-second command deadline, so
+    // defer that semantic assertion until after the next key or timeout.
+    let deadline = std::time::Instant::now() + TERMINAL_TEST_TIMEOUT;
+    loop {
+        if presentation_count.load(Ordering::Acquire) > baseline {
+            let bytes = captured.lock().expect("command hint frame");
+            if let Some(end) = bytes
+                .windows(TERMINAL_SYNC_END.len())
+                .rposition(|window| window == TERMINAL_SYNC_END)
+                && let Some(begin) = bytes[..end]
+                    .windows(TERMINAL_SYNC_BEGIN.len())
+                    .rposition(|window| window == TERMINAL_SYNC_BEGIN)
+                && contains_bytes(&bytes[begin..end], b"Ctrl+] command:")
+            {
+                return bytes[..end + TERMINAL_SYNC_END.len()].to_vec();
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "command hint did not appear in the latest completed presentation"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+#[cfg(unix)]
+fn project_command_status(bytes: &[u8]) -> String {
+    let rows = outer_terminal::project_outer_rows(bytes);
+    // The replay fixture reserves the final six columns for its fence.
+    rows[23][..74]
+        .iter()
+        .map(|cell| {
+            if cell.contents.is_empty() {
+                " "
+            } else {
+                cell.contents.as_str()
+            }
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn assert_pending_command_frame(bytes: &[u8]) {
+    assert!(
+        project_command_status(bytes).contains("Ctrl+] command:"),
+        "the completed command frame must display its hint on the status row"
+    );
+}
+
+#[cfg(unix)]
+async fn command_status_accepts_an_already_presented_frame() {
+    // The command timeout can repaint idle while the previous pending frame
+    // is being replayed. The next wait must accept that already presented state
+    // without requiring an unrelated additional repaint.
+    let captured = Mutex::new(
+        [
+            TERMINAL_SYNC_BEGIN,
+            b"\x1b[24;1Hcli-host | local",
+            TERMINAL_SYNC_END,
+        ]
+        .concat(),
+    );
+    let presentation_count = AtomicUsize::new(1);
+    wait_for_command_status(&captured, &presentation_count, 1, false).await;
+}
+
+#[cfg(unix)]
 async fn wait_for_command_status(
     captured: &Mutex<Vec<u8>>,
     presentation_count: &AtomicUsize,
@@ -1375,24 +1609,13 @@ async fn wait_for_command_status(
     pending: bool,
 ) {
     let deadline = std::time::Instant::now() + TERMINAL_TEST_TIMEOUT;
-    let mut observed = baseline;
+    let mut observed = None;
     loop {
         let count = presentation_count.load(Ordering::Acquire);
-        if count > observed {
-            observed = count;
+        if count >= baseline && observed != Some(count) {
+            observed = Some(count);
             let bytes = captured.lock().expect("command status output").clone();
-            let rows = outer_terminal::project_outer_rows(&bytes);
-            // The replay fixture reserves the final six columns for its fence.
-            let status: String = rows[23][..74]
-                .iter()
-                .map(|cell| {
-                    if cell.contents.is_empty() {
-                        " "
-                    } else {
-                        cell.contents.as_str()
-                    }
-                })
-                .collect();
+            let status = project_command_status(&bytes);
             if (pending && status.contains("Ctrl+] command:"))
                 || (!pending && status.trim_end() == "cli-host | local")
             {

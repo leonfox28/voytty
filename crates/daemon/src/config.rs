@@ -26,6 +26,9 @@ pub struct ConfigV1 {
     /// Child-program identity for newly created sessions; older configs use voytty.
     #[serde(default)]
     pub terminal_identity: TerminalIdentity,
+    /// Local UDP port for both IP families; zero keeps automatic allocation.
+    #[serde(default)]
+    pub udp_port: u16,
     /// Mutually exclusive infrastructure selection.
     pub infrastructure: InfrastructureConfig,
 }
@@ -134,12 +137,34 @@ pub struct ValidatedConfig {
     pub device_name: String,
     /// Child-program identity for newly created sessions.
     pub terminal_identity: TerminalIdentity,
+    /// Local UDP port applied at daemon startup; zero keeps automatic allocation.
+    pub udp_port: u16,
     /// Validated mutually exclusive infrastructure choice.
     pub infrastructure: ValidatedInfrastructure,
 }
 
+/// Explicit host preference changes; omitted values preserve the saved choice.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SetupPreferences {
+    /// Child-program identity for new sessions.
+    pub terminal_identity: Option<TerminalIdentity>,
+    /// UDP port for the next daemon start; zero selects automatic allocation.
+    pub udp_port: Option<u16>,
+}
+
+impl SetupPreferences {
+    pub(crate) fn apply(self, config: &mut ValidatedConfig) {
+        if let Some(identity) = self.terminal_identity {
+            config.terminal_identity = identity;
+        }
+        if let Some(port) = self.udp_port {
+            config.udp_port = port;
+        }
+    }
+}
+
 impl ValidatedConfig {
-    /// Setup owns device identity and infrastructure, not mutable session preferences.
+    /// Setup owns device identity and infrastructure, not mutable host preferences.
     pub(crate) fn same_setup(&self, other: &Self) -> bool {
         self.device_name == other.device_name && self.infrastructure == other.infrastructure
     }
@@ -159,6 +184,7 @@ impl ConfigV1 {
             schema_version: CONFIG_SCHEMA_VERSION,
             device_name: config.device_name.clone(),
             terminal_identity: config.terminal_identity,
+            udp_port: config.udp_port,
             infrastructure,
         }
     }
@@ -197,6 +223,7 @@ impl ConfigV1 {
         Ok(ValidatedConfig {
             device_name,
             terminal_identity: self.terminal_identity,
+            udp_port: self.udp_port,
             infrastructure,
         })
     }
@@ -211,6 +238,7 @@ pub fn validate_setup_input(
     Ok(ValidatedConfig {
         device_name: device_name.trim().to_owned(),
         terminal_identity: TerminalIdentity::default(),
+        udp_port: 0,
         infrastructure,
     })
 }
@@ -249,6 +277,7 @@ pub fn validate_setup_profile(
         schema_version: CONFIG_SCHEMA_VERSION,
         device_name: device_name.to_owned(),
         terminal_identity: TerminalIdentity::default(),
+        udp_port: 0,
         infrastructure,
     }
     .validate()
@@ -299,6 +328,7 @@ mod tests {
             schema_version: CONFIG_SCHEMA_VERSION,
             device_name: "config-debug-host".to_owned(),
             terminal_identity: TerminalIdentity::default(),
+            udp_port: 0,
             infrastructure: InfrastructureConfig::SelfHosted {
                 relay_url: relay_sentinel.to_owned(),
             },

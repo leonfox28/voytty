@@ -28,12 +28,19 @@ async fn help_version_status_doctor_logs_and_stop_never_spawn() {
         .get_subcommands()
         .map(clap::Command::get_name)
         .collect::<Vec<_>>();
-    assert_eq!(public_commands.len(), 13);
+    assert_eq!(public_commands.len(), 12);
     let operation_count: usize = definition
         .get_subcommands()
         .map(|command| command.get_subcommands().count().max(1))
         .sum();
-    assert_eq!(operation_count, 22);
+    assert_eq!(operation_count, 21);
+    assert!(definition.find_subcommand("config").is_none());
+    for args in [
+        vec!["voytty", "config", "terminal-identity"],
+        vec!["voytty", "config", "udp-port"],
+    ] {
+        assert!(Cli::try_parse_from(args).is_err());
+    }
     let logs_command = definition.find_subcommand("logs").expect("logs command");
     assert!(logs_command.find_subcommand("export").is_some());
     assert!(logs_command.find_subcommand("debug").is_some());
@@ -42,7 +49,6 @@ async fn help_version_status_doctor_logs_and_stop_never_spawn() {
     }
     for available in [
         "setup",
-        "config",
         "status",
         "doctor",
         "pair",

@@ -21,6 +21,9 @@ official N0 profile. The exact setup syntax is:
 voytty setup [--name <name>]
             [--profile <official-n0|self-hosted>]
             [--relay-url <https-url>]
+            [--terminal-identity <voytty|ghostty>]
+            [--udp-port <0-65535>]
+voytty setup --show
 ```
 
 The recommended noninteractive invocation is:
@@ -29,14 +32,35 @@ The recommended noninteractive invocation is:
 voytty setup --name <name>
 ```
 
-First setup defaults to `official-n0` without a profile prompt. An interactive
-terminal asks for a missing device name; noninteractive setup requires `--name`.
-Explicit `--profile self-hosted` still requires a Relay URL, prompted when
-interactive or supplied with `--relay-url`. Running `voytty setup` with no
-overrides after setup preserves the committed identity and configuration and ensures that one daemon
-is running. The existing `self-hosted` profile remains an explicit optional
-configuration, but it is not the production default and this milestone adds no
-public or self-hosted Relay acceptance workflow.
+First setup defaults to `official-n0`, terminal identity `voytty`, and automatic
+UDP port allocation (`0`). An interactive terminal asks for a missing device name;
+noninteractive initialization requires `--name`. Explicit `--profile self-hosted`
+requires a Relay URL, prompted when interactive or supplied with `--relay-url`.
+Initialization saves all choices before starting one daemon, so a fixed UDP port
+is used from its first start. For example:
+
+```text
+voytty setup --name my-host --terminal-identity ghostty --udp-port 42424
+```
+
+On an already configured host, `setup` updates only explicitly supplied terminal
+identity and UDP port values. Omitted settings, device identity, and pairings are
+preserved. Updates are atomic and never start or restart a daemon, even if it is
+stopped; saving preferences does not require a responsive daemon. The committed
+device name and infrastructure retain their existing
+conflict protection: passing a different name, profile, or Relay URL is rejected
+without saving any preference changes.
+
+With no options on a configured host, `setup` shows the saved configuration.
+`setup --show` always inspects only, including before initialization, and cannot
+be combined with update options. It shows the name, infrastructure profile,
+terminal identity, and saved UDP port; use `status` for live daemon state.
+Use `daemon restart` to explicitly start a configured, stopped daemon. If first
+startup fails after configuration was saved, the same command starts it again.
+
+The previous `config` command has been removed. Use `setup --terminal-identity`
+and `setup --udp-port` to change preferences, and `setup --show` to inspect them.
+Run these commands on the host being configured; they have no `--target` option.
 
 These inspection commands do not start a daemon or create state:
 
@@ -44,7 +68,7 @@ These inspection commands do not start a daemon or create state:
 voytty status
 voytty doctor
 voytty logs [-n|--lines <n>]
-voytty config terminal-identity
+voytty setup --show
 ```
 
 `status` summarizes the device name, version, daemon state,
@@ -60,15 +84,13 @@ A typed missing-Session error includes a shell-quoted `session list --target=...
 hint, while cancellation, unknown outcomes and created-but-not-attached failures
 retain their distinct diagnostics.
 
-After setup, `voytty config terminal-identity [voytty|ghostty]` reads or changes
-the local host's child-program identity. With no value it shows the saved choice;
-`voytty` is the default and restores native identification. `ghostty` enables
-compatibility for applications such as Herdr that select OSC 9 notifications by
-terminal name. Changes are persisted and apply to new sessions on this host
-without restarting or starting its daemon. Existing sessions keep their identity.
-For a remote host, run this command on that host; it has no `--target` option.
-See [terminal identity and notifications](persistent-sessions.md) for the precise
-environment contract and notification prerequisites.
+`setup --terminal-identity <voytty|ghostty>` chooses the local host's child-program
+identity. `voytty` is the default and restores native identification; `ghostty`
+enables compatibility for applications such as Herdr that select OSC 9
+notifications by terminal name. On a configured host, changes apply to new
+sessions without starting or restarting the daemon. Existing sessions keep their
+identity. See [terminal identity and notifications](persistent-sessions.md) for
+the environment contract and notification prerequisites.
 
 `logs` reads a bounded tail once: 100 lines by default, at most 1,000 lines and
 1 MiB. `-n` aliases `--lines`; missing logs produce an English explanation. Key
@@ -99,6 +121,52 @@ Empty input, EOF, or another answer cancels. `-y`/`--yes` skips the prompt;
 noninteractive input with live work must supply it. Public `--force` has been
 removed. The same input rules apply to close, revoke, reset, uninstall and
 update. Reset/uninstall still confirm actual deletion even with no Sessions.
+
+## Fixed UDP listen port
+
+The host defaults to automatic UDP port allocation, including when an older
+configuration has no `udp_port` field. Select a port during initialization with
+`setup --name <name> --udp-port <port>`, or update a configured host with:
+
+```text
+voytty setup --show              # show saved settings; does not query live sockets
+voytty setup --udp-port 42424     # save an example fixed port for the next start
+voytty setup --udp-port 0         # restore automatic allocation for the next start
+```
+
+Choose an available integer from 1 through 65535 for a fixed port. Zero means
+automatic; negative values, values above 65535, and non-integers are rejected.
+Ports below 1024 may require OS privileges. On an already configured host, changing
+the saved port does not start or restart a daemon or change current connections
+or Sessions. It atomically saves the top-level `udp_port` integer in `config.toml`
+under the managed state directory (normally `~/.voytty` on Unix). Identity,
+pairings, terminal preferences, and infrastructure selection are preserved.
+Repeating `setup` without `--udp-port` preserves the saved port.
+
+When ready to apply a change, run `voytty daemon restart`; this ends existing
+Sessions and uses the normal confirmation rules described above. For a daemon
+managed by a service manager, restart its service during your maintenance window.
+A stopped daemon reads the saved value on its next start. Saving a port does not
+reserve or preflight it: availability is determined when the daemon binds.
+
+A fixed port is requested on both `0.0.0.0` and `[::]`. IPv4 binding is required.
+If its port is occupied or access is denied, local CLI readiness remains usable,
+while remote networking is degraded and `voytty doctor` reports
+`endpoint_bind_failed`. The network supervisor retries the same saved port with
+bounded backoff; it never silently switches to an automatically allocated port.
+Release the conflicting port to allow recovery, or save another value and restart.
+IPv6 keeps Iroh's existing optional-bind behavior: if unavailable or occupied,
+IPv4 continues and no IPv6 listener is created for that daemon run. It does not
+fall back to another IPv6 port. With automatic allocation, the IPv4 and IPv6
+ports can differ and can change after a restart.
+
+For a cloud host, allow inbound **UDP** on the chosen port in both the cloud
+firewall/security group and the host firewall, for the IP families you use.
+42424 above is only an example, not a product default. A fixed local port does
+not force the NAT's public port mapping, guarantee a Direct path, or replace
+Relay access. Iroh still discovers the public mapping and performs NAT traversal.
+Pairing, device identity, encryption, address discovery, and mobile clients are
+unchanged; no App update or re-pairing is needed.
 
 ## Pairing and directional trust
 

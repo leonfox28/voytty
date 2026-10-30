@@ -115,18 +115,19 @@ The login PTY receives `TERM=xterm-256color`, `COLORTERM=truecolor`, and
 `ghostty` compatibility for programs that gate ordinary notifications by name:
 
 ```sh
-voytty config terminal-identity          # Show this host's saved choice
-voytty config terminal-identity ghostty  # Enable compatibility for new sessions
-voytty config terminal-identity voytty    # Restore the default for new sessions
+voytty setup --show                         # Show this host's saved settings
+voytty setup --terminal-identity ghostty     # Enable compatibility for new sessions
+voytty setup --terminal-identity voytty      # Restore the default for new sessions
 ```
 
-Run the command on the host that owns the sessions, after `voytty setup`. The
+Run the command on the host that owns the sessions. The option can also be
+included in first-time `setup --name <name> --terminal-identity ghostty`. The
 choice is saved as `terminal_identity` in `~/.voytty/config.toml`; existing files
 without that field default to `voytty`. New sessions read the saved choice without
 a daemon restart, including sessions created from Android or another remote
 client. Existing shells and reattachments retain their original environment.
-Repeated setup preserves the choice. These commands do not start or stop the
-daemon.
+Repeated setup without `--terminal-identity` preserves the choice. On an already
+configured host, these commands do not start, restart, or stop the daemon.
 
 Only `TERM_PROGRAM` changes. `TERM`, terminfo, capability-query replies, and
 the host's actual `TERM_PROGRAM_VERSION` remain unchanged; selecting `ghostty`

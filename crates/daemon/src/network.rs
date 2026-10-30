@@ -359,6 +359,7 @@ pub struct NetworkStartup {
     device_id: DeviceId,
     secret_key: SecretKey,
     profile: InfrastructureProfile,
+    udp_port: u16,
     limits: TransportLimits,
     broker: ConnectionBroker,
     pre_auth: PreAuthLimits,
@@ -374,6 +375,7 @@ impl std::fmt::Debug for NetworkStartup {
             .debug_struct("NetworkStartup")
             .field("device_id", &self.device_id)
             .field("profile", &self.profile)
+            .field("udp_port", &self.udp_port)
             .field("limits", &self.limits)
             .field("pair_handler_installed", &self.pair_handler.is_some())
             .finish_non_exhaustive()
@@ -528,6 +530,7 @@ impl NetworkStartup {
                 device_id,
                 secret_key: identity.into_secret_key(),
                 profile,
+                udp_port: 0,
                 limits,
                 broker,
                 pre_auth,
@@ -538,6 +541,13 @@ impl NetworkStartup {
             },
             handle,
         ))
+    }
+
+    /// Selects the local UDP port for every bind attempt; zero keeps automatic allocation.
+    #[must_use]
+    pub fn with_udp_port(mut self, udp_port: u16) -> Self {
+        self.udp_port = udp_port;
+        self
     }
 
     /// Replaces only deterministic failure/timing hooks before spawning.
@@ -604,7 +614,7 @@ impl NetworkStartup {
             } else {
                 let bind = self
                     .profile
-                    .endpoint_builder(self.secret_key.clone())
+                    .endpoint_builder_with_udp_port(self.secret_key.clone(), self.udp_port)
                     .bind();
                 tokio::select! {
                     changed = self.shutdown.changed() => {

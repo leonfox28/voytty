@@ -16,6 +16,7 @@ fn official_and_self_hosted_profiles_are_mutually_exclusive_and_validated() {
     let official = ConfigV1 {
         schema_version: 1,
         terminal_identity: Default::default(),
+        udp_port: 0,
         device_name: "work-mac".to_owned(),
         infrastructure: InfrastructureConfig::OfficialN0,
     }
@@ -26,6 +27,7 @@ fn official_and_self_hosted_profiles_are_mutually_exclusive_and_validated() {
     let self_hosted = ConfigV1 {
         schema_version: 1,
         terminal_identity: Default::default(),
+        udp_port: 0,
         device_name: "relay-host".to_owned(),
         infrastructure: InfrastructureConfig::SelfHosted {
             relay_url: "https://relay.example.com".to_owned(),
@@ -42,6 +44,7 @@ fn official_and_self_hosted_profiles_are_mutually_exclusive_and_validated() {
         ConfigV1 {
             schema_version: 1,
             terminal_identity: Default::default(),
+            udp_port: 0,
             device_name: "bad".to_owned(),
             infrastructure: InfrastructureConfig::SelfHosted {
                 relay_url: "http://relay.example.com".to_owned(),
@@ -93,5 +96,29 @@ fn terminal_identity_defaults_for_existing_configs_and_rejects_unknown_values() 
             toml::from_str::<ConfigV1>(&format!("terminal_identity='{identity}'\n{legacy}"))
                 .is_err()
         );
+    }
+}
+
+#[test]
+fn udp_port_defaults_validates_and_survives_config_round_trips() {
+    let legacy = "schema_version=1\ndevice_name='host'\n[infrastructure]\nprofile='official-n0'\n";
+    let legacy_config = toml::from_str::<ConfigV1>(legacy)
+        .expect("legacy config")
+        .validate()
+        .expect("valid legacy config");
+    assert_eq!(legacy_config.udp_port, 0);
+    let state = TestState::new();
+    state.paths.prepare_state_directories().expect("state dirs");
+    for port in [0, 1, 42424, 65535] {
+        let config = toml::from_str::<ConfigV1>(&format!("udp_port={port}\n{legacy}"))
+            .expect("valid port")
+            .validate()
+            .expect("valid config");
+        assert_eq!(config.udp_port, port);
+        write_config(&state.paths, &config).expect("write config");
+        assert_eq!(load_config(&state.paths).expect("load config"), config);
+    }
+    for invalid in ["-1", "65536", "1.5", "'42424'", "'auto'", "true"] {
+        assert!(toml::from_str::<ConfigV1>(&format!("udp_port={invalid}\n{legacy}")).is_err());
     }
 }

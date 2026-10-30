@@ -316,6 +316,7 @@ fn run_daemon_with_network_mode(
                 authorization.clone(),
                 limits,
             )?;
+            let network_startup = network_startup.with_udp_port(setup.config.udp_port);
             let pairing = PairingService::new(
                 PairingManager::new(setup.device_id, limits).map_err(DaemonError::from)?,
                 store_handle.clone(),
