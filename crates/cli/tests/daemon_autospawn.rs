@@ -1148,12 +1148,13 @@ async fn run_local_terminal_child(
         );
         let baseline = presentation_count.load(Ordering::Acquire);
         master_writer.write_all(b"\x1d").expect("legacy prefix");
-        wait_for_command_status(&captured, &presentation_count, baseline, true).await;
+        let pending = wait_for_command_hint_frame(&captured, &presentation_count, baseline).await;
         let baseline = presentation_count.load(Ordering::Acquire);
         master_writer
             .write_all(b"x")
             .expect("cancel legacy command");
         wait_for_command_status(&captured, &presentation_count, baseline, false).await;
+        assert_pending_command_frame(&pending);
     }
     if matches!(
         mode,
@@ -1189,12 +1190,13 @@ async fn run_local_terminal_child(
         master_writer
             .write_all(b"\x1b[93;5u\x1b[93;5:2u\x1b[93;5:3u")
             .expect("enhanced prefix lifecycle");
-        wait_for_command_status(&captured, &presentation_count, baseline, true).await;
+        let pending = wait_for_command_hint_frame(&captured, &presentation_count, baseline).await;
         let baseline = presentation_count.load(Ordering::Acquire);
         master_writer
             .write_all(b"\x1b[120u\x1b[120;1:2u\x1b[120;1:3u")
             .expect("unknown command lifecycle");
         wait_for_command_status(&captured, &presentation_count, baseline, false).await;
+        assert_pending_command_frame(&pending);
         // A deliberate pending command must expire without ever reaching the
         // child. This covers the actual event loop's timeout owner, not only
         // the pure command state machine.
@@ -1202,9 +1204,10 @@ async fn run_local_terminal_child(
         master_writer
             .write_all(b"\x1b[93;5u\x1b[93;5:3u")
             .expect("prefix timeout");
-        wait_for_command_status(&captured, &presentation_count, baseline, true).await;
+        let pending = wait_for_command_hint_frame(&captured, &presentation_count, baseline).await;
         let baseline = presentation_count.load(Ordering::Acquire);
         wait_for_command_status(&captured, &presentation_count, baseline, false).await;
+        assert_pending_command_frame(&pending);
         assert_eq!(
             current_controller_revision(runtime).await,
             quiescent_revision,
@@ -1526,6 +1529,62 @@ async fn wait_for_terminal_progress(
 }
 
 #[cfg(unix)]
+async fn wait_for_command_hint_frame(
+    captured: &Mutex<Vec<u8>>,
+    presentation_count: &AtomicUsize,
+    baseline: usize,
+) -> Vec<u8> {
+    // Only use the committed hint as an input barrier here. Replaying ANSI
+    // through a new PTY can outlast the real one-second command deadline, so
+    // defer that semantic assertion until after the next key or timeout.
+    let deadline = std::time::Instant::now() + TERMINAL_TEST_TIMEOUT;
+    loop {
+        if presentation_count.load(Ordering::Acquire) > baseline {
+            let bytes = captured.lock().expect("command hint frame");
+            if let Some(end) = bytes
+                .windows(TERMINAL_SYNC_END.len())
+                .rposition(|window| window == TERMINAL_SYNC_END)
+                && let Some(begin) = bytes[..end]
+                    .windows(TERMINAL_SYNC_BEGIN.len())
+                    .rposition(|window| window == TERMINAL_SYNC_BEGIN)
+                && contains_bytes(&bytes[begin..end], b"Ctrl+] command:")
+            {
+                return bytes[..end + TERMINAL_SYNC_END.len()].to_vec();
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "command hint did not appear in the latest completed presentation"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+#[cfg(unix)]
+fn project_command_status(bytes: &[u8]) -> String {
+    let rows = outer_terminal::project_outer_rows(bytes);
+    // The replay fixture reserves the final six columns for its fence.
+    rows[23][..74]
+        .iter()
+        .map(|cell| {
+            if cell.contents.is_empty() {
+                " "
+            } else {
+                cell.contents.as_str()
+            }
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn assert_pending_command_frame(bytes: &[u8]) {
+    assert!(
+        project_command_status(bytes).contains("Ctrl+] command:"),
+        "the completed command frame must display its hint on the status row"
+    );
+}
+
+#[cfg(unix)]
 async fn command_status_accepts_an_already_presented_frame() {
     // The command timeout can repaint idle while the previous pending frame
     // is being replayed. The next wait must accept that already presented state
@@ -1556,18 +1615,7 @@ async fn wait_for_command_status(
         if count >= baseline && observed != Some(count) {
             observed = Some(count);
             let bytes = captured.lock().expect("command status output").clone();
-            let rows = outer_terminal::project_outer_rows(&bytes);
-            // The replay fixture reserves the final six columns for its fence.
-            let status: String = rows[23][..74]
-                .iter()
-                .map(|cell| {
-                    if cell.contents.is_empty() {
-                        " "
-                    } else {
-                        cell.contents.as_str()
-                    }
-                })
-                .collect();
+            let status = project_command_status(&bytes);
             if (pending && status.contains("Ctrl+] command:"))
                 || (!pending && status.trim_end() == "cli-host | local")
             {
