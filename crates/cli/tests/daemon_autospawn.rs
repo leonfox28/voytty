@@ -93,6 +93,7 @@ fn main() {
         .enable_all()
         .build()
         .expect("test runtime");
+    tokio.block_on(command_status_accepts_an_already_presented_frame());
     let network_state = TestState::new();
     let network_runtime = LocalRuntime::for_test(
         network_state.paths.clone(),
@@ -1525,6 +1526,23 @@ async fn wait_for_terminal_progress(
 }
 
 #[cfg(unix)]
+async fn command_status_accepts_an_already_presented_frame() {
+    // The command timeout can repaint idle while the previous pending frame
+    // is being replayed. The next wait must accept that already presented state
+    // without requiring an unrelated additional repaint.
+    let captured = Mutex::new(
+        [
+            TERMINAL_SYNC_BEGIN,
+            b"\x1b[24;1Hcli-host | local",
+            TERMINAL_SYNC_END,
+        ]
+        .concat(),
+    );
+    let presentation_count = AtomicUsize::new(1);
+    wait_for_command_status(&captured, &presentation_count, 1, false).await;
+}
+
+#[cfg(unix)]
 async fn wait_for_command_status(
     captured: &Mutex<Vec<u8>>,
     presentation_count: &AtomicUsize,
@@ -1532,11 +1550,11 @@ async fn wait_for_command_status(
     pending: bool,
 ) {
     let deadline = std::time::Instant::now() + TERMINAL_TEST_TIMEOUT;
-    let mut observed = baseline;
+    let mut observed = None;
     loop {
         let count = presentation_count.load(Ordering::Acquire);
-        if count > observed {
-            observed = count;
+        if count >= baseline && observed != Some(count) {
+            observed = Some(count);
             let bytes = captured.lock().expect("command status output").clone();
             let rows = outer_terminal::project_outer_rows(&bytes);
             // The replay fixture reserves the final six columns for its fence.
