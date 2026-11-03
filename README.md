@@ -11,6 +11,8 @@ or the official iOS and Android apps. It supports macOS, Linux, and Windows.
   when it passes through a relay.
 - **Simple pairing:** connect with a one-time pairing ticket.
 
+[![Codex running in voytty on a wide mobile screen and iPhone](wiki/assets/screenshots/voytty-codex.png)](wiki/assets/screenshots/voytty-codex.png)
+
 ## Install
 
 ### macOS and Linux
