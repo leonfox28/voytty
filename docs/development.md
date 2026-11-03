@@ -116,7 +116,7 @@ engine dependency. The CLI reaches local and remote Sessions only through the
 daemon; do not move transport state into core, give the CLI an Endpoint or
 identity key, or move OS/Session ownership into adapters. Hosted Linux
 remote-runtime evidence remains a separate acceptance gate; see
-[Remote sessions and the public CLI](remote-cli.md).
+[Remote-session implementation contracts](remote-cli.md).
 
 ## Local commands and lightweight PRs
 
@@ -137,7 +137,7 @@ Android/iOS cross targets, Docker and the glibc/macOS packaging floors.
 
 | Changed inputs | PR checks in addition to policy/dependencies |
 | --- | --- |
-| README, AGENTS, Markdown under docs (except executable `docs/relay.md`) | None |
+| README, AGENTS, Markdown under docs or wiki (except executable `docs/relay.md`) | None |
 | CLI, daemon, platform, terminal Rust | Three supported Unix Rust hosts and both Windows architectures |
 | Shared client/core/proto/diagnostics or protocol schemas | Unix/Windows Rust plus Android/iOS shared-client compilation |
 | Relay deployment/probe or `docs/relay.md` | Relay contracts and Docker runtime |

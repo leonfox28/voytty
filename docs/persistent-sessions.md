@@ -3,7 +3,7 @@
 Phase One M4 adds the terminal-session engine inside each user's daemon. It is
 used by the public `voytty connect` and `voytty session` commands through both
 same-UID local IPC and authenticated remote Iroh streams. See
-[Remote sessions and the public CLI](remote-cli.md) for the command and
+[Remote sessions and the CLI](../wiki/remote-cli.md) for the command and
 reconnect UX.
 
 ## What “persistent” means

@@ -159,7 +159,7 @@ against an old mixed inventory. See [repository boundaries](mobile-repository.md
 - Removing Intel changes the manifest target inventory. Versions through
   0.1.17 require all four old targets and cannot update directly from a
   three-target manifest. Follow the one-time binary migration in
-  [Install, update, and uninstall](install.md#one-time-migration-from-the-four-target-updater).
+  [Installer contracts and release history](install.md#one-time-migration-from-the-four-target-updater).
 
 Repository administrators own immutable Releases, the signing Environment/key,
 and [main protection](development.md#branch-protection-and-ongoing-checks). The operator

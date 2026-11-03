@@ -15,7 +15,7 @@ JOBS = {"rust": "rust", "windows": "rust", "mobile-core": "mobile", "relay": "re
 
 def documentation(path: str) -> bool:
     return path in {"README.md", "AGENTS.md"} or (
-        path.startswith("docs/") and PurePosixPath(path).suffix == ".md"
+        path.startswith(("docs/", "wiki/")) and PurePosixPath(path).suffix == ".md"
         and path != "docs/relay.md")
 
 

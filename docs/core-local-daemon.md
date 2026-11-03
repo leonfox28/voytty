@@ -4,7 +4,7 @@ This document describes Phase One M2–M3: shared domain/wire contracts and a
 normal user's per-account local daemon. Later milestones now build the public
 local/remote CLI on this same owner. See
 [Persistent session engine and local attachment](persistent-sessions.md) for
-Session lifetime and [Remote sessions and the public CLI](remote-cli.md) for
+Session lifetime and [Remote sessions and the CLI](../wiki/remote-cli.md) for
 the complete current command surface.
 
 ## Local lifecycle and inspection commands
@@ -54,7 +54,7 @@ before the handoff stops nothing.
 `logs` reads recent records once and never starts the daemon. Key lifecycle,
 Session, network, connection and pairing events are saved by default. Each key
 and optional detail lane rotates at runtime with 4 MiB current + one 4 MiB archive.
-See [Local logs and diagnostics](logging.md) for the 15-minute detail controls,
+See [Local logs and diagnostics](../wiki/logging.md) for the 15-minute detail controls,
 filters, safe JSONL export and compatibility with an already-running old daemon.
 
 ## Per-user state
@@ -106,7 +106,7 @@ structured recorder, uses the account home as cwd, and calls safe `setsid()` bef
 runtime initialization. Optional login startup uses a separate hidden foreground
 entry that skips `setsid()` and reuses the same daemon lock and body. It creates
 no Session, PTY, shell or terminal window. No restart-on-exit policy is installed.
-See [login autostart](autostart.md). By default, a crash/reboot still requires an
+See [login autostart](../wiki/autostart.md). By default, a crash/reboot still requires an
 explicit restart or configured pair/device/connect/Session operation to
 invoke the on-demand launcher.
 
@@ -202,13 +202,13 @@ independently of its infrastructure profile. Missing or `0` means automatic
 allocation; `1` through `65535` selects a fixed port. Change it with
 `voytty setup --udp-port <port>` after setup and restart the daemon when ready,
 or include `--udp-port` in the initial setup invocation.
-See [fixed UDP listen ports](remote-cli.md#fixed-udp-listen-port) for persistence,
+See [fixed UDP listen ports](../wiki/remote-cli.md#fixed-udp-listen-port) for persistence,
 dual-stack binding, port conflicts, and firewall/NAT behavior.
 
 ## Deliberate exclusions
 
 - This M2–M3 document does not own installer, updater, uninstaller, or release
-  artifact contracts. See [Install, update, and uninstall](install.md) and
+  artifact contracts. See [Installer contracts and release history](install.md) and
   [Release operations](releasing.md) for their current owners.
 - No M10 two-physical-network, NAT/path-migration, or new public Relay gate.
 - No GUI, Android runtime, Windows daemon/ConPTY, or iOS client in this
