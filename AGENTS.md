@@ -1,5 +1,12 @@
 # Working on voytty
 
+- Keep `README.md` concise and user-facing: project overview and benefits,
+  installation, updates, basic usage, uninstallation, then brief development
+  and licensing information. Put detailed user guides under `wiki/` and maintain
+  its `README.md` index. Store development and maintenance documentation under
+  `docs/`, including architecture, implementation contracts, workflows, and
+  verification records. When a document mixes both audiences, separate the user
+  instructions from the implementation details and update the relevant links.
 - Read `docs/development.md` for development commands and platform boundaries;
   read `docs/releasing.md` before release work. `docs/ci-release-optimization.md`
   records the measurements and rationale.

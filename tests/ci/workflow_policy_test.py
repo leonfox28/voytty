@@ -24,8 +24,11 @@ class ClassificationTests(unittest.TestCase):
     def test_affected_owners(self):
         cases = [
             (["README.md", "AGENTS.md", "docs/development.md"], set()),
+            (["wiki/README.md", "wiki/install.md", "wiki/guides/network.md"], set()),
+            (["docs/logging.md", "wiki/logging.md"], set()),
             (["crates/cli/src/main.rs"], {"rust"}),
             (["crates/client/src/transport.rs"], {"rust", "mobile"}),
+            (["wiki/remote-cli.md", "crates/client/src/transport.rs"], {"rust", "mobile"}),
             (["proto/voytty/v2/session.proto"], {"rust", "mobile"}),
             (["crates/core/build.rs"], {"rust", "mobile", "native"}),
             (["crates/platform/Cargo.toml"], {"rust", "native"}),
@@ -40,6 +43,7 @@ class ClassificationTests(unittest.TestCase):
 
     def test_unknown_inputs_and_dependency_changes_run_all_checks(self):
         for path in ("Cargo.toml", "Cargo.lock", "vendor/iroh/README.md", "docs/input.json",
+                     "wiki/install.sh", "wiki/input.json", "wiki-notes/guide.md",
                      ".github/workflows/ci.yml", "tools/ci/workflow-policy.py", "new-code.rs"):
             with self.subTest(path=path):
                 self.assertEqual(policy.path_plan(["docs/development.md", path]), policy.full_plan())
@@ -110,7 +114,7 @@ class GateTests(unittest.TestCase):
 
     def scenarios(self):
         return [("pull_request", "refs/pull/1/merge", policy.path_plan(paths))
-                for paths in (["README.md"], ["crates/cli/src/main.rs"], ["docs/relay.md"], ["Cargo.lock"])] + [
+                for paths in (["README.md"], ["wiki/install.md"], ["crates/cli/src/main.rs"], ["docs/relay.md"], ["Cargo.lock"])] + [
                     ("push", "refs/heads/main", dict.fromkeys(policy.SCOPES, False)),
                     ("workflow_dispatch", "refs/heads/main", policy.full_plan(True)),
                     ("workflow_dispatch", "refs/heads/topic", policy.full_plan())]

@@ -1,16 +1,15 @@
-# Daemon login autostart
+# Login autostart implementation
 
-```sh
-voytty daemon autostart enable
-voytty daemon autostart disable
-voytty daemon autostart status
-```
+User commands and behavior are documented in the
+[login startup guide](../wiki/autostart.md). The details below describe service
+ownership and cleanup on Unix; see [Windows support](windows.md) for the
+Windows registry integration.
 
-Autostart is off by default. Installation and `setup` do not enable it. `enable`
-requires completed setup and installs future-login configuration without starting
-a daemon now. `disable` removes that configuration without stopping a running
-daemon or its Sessions. Both are idempotent. `status` is read-only and reports
-missing, altered, unsafe or stale executable configuration as an error.
+`enable` requires completed setup and registers future-login startup without
+starting a daemon now. `disable` removes that registration without stopping a
+running daemon or its Sessions. Both commands are idempotent. `status` is
+read-only and reports missing, altered, unsafe, or stale executable
+configuration as an error.
 
 On macOS the owned file is
 `~/Library/LaunchAgents/io.github.leonfox28.voytty.daemon.plist`. It has `RunAtLoad`
