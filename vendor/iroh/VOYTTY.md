@@ -7,6 +7,25 @@ Upstream: <https://github.com/n0-computer/iroh>, revision
 The registry installation marker is omitted. The standalone workspace uses the
 same patched NOQ as the product. Android's vendor source inputs cover this crate.
 
+## Explicit direct-path upgrade
+
+`Endpoint::request_direct_path` lets an application ask an existing relayed peer
+to run the same `trigger_holepunching` used by the 60-second periodic check.
+The request uses the existing bounded actor inbox without waiting, creating a
+connection, rebinding sockets or reporting a fictitious network change. The
+actor rechecks that the selected path is Relay and retains the five-second
+same-candidate throttle and scheduled retry. The current path continues carrying
+traffic while normal path validation and selection decide whether to upgrade.
+
+The shared controller requests this when opening a terminal attachment over a
+relayed connection; ordinary queries and uploads do not request it. The finite
+detail log's `direct_path_upgrade_requested` event reports inbox acceptance or
+failure, not NAT traversal success. Existing route observations report selection.
+Remove this local API when upstream provides an equivalent bounded trigger,
+retaining the upgrade and connection-reuse regressions.
+
+## Persistent stateless reset
+
 `Builder::persistent_stateless_reset(true)` is an explicit opt-in for endpoints
 whose secret identity has one active owner. The default remains a random reset
 key and NOQ's hashed CID generator. The opt-in derives a separate BLAKE3 key using

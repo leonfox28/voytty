@@ -217,6 +217,54 @@ async fn echo(stream: &mut IrohSessionIo) {
 }
 
 #[tokio::test]
+async fn relayed_attachment_upgrade_keeps_the_connection_and_active_stream() {
+    let fixture = Fixture::new().await;
+    fixture.list().await.expect("warm relay connection");
+    let peer = fixture.controller.peer(fixture.remote, None).expect("peer");
+    let mut live = fixture
+        .controller
+        .service_stream(
+            fixture.remote,
+            &peer,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .await
+        .expect("independent stream");
+    assert!(live.connection.paths().iter().any(|path| {
+        path.is_selected() && matches!(path.remote_addr(), TransportAddr::Relay(_))
+    }));
+    let connection = live.connection.stable_id();
+    echo(&mut live).await;
+    for _ in 0..2 {
+        let attachment = tokio::time::timeout(
+            Duration::from_secs(1),
+            fixture
+                .controller
+                .open(ResolvedSessionTarget::device(fixture.remote)),
+        )
+        .await
+        .expect("attachment must not wait for a direct path")
+        .expect("attachment over the existing relay");
+        echo(&mut live).await;
+        drop(attachment);
+    }
+    assert_eq!(fixture.connections.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        peer.normal
+            .lock()
+            .await
+            .as_ref()
+            .expect("cached connection")
+            .connection
+            .stable_id(),
+        connection
+    );
+    echo(&mut live).await;
+    drop(live);
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn startup_budget_slow_authentication_succeeds_and_cached_query_still_expires_in_five_seconds()
  {
     let fixture = Fixture::with_handshake_delay(Duration::from_secs(6)).await;

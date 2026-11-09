@@ -1671,6 +1671,20 @@ impl Endpoint {
 
     // # Methods for less common state updates.
 
+    /// Requests a direct-path upgrade for an existing relayed peer.
+    ///
+    /// This queues a best-effort request without waiting for network activity or
+    /// interrupting the current connection. The remote actor uses the same NAT
+    /// traversal and rate limiting as its periodic path checks. It ignores the
+    /// request if the selected path is no longer relayed.
+    ///
+    /// Returns whether the request was queued, not whether a direct path was
+    /// established. Returns `false` if this endpoint is closed, the peer has no
+    /// actor, or its bounded inbox is full or closed. No connection is created.
+    pub fn request_direct_path(&self, endpoint_id: EndpointId) -> bool {
+        !self.is_closed() && self.inner.request_direct_path(endpoint_id)
+    }
+
     /// Notifies the system of potential network changes.
     ///
     /// On many systems iroh is able to detect network changes by itself, however
@@ -2087,6 +2101,9 @@ pub fn default_relay_mode() -> RelayMode {
 fn is_cgi() -> bool {
     std::env::var_os("REQUEST_METHOD").is_some()
 }
+
+#[cfg(all(test, with_crypto_provider, not(wasm_browser)))]
+mod direct_path_tests;
 
 #[cfg(all(test, with_crypto_provider))]
 mod tests {
