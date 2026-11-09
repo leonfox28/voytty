@@ -146,8 +146,8 @@ Android/iOS cross targets, Docker and the glibc/macOS packaging floors.
 
 Patched Iroh/noq suites run for broad dependency/vendor changes and explicit full
 validation. They are not repeated for unrelated workspace edits. All assertions
-and existing suites remain enabled whenever their owner is selected. Unix jobs
-also run the debug CLI already built by integration tests without arguments;
+and existing suites remain enabled whenever their owner is selected. Native jobs
+also smoke-test the debug CLI with the state-free `--help` and `--version` flags;
 the release-mode CLI smoke remains part of native packaging checks.
 
 PR CI runs once per PR revision; newer revisions supersede older runs. The stable
