@@ -68,6 +68,7 @@ kinds! {
     PrimaryEstablished => ("connection", "Primary connection established"),
     PrimaryClosed => ("connection", "Primary connection closed"),
     TransportObserved => ("connection", "Transport state observed"),
+    DirectPathUpgradeRequested => ("connection", "Direct path upgrade requested"),
     StreamObserved => ("terminal", "Terminal stream progress observed"),
     TransportTrace => ("connection", "Relay transport timing"),
     ConnectionStarted => ("connection", "Connection started"),

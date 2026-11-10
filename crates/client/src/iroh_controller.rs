@@ -727,6 +727,27 @@ impl AttachmentConnector for IrohController {
                     Instant::now() + crate::protocol::REMOTE_STARTUP_DEADLINE,
                 )
                 .await?;
+            if stream.connection.paths().iter().any(|path| {
+                path.is_selected() && matches!(path.remote_addr(), TransportAddr::Relay(_))
+            }) {
+                let queued = self
+                    .inner
+                    .endpoint
+                    .request_direct_path(stream.connection.remote_id());
+                voytty_diagnostics::record(
+                    voytty_diagnostics::Event::new(
+                        voytty_diagnostics::Kind::DirectPathUpgradeRequested,
+                    )
+                    .level(voytty_diagnostics::Level::Debug)
+                    .operation(&stream.diagnostic)
+                    .connection(stream.diagnostic.id())
+                    .stage(if queued {
+                        voytty_diagnostics::Stage::Accepted
+                    } else {
+                        voytty_diagnostics::Stage::Failed
+                    }),
+                );
+            }
             Ok(AttachmentTransport::new(stream))
         })
     }

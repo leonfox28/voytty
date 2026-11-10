@@ -17,7 +17,8 @@ Get-ChildItem install, tools, tests -Recurse -File | Where-Object { $_.Name -mat
 & tests/release/windows-installer-preflight.ps1
 Invoke-Checked { cargo +1.98.0 clippy --locked --workspace --all-targets --all-features -- -D warnings }
 Invoke-Checked { cargo +1.98.0 test --locked --workspace --all-features --no-fail-fast }
-Invoke-Checked { & target/debug/voytty.exe }
+Invoke-Checked { & target/debug/voytty.exe --help }
+Invoke-Checked { & target/debug/voytty.exe --version }
 if ($Transport -eq 'true') {
     Invoke-Checked { cargo +1.98.0 test --locked --manifest-path vendor/noq-proto/Cargo.toml --target-dir target/noq-tests --lib }
     Invoke-Checked { cargo +1.98.0 test --locked --manifest-path vendor/iroh/Cargo.toml --target-dir target/iroh-tests --no-default-features --features tls-ring,unstable-custom-transports --lib voytty_ }

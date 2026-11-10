@@ -394,6 +394,14 @@ impl RemoteStateActor {
             RemoteStateMessage::NetworkChange { is_major } => {
                 self.handle_msg_network_change(is_major);
             }
+            RemoteStateMessage::RequestDirectPath => {
+                if matches!(
+                    self.state.selected_path,
+                    Some(transports::FourTuple::Relay { .. })
+                ) {
+                    self.trigger_holepunching();
+                }
+            }
         }
     }
 
@@ -1296,6 +1304,8 @@ pub(crate) enum RemoteStateMessage {
     RemoteInfo(oneshot::Sender<RemoteInfo>),
     /// The network status has changed in some way
     NetworkChange { is_major: bool },
+    /// Requests the usual rate-limited holepunching for an existing relay path.
+    RequestDirectPath,
 }
 
 /// Information about a holepunch attempt.

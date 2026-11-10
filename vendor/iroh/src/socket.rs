@@ -1301,6 +1301,12 @@ impl EndpointInner {
         removed
     }
 
+    /// Queues a direct-path request on an existing remote actor without waiting.
+    pub(crate) fn request_direct_path(&self, endpoint_id: EndpointId) -> bool {
+        self.try_send_remote_state_msg(endpoint_id, RemoteStateMessage::RequestDirectPath)
+            .is_ok()
+    }
+
     /// Call to notify the system of potential network changes.
     pub(crate) async fn network_change(&self) {
         self.actor_sender

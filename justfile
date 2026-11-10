@@ -71,7 +71,8 @@ ci-unix docs='false' transport='true':
     case {{ quote(docs) }} in true|false) ;; *) echo 'docs must be true or false' >&2; exit 64;; esac
     cargo +1.98.0 clippy --workspace --all-targets --all-features -- -D warnings
     cargo +1.98.0 test --workspace --all-features
-    "${CARGO_TARGET_DIR:-target}/debug/voytty"
+    "${CARGO_TARGET_DIR:-target}/debug/voytty" --help
+    "${CARGO_TARGET_DIR:-target}/debug/voytty" --version
     case {{ quote(transport) }} in true) just ci-noq; just ci-iroh ;; false) ;; *) exit 64 ;; esac
     if [ {{ quote(docs) }} = true ]; then cargo +1.98.0 doc --workspace --no-deps; fi
 
