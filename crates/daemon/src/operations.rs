@@ -354,7 +354,7 @@ fn require_interruption_approval(
     Ok(())
 }
 
-fn confirmation_required(_: &SessionImpact) -> Result<(), DaemonError> {
+pub(crate) fn confirmation_required(_: &SessionImpact) -> Result<(), DaemonError> {
     Err(DaemonError::new(
         DomainErrorKind::Cancelled,
         "Running sessions require confirmation. Run again with -y to continue without prompting.",
@@ -636,7 +636,7 @@ impl LocalRuntime {
     pub(crate) async fn apply_stop(
         &self,
         approved: bool,
-        interaction: &mut impl crate::handoff::HandoffInteraction,
+        interaction: &mut dyn crate::handoff::HandoffInteraction,
     ) -> Result<Option<SessionImpact>, DaemonError> {
         let running = self.running_impact().await?;
         self.hand_off_and_stop(running, approved, None, interaction)
@@ -669,6 +669,8 @@ impl LocalRuntime {
         interaction: &mut impl crate::handoff::HandoffInteraction,
     ) -> Result<UpdateResult, DaemonError> {
         let executable = self.launcher.executable();
+        let _installation = self.lock_installation(DomainErrorKind::UpdateRejected)?;
+        crate::distribution::verify_updater_executable(executable)?;
         let client = LocalClient::new(self.paths.socket());
         let running = match client.status().await {
             Ok(status) => {
@@ -781,13 +783,13 @@ impl LocalRuntime {
     ) -> Result<UninstallResult, DaemonError> {
         #[cfg(any(unix, windows))]
         {
-            let executable = self.launcher.executable();
-            crate::distribution::validate_managed_executable(executable, self.paths.uid())?;
-            let reset = self.reset_identity(expected_device_id, force).await?;
-            voytty_platform::user_state::remove_owned_executable(executable, self.paths.uid())
-                .map_err(|error| {
-                    DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string())
-                })?;
+            let reset = self
+                .cleanup(
+                    crate::handoff::Cleanup::Uninstall,
+                    expected_device_id,
+                    force,
+                )
+                .await?;
             Ok(UninstallResult {
                 state_removed: reset.removed,
                 executable_removed: true,
@@ -1177,31 +1179,94 @@ impl LocalRuntime {
         expected_device_id: Option<DeviceId>,
         force: bool,
     ) -> Result<IdentityResetResult, DaemonError> {
-        self.reset_identity_with_stop_timeout(
-            expected_device_id,
-            force,
-            IDENTITY_RESET_STOP_TIMEOUT,
-        )
-        .await
+        #[cfg(any(unix, windows))]
+        {
+            self.cleanup(crate::handoff::Cleanup::Reset, expected_device_id, force)
+                .await
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (expected_device_id, force);
+            Err(unsupported_command_platform())
+        }
     }
 
+    #[cfg(any(unix, windows))]
+    async fn cleanup(
+        &self,
+        operation: crate::handoff::Cleanup,
+        expected: Option<DeviceId>,
+        force: bool,
+    ) -> Result<IdentityResetResult, DaemonError> {
+        if operation == crate::handoff::Cleanup::Uninstall {
+            crate::distribution::validate_managed_executable(
+                self.launcher.executable(),
+                self.paths.uid(),
+            )?;
+        }
+        if self.running_impact().await?.is_some() {
+            return crate::handoff::cleanup(
+                self.launcher.executable(),
+                &self.paths,
+                operation,
+                expected,
+                force,
+            );
+        }
+        self.apply_cleanup(operation, expected, force, None).await
+    }
+
+    #[cfg(any(unix, windows))]
+    fn lock_installation(
+        &self,
+        busy: DomainErrorKind,
+    ) -> Result<voytty_platform::user_state::FileLock, DaemonError> {
+        voytty_platform::user_state::FileLock::try_lock_installation(
+            self.launcher.executable(),
+            &self.paths,
+        )
+        .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?
+        .ok_or_else(|| DaemonError::new(busy, "another operation already owns this installation"))
+    }
+
+    #[cfg(any(unix, windows))]
+    pub(crate) async fn apply_cleanup(
+        &self,
+        operation: crate::handoff::Cleanup,
+        expected: Option<DeviceId>,
+        force: bool,
+        worker: Option<&mut dyn crate::handoff::HandoffInteraction>,
+    ) -> Result<IdentityResetResult, DaemonError> {
+        let executable = self.launcher.executable();
+        let _installation = if operation == crate::handoff::Cleanup::Uninstall {
+            crate::distribution::validate_managed_executable(executable, self.paths.uid())?;
+            Some(self.lock_installation(DomainErrorKind::Cancelled)?)
+        } else {
+            None
+        };
+        let result = self
+            .reset_identity_with_stop_timeout(expected, force, IDENTITY_RESET_STOP_TIMEOUT, worker)
+            .await?;
+        if operation == crate::handoff::Cleanup::Uninstall {
+            voytty_platform::user_state::remove_owned_executable(executable, self.paths.uid())
+                .map_err(|error| {
+                    DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string())
+                })?;
+        }
+        Ok(result)
+    }
+
+    #[cfg(any(unix, windows))]
     async fn reset_identity_with_stop_timeout(
         &self,
         expected_device_id: Option<DeviceId>,
         force: bool,
         stop_timeout: Duration,
+        worker: Option<&mut dyn crate::handoff::HandoffInteraction>,
     ) -> Result<IdentityResetResult, DaemonError> {
         let preflight = self.identity_reset_preflight().await?;
-        if !preflight.state_present {
-            #[cfg(any(unix, windows))]
-            self.remove_autostart()?;
-            return Ok(IdentityResetResult {
-                removed: false,
-                previous_device_id: None,
-            });
-        }
         let current_device_id = preflight.device_id;
-        if expected_device_id != current_device_id {
+        if preflight.state_present && expected_device_id != current_device_id {
             return Err(DaemonError::new(
                 DomainErrorKind::IdentityStateMismatch,
                 "the configured identity changed after reset confirmation",
@@ -1210,66 +1275,64 @@ impl LocalRuntime {
         require_identity_reset_session_force(&preflight, force)?;
 
         let stop_deadline = Instant::now() + stop_timeout;
-        tokio::time::timeout_at(
-            tokio::time::Instant::from_std(stop_deadline),
-            self.stop(force),
-        )
-        .await
-        .map_err(|_| identity_reset_stop_timeout())??;
-
-        #[cfg(any(unix, windows))]
+        if let Some(worker) = worker {
+            tokio::time::timeout_at(
+                tokio::time::Instant::from_std(stop_deadline),
+                self.apply_stop(force, worker),
+            )
+            .await
+            .map_err(|_| identity_reset_stop_timeout())??;
+        }
+        if !preflight.state_present {
+            self.remove_autostart()?;
+            return Ok(IdentityResetResult {
+                removed: false,
+                previous_device_id: None,
+            });
+        }
+        wait_until_identity_reset_stop(&self.paths, stop_deadline).await?;
+        if !managed_root_exists(&self.paths)? {
+            return Ok(IdentityResetResult {
+                removed: false,
+                previous_device_id: current_device_id,
+            });
+        }
+        let lifecycle = acquire_lifecycle_lock(&self.paths, Instant::now()).await?;
+        if probe_readiness(&self.paths).await?.is_some() {
+            return Err(DaemonError::new(
+                DomainErrorKind::DaemonStopped,
+                "daemon restarted while identity reset was waiting for lifecycle ownership",
+            ));
+        }
+        ensure_daemon_ownership_released(&self.paths)?;
+        let locked_identity = partial_public_identity(&self.paths)?;
+        if locked_identity
+            .as_ref()
+            .map(crate::identity::DeviceIdentity::device_id)
+            != current_device_id
         {
-            wait_until_identity_reset_stop(&self.paths, stop_deadline).await?;
-            if !managed_root_exists(&self.paths)? {
-                return Ok(IdentityResetResult {
-                    removed: false,
-                    previous_device_id: current_device_id,
-                });
-            }
-            let lifecycle = acquire_lifecycle_lock(&self.paths, Instant::now()).await?;
-            if probe_readiness(&self.paths).await?.is_some() {
-                return Err(DaemonError::new(
-                    DomainErrorKind::DaemonStopped,
-                    "daemon restarted while identity reset was waiting for lifecycle ownership",
-                ));
-            }
-            ensure_daemon_ownership_released(&self.paths)?;
-            let locked_identity = partial_public_identity(&self.paths)?;
-            if locked_identity
-                .as_ref()
-                .map(crate::identity::DeviceIdentity::device_id)
-                != current_device_id
-            {
+            return Err(DaemonError::new(
+                DomainErrorKind::IdentityStateMismatch,
+                "the committed identity changed after reset confirmation",
+            ));
+        }
+        if preflight.configured {
+            let committed = crate::bootstrap::validate_committed_setup(&self.paths)?;
+            if Some(committed.device_id) != current_device_id {
                 return Err(DaemonError::new(
                     DomainErrorKind::IdentityStateMismatch,
                     "the committed identity changed after reset confirmation",
                 ));
             }
-            if preflight.configured {
-                let committed = crate::bootstrap::validate_committed_setup(&self.paths)?;
-                if Some(committed.device_id) != current_device_id {
-                    return Err(DaemonError::new(
-                        DomainErrorKind::IdentityStateMismatch,
-                        "the committed identity changed after reset confirmation",
-                    ));
-                }
-            }
-            self.remove_autostart()?;
-            voytty_platform::user_state::remove_managed_state_root(&self.paths, &lifecycle)
-                .map_err(|error| {
-                    DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string())
-                })?;
-            drop(lifecycle);
-            Ok(IdentityResetResult {
-                removed: true,
-                previous_device_id: current_device_id,
-            })
         }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = current_device_id;
-            Err(unsupported_command_platform())
-        }
+        self.remove_autostart()?;
+        voytty_platform::user_state::remove_managed_state_root(&self.paths, &lifecycle)
+            .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?;
+        drop(lifecycle);
+        Ok(IdentityResetResult {
+            removed: true,
+            previous_device_id: current_device_id,
+        })
     }
 
     async fn configured_session_target(
@@ -1419,7 +1482,7 @@ impl LocalRuntime {
         running: Option<SessionImpact>,
         mut approved: bool,
         release: Option<&crate::distribution::PreparedRelease>,
-        interaction: &mut impl crate::handoff::HandoffInteraction,
+        interaction: &mut dyn crate::handoff::HandoffInteraction,
     ) -> Result<Option<SessionImpact>, DaemonError> {
         if let Some(impact) = &running {
             require_interruption_approval(impact, &mut approved, &mut |impact| {
@@ -2593,7 +2656,7 @@ mod tests {
             .expect("daemon lock probe")
             .expect("daemon lock");
         let locked_error = runtime
-            .reset_identity_with_stop_timeout(None, true, Duration::from_millis(40))
+            .reset_identity_with_stop_timeout(None, true, Duration::from_millis(40), None)
             .await
             .expect_err("held daemon ownership blocks reset");
         assert_eq!(locked_error.kind(), DomainErrorKind::DeadlineExceeded);
@@ -2632,7 +2695,7 @@ mod tests {
         .await
         .expect("closed stale socket listener must stop accepting connections");
         let socket_error = runtime
-            .reset_identity_with_stop_timeout(None, true, Duration::from_millis(40))
+            .reset_identity_with_stop_timeout(None, true, Duration::from_millis(40), None)
             .await
             .expect_err("owned socket path blocks reset");
         assert_eq!(socket_error.kind(), DomainErrorKind::DeadlineExceeded);
@@ -2640,7 +2703,7 @@ mod tests {
         fs::remove_file(paths.socket()).expect("remove stale socket fixture");
 
         let result = runtime
-            .reset_identity_with_stop_timeout(None, true, Duration::from_secs(1))
+            .reset_identity_with_stop_timeout(None, true, Duration::from_secs(1), None)
             .await
             .expect("retry after complete ownership release");
         assert!(result.removed);

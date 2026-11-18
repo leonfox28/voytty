@@ -354,6 +354,34 @@ impl FileLock {
         create: bool,
     ) -> Result<Option<Self>, PathError> {
         let file = open_managed_file(path, uid, create, create)?;
+        Self::try_lock_file(path, file)
+    }
+
+    /// Serializes updates across executable replacements, including before setup.
+    #[cfg(any(unix, windows))]
+    pub fn try_lock_installation(
+        executable: &Path,
+        paths: &UserPaths,
+    ) -> Result<Option<Self>, PathError> {
+        validate_owned_executable(executable, paths.uid())?;
+        #[cfg(unix)]
+        {
+            // The directory inode remains stable across activation and rollback.
+            let parent = executable
+                .parent()
+                .ok_or_else(|| PathError::NotAbsolute(executable.to_owned()))?;
+            let directory = File::open(parent).map_err(|error| io_error(parent, error))?;
+            Self::try_lock_file(parent, directory)
+        }
+        #[cfg(windows)]
+        {
+            // All installs for this Windows account share its private runtime directory.
+            paths.prepare_runtime_directory()?;
+            Self::try_acquire(&paths.runtime_dir().join("update.lock"), paths.uid())
+        }
+    }
+
+    fn try_lock_file(path: &Path, file: File) -> Result<Option<Self>, PathError> {
         match file.try_lock() {
             Ok(()) => Ok(Some(Self {
                 file,

@@ -1,6 +1,6 @@
 //! One-shot lifecycle owner, detached from the terminal it may terminate.
 //!
-//! Stop, restart, and update all stop the running daemon, which ends its
+//! Stop, restart, update, reset and uninstall can stop the running daemon, which ends its
 //! Sessions and possibly the terminal that asked. The frontend keeps
 //! confirmation and progress; after an explicit handoff this child owns the
 //! stop, any release activation, and any replacement start.
@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use voytty_platform::local::IsolatedStream as UnixStream;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use voytty_core::DomainErrorKind;
+use voytty_core::{DeviceId, DomainErrorKind};
 use voytty_diagnostics::{
     Event as DiagnosticEvent, Kind, Level, Operation, Outcome, Recorder, Stage,
 };
@@ -29,7 +29,7 @@ use voytty_platform::user_state::UserPaths;
 
 use crate::distribution::{PreparedRelease, ReleaseSelection};
 use crate::error::DaemonError;
-use crate::operations::{LifecycleStage, LocalRuntime, UpdateResult};
+use crate::operations::{IdentityResetResult, LifecycleStage, LocalRuntime, UpdateResult};
 use crate::service::{DaemonReadiness, SessionImpact};
 
 /// Hidden entry used only by the one-shot lifecycle launcher.
@@ -46,19 +46,39 @@ pub(crate) trait HandoffInteraction {
     fn committed(&mut self);
 }
 
+#[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) enum Cleanup {
+    Reset,
+    Uninstall,
+}
+
 /// Lifecycle command the frontend asks the detached owner to run.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 enum Command {
     Stop,
     Restart,
-    Update { version: Option<String> },
+    Cleanup {
+        operation: Cleanup,
+        expected_identity: Option<[u8; DeviceId::LENGTH]>,
+    },
+    Update {
+        version: Option<String>,
+    },
 }
 
 impl Command {
     const fn noun(&self) -> &'static str {
         match self {
             Self::Stop => "stop",
+            Self::Cleanup {
+                operation: Cleanup::Reset,
+                ..
+            } => "reset",
+            Self::Cleanup {
+                operation: Cleanup::Uninstall,
+                ..
+            } => "uninstall",
             Self::Restart => "restart",
             Self::Update { .. } => "update",
         }
@@ -92,6 +112,10 @@ enum Completed {
     Stopped(Option<SessionImpact>),
     Restarted(DaemonReadiness),
     Updated(UpdateResult),
+    Cleaned {
+        removed: bool,
+        previous_identity: Option<[u8; DeviceId::LENGTH]>,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -276,6 +300,36 @@ pub(crate) fn restart(
     }
 }
 
+pub(crate) fn cleanup(
+    executable: &Path,
+    paths: &UserPaths,
+    operation: Cleanup,
+    expected_identity: Option<DeviceId>,
+    approved: bool,
+) -> Result<IdentityResetResult, DaemonError> {
+    let command = Command::Cleanup {
+        operation,
+        expected_identity: expected_identity.map(DeviceId::to_bytes),
+    };
+    match run_frontend(
+        executable,
+        paths,
+        command,
+        approved,
+        crate::operations::confirmation_required,
+        |_| {},
+    )? {
+        Completed::Cleaned {
+            removed,
+            previous_identity,
+        } => Ok(IdentityResetResult {
+            removed,
+            previous_device_id: previous_identity.map(DeviceId::from_array),
+        }),
+        _ => Err(channel_error()),
+    }
+}
+
 /// Prepares, activates, and starts one release through the detached owner.
 pub(crate) fn update(
     executable: &Path,
@@ -438,6 +492,21 @@ where
             .apply_restart(approved, &mut worker)
             .await
             .map(Completed::Restarted),
+        Command::Cleanup {
+            operation,
+            expected_identity,
+        } => runtime
+            .apply_cleanup(
+                operation,
+                expected_identity.map(DeviceId::from_array),
+                approved,
+                Some(&mut worker),
+            )
+            .await
+            .map(|result| Completed::Cleaned {
+                removed: result.removed,
+                previous_identity: result.previous_device_id.map(DeviceId::to_bytes),
+            }),
         Command::Update { version } => worker
             .update(runtime, version, approved, prepare)
             .await
