@@ -3223,10 +3223,15 @@ mod unix {
         },
     }
 
+    enum HostKeyboard {
+        Terminal(voytty_core::terminal::TerminalKeyboardFlags),
+        WindowsConsole,
+    }
+
     fn route_enhanced_input(
         key: &EnhancedKey,
         child_modes: TerminalModes,
-        outer_flags: voytty_core::terminal::TerminalKeyboardFlags,
+        host: HostKeyboard,
         selection_finalized: bool,
         lease: &mut CopyKeyLease,
     ) -> KeyboardRoute {
@@ -3237,32 +3242,28 @@ mod unix {
             lease.begin(key);
             return KeyboardRoute::Copy;
         }
-        if outer_flags == child_modes.keyboard_flags {
-            KeyboardRoute::Forward {
-                bytes: key.raw.clone(),
-                clear_selection: selection_finalized && key.kind != KeyEventKind::Release,
-                reinterpret_legacy: false,
+        let (bytes, reinterpret_legacy) = match host {
+            HostKeyboard::WindowsConsole => (
+                key.input().encode(child_modes),
+                child_modes.keyboard_flags.is_empty(),
+            ),
+            HostKeyboard::Terminal(flags)
+                if selection_finalized
+                    && child_modes.keyboard_flags.is_empty()
+                    && flags
+                        == keyboard::desired_outer_keyboard_flags(
+                            child_modes.keyboard_flags,
+                            true,
+                        ) =>
+            {
+                (key.input().legacy_bytes(child_modes), true)
             }
-        } else if selection_finalized
-            && child_modes.keyboard_flags.is_empty()
-            && outer_flags
-                == keyboard::desired_outer_keyboard_flags(child_modes.keyboard_flags, true)
-        {
-            KeyboardRoute::Forward {
-                bytes: key.legacy_bytes(child_modes),
-                clear_selection: key.kind != KeyEventKind::Release,
-                reinterpret_legacy: true,
-            }
-        } else {
-            // Only the deliberate local-selection 0 -> flags-7 elevation has
-            // enough information for a lossless legacy downgrade. Preserve
-            // the original event for any other mismatch instead of inventing
-            // child input semantics.
-            KeyboardRoute::Forward {
-                bytes: key.raw.clone(),
-                clear_selection: selection_finalized && key.kind != KeyEventKind::Release,
-                reinterpret_legacy: false,
-            }
+            HostKeyboard::Terminal(_) => (key.raw.clone(), false),
+        };
+        KeyboardRoute::Forward {
+            bytes,
+            clear_selection: selection_finalized && key.kind != KeyEventKind::Release,
+            reinterpret_legacy,
         }
     }
 
@@ -6811,6 +6812,35 @@ mod unix {
         }
 
         #[test]
+        fn typed_console_reports_follow_the_child_keyboard_mode() {
+            let legacy = TerminalModes::default();
+            let enhanced = TerminalModes {
+                keyboard_flags: voytty_core::terminal::TerminalKeyboardFlags::from_bits(11)
+                    .expect("all keys with event types"),
+                ..legacy
+            };
+            for (report, modes, expected) in [
+                (b"\x1b[97;1:1u".as_slice(), legacy, b"a".as_slice()),
+                (b"\x1b[97;1:2u", legacy, b"a"),
+                (b"\x1b[97;1:3u", legacy, b""),
+                (b"\x1b[13;1:1u", legacy, b"\r"),
+                (b"\x1b[97;1:3u", enhanced, b"\x1b[97;1:3u"),
+            ] {
+                let key = EnhancedKey::parse(report.to_vec()).expect("typed key report");
+                let KeyboardRoute::Forward { bytes, .. } = route_enhanced_input(
+                    &key,
+                    modes,
+                    HostKeyboard::WindowsConsole,
+                    false,
+                    &mut CopyKeyLease::default(),
+                ) else {
+                    panic!("typed key should be forwarded");
+                };
+                assert_eq!(bytes, expected);
+            }
+        }
+
+        #[test]
         fn enhanced_keyboard_router_copies_once_and_preserves_forwarding_contracts() {
             let flags_seven = voytty_core::terminal::TerminalKeyboardFlags::from_bits(7)
                 .expect("protocol-complete local copy mode");
@@ -6824,15 +6854,33 @@ mod unix {
                 EnhancedKey::parse(b"\x1b[99:67;6:3u".to_vec()).expect("Ctrl+Shift+C release");
             let mut lease = CopyKeyLease::default();
             assert!(matches!(
-                route_enhanced_input(&press, child_legacy, flags_seven, true, &mut lease),
+                route_enhanced_input(
+                    &press,
+                    child_legacy,
+                    HostKeyboard::Terminal(flags_seven),
+                    true,
+                    &mut lease
+                ),
                 KeyboardRoute::Copy
             ));
             assert!(matches!(
-                route_enhanced_input(&repeat, child_legacy, flags_seven, true, &mut lease),
+                route_enhanced_input(
+                    &repeat,
+                    child_legacy,
+                    HostKeyboard::Terminal(flags_seven),
+                    true,
+                    &mut lease
+                ),
                 KeyboardRoute::Consume
             ));
             assert!(matches!(
-                route_enhanced_input(&release, child_legacy, flags_seven, true, &mut lease),
+                route_enhanced_input(
+                    &release,
+                    child_legacy,
+                    HostKeyboard::Terminal(flags_seven),
+                    true,
+                    &mut lease
+                ),
                 KeyboardRoute::Consume
             ));
 
@@ -6841,7 +6889,7 @@ mod unix {
                 route_enhanced_input(
                     &super_copy,
                     child_legacy,
-                    flags_seven,
+                    HostKeyboard::Terminal(flags_seven),
                     true,
                     &mut CopyKeyLease::default(),
                 ),
@@ -6861,7 +6909,7 @@ mod unix {
             } = route_enhanced_input(
                 &ctrl_x,
                 child_enhanced,
-                flags_seven,
+                HostKeyboard::Terminal(flags_seven),
                 true,
                 &mut CopyKeyLease::default(),
             )
@@ -6879,7 +6927,7 @@ mod unix {
             } = route_enhanced_input(
                 &ctrl_x,
                 child_legacy,
-                flags_seven,
+                HostKeyboard::Terminal(flags_seven),
                 true,
                 &mut CopyKeyLease::default(),
             )
@@ -6899,7 +6947,7 @@ mod unix {
             } = route_enhanced_input(
                 &unknown,
                 child_legacy,
-                flags_seven,
+                HostKeyboard::Terminal(flags_seven),
                 true,
                 &mut CopyKeyLease::default(),
             )
@@ -6925,7 +6973,7 @@ mod unix {
             } = route_enhanced_input(
                 &ctrl_x,
                 child_enhanced,
-                voytty_core::terminal::TerminalKeyboardFlags::default(),
+                HostKeyboard::Terminal(voytty_core::terminal::TerminalKeyboardFlags::default()),
                 false,
                 &mut CopyKeyLease::default(),
             )

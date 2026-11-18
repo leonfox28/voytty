@@ -1289,6 +1289,8 @@ async fn run_local_terminal_child(
             selection_presentation,
             "local selection did not commit its finalized highlight",
         );
+        // Windows polls the size periodically. A same-size notification must preserve the selection.
+        kill(Pid::from_raw(child.id() as i32), Signal::SIGWINCH).expect("notify unchanged size");
         let finalized_revision =
             wait_for_terminal_quiescence(runtime, &presentation_count, mode).await;
         assert_eq!(

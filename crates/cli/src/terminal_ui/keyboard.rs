@@ -1,4 +1,6 @@
-use voytty_core::terminal::{TerminalKeyboardFlags, TerminalModes};
+use voytty_core::terminal::TerminalKeyboardFlags;
+#[cfg(test)]
+use voytty_core::terminal::TerminalModes;
 
 use voytty_client::keyboard::{FunctionalKey, KeyCode, KeyInput, legacy_control,
     MOD_SHIFT, MOD_ALT, MOD_CONTROL, MOD_SUPER, MOD_HYPER, MOD_META, MOD_CAPS_LOCK, MOD_NUM_LOCK};
@@ -223,9 +225,15 @@ impl EnhancedKey {
         }
     }
 
-    pub(super) fn legacy_bytes(&self, modes: TerminalModes) -> Vec<u8> {
-        KeyInput { code: self.code, shifted: self.shifted, modifiers: self.modifiers,
-            kind: self.kind, text: &self.text, raw: &self.raw }.legacy_bytes(modes)
+    pub(super) fn input(&self) -> KeyInput<'_> {
+        KeyInput {
+            code: self.code,
+            shifted: self.shifted,
+            modifiers: self.modifiers,
+            kind: self.kind,
+            text: &self.text,
+            raw: &self.raw,
+        }
     }
 
 }
@@ -461,14 +469,14 @@ mod tests {
     fn legacy_downgrade_covers_text_function_and_keypad_modes() {
         let modes = TerminalModes::default();
         let ctrl = EnhancedKey::parse(b"\x1b[120;5:1u".to_vec()).expect("ctrl x");
-        assert_eq!(ctrl.legacy_bytes(modes), vec![0x18]);
+        assert_eq!(ctrl.input().legacy_bytes(modes), vec![0x18]);
         let ctrl_shift = EnhancedKey::parse(b"\x1b[120:88;6:1u".to_vec()).expect("ctrl shift x");
-        assert_eq!(ctrl_shift.legacy_bytes(modes), b"\x1b[120;6u");
+        assert_eq!(ctrl_shift.input().legacy_bytes(modes), b"\x1b[120;6u");
 
         let up = EnhancedKey::parse(b"\x1b[1;1:1A".to_vec()).expect("up");
-        assert_eq!(up.legacy_bytes(modes), b"\x1b[A");
+        assert_eq!(up.input().legacy_bytes(modes), b"\x1b[A");
         assert_eq!(
-            up.legacy_bytes(TerminalModes {
+            up.input().legacy_bytes(TerminalModes {
                 application_cursor: true,
                 ..TerminalModes::default()
             }),
@@ -476,12 +484,12 @@ mod tests {
         );
 
         let f3 = EnhancedKey::parse(b"\x1b[1;1:1R".to_vec()).expect("F3");
-        assert_eq!(f3.legacy_bytes(modes), b"\x1bOR");
+        assert_eq!(f3.input().legacy_bytes(modes), b"\x1bOR");
 
         let keypad = EnhancedKey::parse(b"\x1b[57400;1:1u".to_vec()).expect("kp1");
-        assert_eq!(keypad.legacy_bytes(modes), b"1");
+        assert_eq!(keypad.input().legacy_bytes(modes), b"1");
         assert_eq!(
-            keypad.legacy_bytes(TerminalModes {
+            keypad.input().legacy_bytes(TerminalModes {
                 application_keypad: true,
                 ..TerminalModes::default()
             }),
@@ -490,7 +498,7 @@ mod tests {
 
         let raw_unknown = b"\x1b[57358;1:2u";
         let unknown = EnhancedKey::parse(raw_unknown.to_vec()).expect("unknown functional key");
-        assert_eq!(unknown.legacy_bytes(modes), raw_unknown);
+        assert_eq!(unknown.input().legacy_bytes(modes), raw_unknown);
     }
 
     #[test]
