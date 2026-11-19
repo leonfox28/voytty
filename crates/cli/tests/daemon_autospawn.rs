@@ -109,10 +109,7 @@ fn main() {
         tokio.block_on(first_setup_uses_udp_port(&network_state, &network_runtime));
     }));
     if let Err(payload) = result {
-        tokio.block_on(cleanup_failed_daemon(
-            &network_runtime,
-            &network_state.paths,
-        ));
+        tokio.block_on(cleanup_failed_daemon(&network_state.paths));
         std::panic::resume_unwind(payload);
     }
     let state = TestState::new();
@@ -122,10 +119,10 @@ fn main() {
     );
     let runtime = LocalRuntime::for_test(state.paths.clone(), launcher);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        tokio.block_on(cli_autospawn(&state, runtime.clone()));
+        tokio.block_on(cli_autospawn(&state, runtime));
     }));
     if let Err(payload) = result {
-        tokio.block_on(cleanup_failed_daemon(&runtime, &state.paths));
+        tokio.block_on(cleanup_failed_daemon(&state.paths));
         std::panic::resume_unwind(payload);
     }
 }
@@ -267,6 +264,7 @@ async fn first_setup_uses_udp_port(state: &TestState, runtime: &LocalRuntime) {
     let wait = |bound: bool| {
         let client = &client;
         async move {
+            let mut last_network = None;
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
                 loop {
                     match client.status().await {
@@ -287,13 +285,15 @@ async fn first_setup_uses_udp_port(state: &TestState, runtime: &LocalRuntime) {
                             DomainErrorKind::DeadlineExceeded,
                             "network startup status: {error}"
                         ),
-                        _ => {}
+                        Ok(status) => last_network = Some(status.network),
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 }
             })
             .await
-            .expect("initial network binding deadline");
+            .unwrap_or_else(|_| {
+                panic!("expected endpoint_bound={bound}, last observed {last_network:?}")
+            });
         }
     };
     // The first daemon must attempt the requested port, even when occupied;
@@ -802,13 +802,11 @@ async fn cli_autospawn(state: &TestState, runtime: LocalRuntime) {
 }
 
 #[cfg(unix)]
-async fn cleanup_failed_daemon(
-    runtime: &LocalRuntime,
-    paths: &voytty_platform::user_state::UserPaths,
-) {
+async fn cleanup_failed_daemon(paths: &voytty_platform::user_state::UserPaths) {
     let deadline = std::time::Instant::now() + TERMINAL_TEST_TIMEOUT;
-    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-    let _ = tokio::time::timeout(remaining, runtime.stop(true)).await;
+    // The network fixture has no handoff-worker entry point. Stop it over its private socket.
+    let client = voytty_daemon::local_ipc::LocalClient::new(paths.socket());
+    let _ = tokio::time::timeout_at(deadline.into(), client.stop(true)).await;
     while paths.socket().exists() && std::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
