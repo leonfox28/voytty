@@ -55,7 +55,6 @@ fn invalid_notifications_are_consumed_without_effect_or_screen_residue() {
         b"\x1b]9;4\x1b\\".to_vec(),
         b"\x1b]9;\x07".to_vec(),
         b"\x1b]9;invalid\xffutf8\x07".to_vec(),
-        b"\x1b]9;embedded\x1b[31m\x07".to_vec(),
         b"\x1b]9;a\x00b\x07".to_vec(),
         "\x1b]9;a\u{9c}b\x07".as_bytes().to_vec(),
         b"\x1b]777;notify;missing-body-delimiter\x07".to_vec(),
@@ -81,6 +80,21 @@ fn invalid_notifications_are_consumed_without_effect_or_screen_residue() {
             baseline.snapshot().surface.rows
         );
     }
+}
+
+#[test]
+fn interrupted_notification_discards_its_text_and_resumes_at_the_new_control() {
+    let mut terminal = model();
+    for byte in b"\x1b]9;embedded\x1b[31m\x07OK" {
+        let update = terminal.ingest(&[*byte]).expect("fragmented notification");
+        assert!(update.host_effects.is_empty());
+        assert!(update.replies.is_empty());
+    }
+    let mut baseline = model();
+    baseline
+        .ingest(b"\x1b[31m\x07OK")
+        .expect("new control and text");
+    assert_eq!(terminal.snapshot().surface, baseline.snapshot().surface);
 }
 
 #[test]
