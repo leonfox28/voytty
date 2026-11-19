@@ -51,6 +51,30 @@ H3 的通知回归测试另见 `79505b1`。测试逐字节送入被打断的通�
 
 移动端集成分支 `fix/project-review-p1` 的提交 `184dcc9` 固定公开仓库 `8593cf4`。在干净检出上通过 `just check-changes origin/main`。Android 的 Lint、单元测试、Debug 与 Release APK 构建及原生库对齐检查通过。iOS 设备目标构建通过，模拟器 XCTest 共 115 项，114 项通过，1 项需要一次性主机配对票据的远端验收用例按测试配置跳过。Windows x64 上的 CLI 及依赖已在 macOS 用 `cargo xwin check --locked -p voytty-cli --all-targets --target x86_64-pc-windows-msvc` 完成交叉编译检查，Windows 原生运行验证仍由托管 CI 执行。
 
+## P2 修复记录
+
+在 `fix/project-review-p2` 上接续 P1。本阶段涵盖路线图的 11 个编号。桌面修复截至 `616ef39`，移动端验证的共享代码截至 `e7737c9`，发布与 CI 加固截至 `9d25f05`。
+
+| 编号 | 修复及验证 |
+| --- | --- |
+| H15、H17 | Linux 候选构建固定 rustup-init 1.29.0 及两个架构的 SHA-256。两份安装器在固定的 Debian 10 镜像中实际启动成功。为兼容 glibc 2.28，APT 仍使用历史 Debian 快照的有效期例外。原生候选、候选汇总及正式签发均重新下载依赖。普通 CI 的 Cargo 下载缓存仅含索引与压缩包，PR 只读。[构建脚本](../tools/release/setup-glibc-builder.sh) |
+| M22 | 发布操作员确认有草稿读取权后分页查重。标签校验检查当前可见的 Release，发布作业在创建草稿前用写权限再次查遍所有页。签发只选择目标 SHA 上成功的完整 main 手动运行。夹具覆盖第二页已有草稿、GitHub API 出错，以及较新的快速推送遮住完整运行。[发布夹具](../tests/release/operator-fixture.sh) · [候选选择夹具](../tests/release/candidate-fixture.sh) |
+| M1 | 发送配对证明以前的失败，以及主机确认凭据校验失败，都会立即结束，保留本地设备信息。证明已开始发出而最终回执丢失时，仍可通过普通认证连接确认授权。[配对回归测试](../crates/daemon/src/pairing_service.rs) |
+| M2 | Unix 更新与安装检查可执行文件的祖先目录、属主和权限。允许 root 或本人拥有的 `0775`，识别 macOS 系统别名。更新暂存和备份使用系统随机数，待发布文件在替换原程序前通过身份自检。夹具验证了自检失败时旧程序仍可用。[更新器](../crates/platform/src/user_state.rs) |
+| M3 | Windows 每次监听使用私有文件中的随机名称。内核依据用户 SID 和完整性标签限制连接，客户端检查已连接管道句柄的属主，避免二次按 PID 查进程。固定版本的 interprocess 已为首个实例和远程连接设置保护。显式监听器有独占、关闭与重新绑定测试。[Windows IPC](../crates/platform/src/local_windows.rs) |
+| M4、L1 | 文件接收前按申报大小预留配额。每会话最多 200 MB、64 个文件、4 个同时上传，全账户为 1 GB、256 个文件、16 个同时上传。文件自最后修改起保留 24 小时。守护进程启动、每小时和接收新上传时清理过期文件。已发布文件被用户移动后会释放相应配额。Unix 旧目录在维护时按已知文件名清理。暂存句柄在重命名和删除前关闭。[上传说明](../wiki/remote-cli.md) |
+| M24 | Windows 安装引导拒绝空响应与非法版本。安装器在目标目录下用独占创建和私有 ACL 暂存，检查目录权限及重解析点，并保留系统 TLS 策略。Windows CI 增加真实引导脚本的本地 HTTPS 成功与拒绝用例。macOS PowerShell 实测通过脚本解析、Win32 互操作代码编译与非法版本检查。[安装夹具](../tests/release/installer-windows.ps1) |
+| M25 | Relay 和探针均固定到 Iroh 1.3.0。两个架构的镜像均已构建并执行。容器只读、移除 Linux capabilities，限制内存、进程数和单客户端接收速率。本机容器已通过 HTTP 健康检查和真实 Iroh 认证握手。部署改为用已校验制品在本地构建版本化镜像。[部署说明](relay.md) |
+| M26 | CI 运行 Iroh 完整库测试，含 3 项真实 TLS Relay 回归。本机 165 项通过，1 项沿用上游忽略标记。工作区、Relay 探针、vendor/iroh 和 vendor/noq-proto 的四份锁文件均通过依赖审计。上游测试依赖去掉不需要的 heapless 默认特性，移除已停止维护的 atomic-polyfill。保留的维护状态与许可证例外已记录原因。[传输补丁说明](../vendor/iroh/VOYTTY.md) · [依赖策略](../deny.toml) |
+
+公开仓库在 macOS 上以 `616ef39` 通过 `just check-changes origin/main`。Cargo 报告工作区 866 项、noq-proto 441 项、Iroh 165 项通过，合计 1,472 项，另有 17 项按已有标记忽略。发布与安装夹具、Clippy、四份锁文件审计以及两个架构的 Relay 制品校验通过。
+
+本机从大型 Cargo 编译目录运行时，守护进程的 UDP 重新绑定测试曾超时，随后从默认目录和独立临时目录单独运行均通过。平台库并行测试时，诊断日志有一次在 1 秒内未取得写锁。最终检查在独立临时目录运行相同的测试程序，平台库的不同用例依次执行，日志用例内部的四个并发写入者、断言与时限均保留。
+
+移动端 `fix/project-review-p2` 的 `3b5aaac` 固定公开仓库核心 `e7737c9`，在独立检出通过 `just check-changes origin/main`。Android 完成 Lint、单元测试、Debug 和 Release 构建及原生库对齐检查。iOS 设备目标构建成功，模拟器 XCTest 共 115 项，114 项通过，1 项需要一次性配对票据的远端验收按配置跳过。
+
+Windows x64 在 `616ef39` 完成全工作区及测试目标的 `cargo xwin check --locked --workspace --all-targets --target x86_64-pc-windows-msvc`。Windows 管道 ACL、PowerShell 5.1 的真实 HTTPS 安装及 Windows ARM64 运行仍由原生托管 CI 验证。
+
 ---
 
 ## 一、总体评估与本地基线验证
@@ -426,7 +450,7 @@ flowchart LR
    - 修复终端 `DCS +q` 杀会话（**H2**）、组合字符/超链接脏标记 DoS（**H1**）与未闭合控制串卡死（**H3**）。
    - 修复 `ConnectionBroker` 2 处 `Notify::notified()` 唤醒丢失（**H4**）、`model_thread` PTY 写死锁（**H5**）、`network.rs` `biased` 忙旋与停机泄漏（**H7/H8**）、守护进程单线程冻结/同步阻塞（**H6**）。
    - 修复客户端重连被打断/丢结果/无退避及 5 s 活锁（**H9/H10/H11**）、Kitty 键盘编码（**H12**）、Windows 控制台与 `pair accept` `Ctrl+C` 终端残留（**H13/H14**）。
-3. **P2（供应链、发布与安全纵深加固）**：
+3. **P2（供应链、发布与安全纵深加固，已提交修复）**。详见 [P2 修复记录](#p2-修复记录)。
    - 移除发布/候选构建中的 `curl | sh` 与 `~/.cargo/registry/src` 缓存（**H15/H17**）、补齐 Draft 空位检查（**M22**；原 **M23** 已撤回）。
    - 收窄已有授权时的 `resolve_normal_confirmation` 行为，保留最终确认丢失的正常恢复用例（**M1**，现行等级 Low）。
    - 加固 Unix `validate_executable_parent`（**M2**）、Windows Named Pipe（**M3**）、上传累计配额与自动清理（**M4/L1**）及 Windows 安装脚本测试（**M24**）。
