@@ -712,16 +712,20 @@ impl LocalRuntime {
                 "verified update candidate became unavailable before activation",
             )
         })?;
-        let activation = voytty_platform::user_state::activate_executable(
+        let activation = voytty_platform::user_state::activate_verified_executable(
             executable,
             self.paths.uid(),
             |output| std::io::copy(&mut source, output).map(|_| ()),
+            |staged| {
+                crate::distribution::verify_update_candidate(staged, prepared.manifest())
+                    .map_err(std::io::Error::other)
+            },
         )
         .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?;
 
         let post_activation =
-            crate::distribution::verify_activated_candidate(executable, prepared.manifest())
-                .and_then(|()| {
+            crate::distribution::verify_update_candidate(executable, prepared.manifest()).and_then(
+                |()| {
                     if state_present {
                         crate::distribution::write_install_metadata(
                             &self.paths,
@@ -730,7 +734,8 @@ impl LocalRuntime {
                         )?;
                     }
                     Ok(())
-                });
+                },
+            );
         if let Err(error) = post_activation {
             activation.rollback().map_err(|rollback| {
                 DaemonError::new(

@@ -479,9 +479,9 @@ pub(crate) fn validate_managed_executable(path: &Path, uid: u32) -> Result<(), D
     })
 }
 
-/// Re-runs the side-effect-free identity check against the activated path.
+/// Checks an executable against the selected release before or after activation.
 #[cfg(any(unix, windows))]
-pub(crate) fn verify_activated_candidate(
+pub(crate) fn verify_update_candidate(
     candidate: &Path,
     manifest: &ReleaseManifest,
 ) -> Result<(), DaemonError> {

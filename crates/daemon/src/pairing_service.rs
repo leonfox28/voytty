@@ -638,6 +638,7 @@ impl PairingServiceInner {
         let pair_attempt = self
             .run_controller_pair(&pending.fields, &pending.secret, routes.clone(), deadline)
             .await;
+        pair_attempt.require_confirmation()?;
         let confirmation = self
             .transport
             .confirm_normal(host_device_id, routes, deadline)
@@ -1763,7 +1764,7 @@ mod tests {
             )),
             Err(address_unavailable()),
         ));
-        let harness = harness(transport);
+        let harness = harness(transport.clone());
 
         let error = harness
             .service
@@ -1774,6 +1775,47 @@ mod tests {
             .await
             .expect_err("pre-proof challenge failure is typed");
         assert_eq!(error.kind(), DomainErrorKind::PairTicketInvalid);
+        assert_eq!(transport.confirmation_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn invalid_host_proof_cannot_use_an_existing_authorization() {
+        let local = device_id(0x11);
+        let host = device_id(0x22);
+        let ticket = ticket(host);
+        let mut frames = valid_challenge(&ticket);
+        frames.extend(encoded(
+            WireKind::PairAccepted,
+            &v2::PairAccepted {
+                authorization_generation: 7,
+                host_confirmation_proof: vec![0; 32],
+                host_diagnostic_version: "fixture".into(),
+            },
+        ));
+        let transport = Arc::new(FakeTransport::new(
+            Ok(MemoryPairIo::new(frames, local, host)),
+            Ok(ConfirmedAuthorization {
+                remote: host,
+                generation: AuthGeneration::new(7).unwrap(),
+                verified_relay: None,
+            }),
+        ));
+        let harness = harness(transport.clone());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let error = harness
+            .service
+            .accept_until(accept_input(&ticket, 0x52), deadline)
+            .await
+            .expect_err("invalid proof");
+        assert_eq!(error.kind(), DomainErrorKind::PairTicketInvalid);
+        assert_eq!(transport.confirmation_calls.load(Ordering::SeqCst), 0);
+        assert!(
+            harness
+                .store
+                .known_device(host, deadline)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -2179,7 +2221,7 @@ mod tests {
         assert_eq!(second_error.kind(), first_error.kind());
         assert_eq!(second_error.detail(), first_error.detail());
         assert_eq!(transport.connect_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(transport.confirmation_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(transport.confirmation_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

@@ -115,13 +115,37 @@ impl PairFraming {
         Writer: AsyncWrite + Unpin,
         Message: prost::Message,
     {
+        self.write_message_on_start(writer, kind, message, deadline, || {})
+            .await
+    }
+
+    pub(crate) async fn write_message_on_start<Writer, Message>(
+        &mut self,
+        writer: &mut Writer,
+        kind: WireKind,
+        message: &Message,
+        deadline: Instant,
+        on_start: impl FnOnce(),
+    ) -> Result<(), ClientError>
+    where
+        Writer: AsyncWrite + Unpin,
+        Message: prost::Message,
+    {
         validate_pair_kind(kind)?;
         let deadline = self.effective_deadline(deadline)?;
         let bytes = Zeroizing::new(encode_message(kind, 0, 0, message).map_err(protocol_error)?);
         self.budget
             .record(bytes.len())
             .map_err(handshake_budget_error)?;
-        timeout_io(deadline, writer.write_all(bytes.as_slice()), "write").await
+        timeout_io(
+            deadline,
+            async {
+                on_start();
+                writer.write_all(bytes.as_slice()).await
+            },
+            "write",
+        )
+        .await
     }
 
     /// Gracefully shuts down a pairing writer within the absolute deadline.
@@ -181,6 +205,10 @@ impl PairFraming {
                 return Ok(frame);
             }
         }
+    }
+
+    pub(crate) fn ended_at_eof(&self) -> bool {
+        self.reached_eof
     }
 
     fn effective_deadline(&self, operation_deadline: Instant) -> Result<Instant, ClientError> {

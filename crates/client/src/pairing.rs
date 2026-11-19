@@ -180,6 +180,16 @@ pub struct ControllerPairAttempt {
 }
 
 impl ControllerPairAttempt {
+    /// Stops a definite failure before dialing the normal protocol.
+    pub fn require_confirmation(&self) -> Result<(), ClientError> {
+        if !self.repair_required
+            && let Some(error) = &self.error
+        {
+            return Err(error.clone());
+        }
+        Ok(())
+    }
+
     /// Records failure, including whether a proof may have committed remotely.
     pub fn failed(error: ClientError, repair_required: bool) -> Self {
         Self {
@@ -196,6 +206,7 @@ pub fn resolve_normal_confirmation(
     pair_attempt: ControllerPairAttempt,
     confirmation: Result<ConfirmedAuthorization, ClientError>,
 ) -> Result<ConfirmedAuthorization, ClientError> {
+    pair_attempt.require_confirmation()?;
     let confirmation = match confirmation {
         Ok(confirmation)
             if confirmation.remote == expected_remote
@@ -316,12 +327,15 @@ pub async fn run_controller_pair(
     };
     // A cancelled write_all may already have delivered a complete frame;
     // normal confirmation is therefore mandatory from this point onward.
+    let mut proof_started = false;
     let proof_write = framing
-        .write_message(&mut io, WireKind::PairProof, &proof_wire, deadline)
+        .write_message_on_start(&mut io, WireKind::PairProof, &proof_wire, deadline, || {
+            proof_started = true
+        })
         .await;
     proof_wire.controller_proof.zeroize();
     if let Err(error) = proof_write {
-        return ControllerPairAttempt::failed(error, true);
+        return ControllerPairAttempt::failed(error, proof_started);
     }
 
     let mut accepted_wire: v2::PairAccepted = match framing
@@ -329,12 +343,19 @@ pub async fn run_controller_pair(
         .await
     {
         Ok(accepted) => accepted,
-        Err(error) => return ControllerPairAttempt::failed(error, true),
+        Err(error) => {
+            let ambiguous = framing.ended_at_eof()
+                || matches!(
+                    error.kind(),
+                    DomainErrorKind::TransportUnavailable | DomainErrorKind::DeadlineExceeded
+                );
+            return ControllerPairAttempt::failed(error, ambiguous);
+        }
     };
     let accepted = validate_pair_accepted(&mut accepted_wire, &transcript, &offer_key);
     let generation = match accepted {
         Ok(generation) => generation,
-        Err(error) => return ControllerPairAttempt::failed(error, true),
+        Err(error) => return ControllerPairAttempt::failed(error, false),
     };
     if let Err(error) = framing.shutdown(&mut io, deadline).await {
         return ControllerPairAttempt {

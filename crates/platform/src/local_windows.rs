@@ -1,11 +1,7 @@
 //! Same-account Windows named pipes and detached process startup.
 use crate::user_state::{FileLock, PathError, UserPaths};
-use interprocess::local_socket::tokio::{
-    Listener as PipeListener, Stream as PipeStream, prelude::*,
-};
-use interprocess::local_socket::{
-    GenericNamespaced, ListenerOptions, ToNsName, traits::StreamCommon,
-};
+use interprocess::local_socket::tokio::{Listener as PipeListener, prelude::*};
+use interprocess::local_socket::{GenericNamespaced, ListenerOptions, ToNsName};
 use interprocess::os::windows::{
     local_socket::ListenerOptionsExt, security_descriptor::SecurityDescriptor,
 };
@@ -71,18 +67,38 @@ fn failure(e: impl fmt::Display) -> LocalPlatformError {
 }
 
 fn pipe_name(path: &Path) -> io::Result<String> {
-    use std::os::windows::ffi::OsStrExt;
-    let mut bytes = crate::windows_security::sid()?.into_bytes();
-    bytes.extend(path.as_os_str().encode_wide().flat_map(u16::to_le_bytes));
-    let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
+    use std::io::Read;
+    // Preserve NotFound for callers probing a stopped daemon.
+    std::fs::symlink_metadata(path)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("pipe marker has no parent"))?;
+    crate::windows_security::validate_parent(parent)?;
+    let mut marker = crate::user_state::open_read(path, 0).map_err(io::Error::other)?;
+    let mut nonce = [0; 32];
+    if marker.metadata()?.len() != nonce.len() as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid pipe marker",
+        ));
+    }
+    marker.read_exact(&mut nonce)?;
     Ok(format!(
         "voytty-{}",
-        digest
-            .as_ref()
+        nonce
             .iter()
-            .map(|b| format!("{b:02x}"))
+            .map(|byte| format!("{byte:02x}"))
             .collect::<String>()
     ))
+}
+
+fn random_marker() -> io::Result<[u8; 32]> {
+    use ring::rand::SecureRandom;
+    let mut nonce = [0; 32];
+    ring::rand::SystemRandom::new()
+        .fill(&mut nonce)
+        .map_err(io::Error::other)?;
+    Ok(nonce)
 }
 /// A reserved listener path, adopted once the daemon enters its Tokio runtime.
 pub struct Listener(PathBuf);
@@ -97,14 +113,24 @@ pub struct AsyncListener(PipeListener);
 impl AsyncListener {
     /// Creates the pipe with a protected current-user-only DACL.
     pub fn from_std(listener: Listener) -> io::Result<Self> {
-        Self::bind(listener.0)
+        Self::listen(&listener.0)
     }
     /// Opens a private named pipe for an explicit endpoint path.
     pub fn bind(path: impl AsRef<Path>) -> io::Result<Self> {
+        use std::io::Write;
+        let path = path.as_ref();
+        let nonce = random_marker()?;
+        let mut marker = crate::user_state::create_new_file(path).map_err(io::Error::other)?;
+        marker.write_all(&nonce)?;
+        drop(marker);
+        Self::listen(path)
+    }
+    fn listen(path: &Path) -> io::Result<Self> {
         let sid = crate::windows_security::sid()?;
-        let sddl = widestring::U16CString::from_str(format!("D:P(A;;GA;;;{sid})"))
-            .map_err(io::Error::other)?;
-        let name = pipe_name(path.as_ref())?;
+        let sddl =
+            widestring::U16CString::from_str(format!("O:{sid}D:P(A;;GA;;;{sid})S:(ML;;NW;;;ME)"))
+                .map_err(io::Error::other)?;
+        let name = pipe_name(path)?;
         let listener = ListenerOptions::new()
             .name(name.to_ns_name::<GenericNamespaced>()?)
             .security_descriptor(SecurityDescriptor::deserialize(&sddl)?)
@@ -113,7 +139,7 @@ impl AsyncListener {
     }
     /// Accepts a local client; the stream is authenticated before dispatch.
     pub async fn accept(&self) -> io::Result<(Stream, ())> {
-        Ok((Stream::from_pipe(self.0.accept().await?)?, ()))
+        Ok((Stream::from_pipe(self.0.accept().await?), ()))
     }
 }
 /// Bidirectional named-pipe stream used by every local protocol.
@@ -150,7 +176,6 @@ impl WriteProgress {
 /// Authenticated local byte stream with independent read/write completion.
 pub struct Stream {
     io: tokio::io::DuplexStream,
-    peer_pid: u32,
     queued: u64,
     progress: Option<std::sync::Arc<WriteProgress>>,
     pumps: Vec<tokio::task::JoinHandle<io::Result<()>>>,
@@ -159,14 +184,30 @@ impl Stream {
     /// Connects and authenticates the server account before sending any request.
     pub async fn connect(path: impl AsRef<Path>) -> io::Result<Self> {
         let name = pipe_name(path.as_ref())?;
-        Self::from_pipe(PipeStream::connect(name.to_ns_name::<GenericNamespaced>()?).await?)
+        // Tokio opens clients with SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION.
+        let address = format!(r"\\.\pipe\{name}");
+        let options = tokio::net::windows::named_pipe::ClientOptions::new();
+        let client = loop {
+            match options.open(&address) {
+                Ok(client) => break client,
+                Err(error) if error.raw_os_error() == Some(231) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        // Check the connected kernel object, which remains stable for this handle.
+        let descriptor = win_custody::ObjectSecurityDescriptor::query_kernel_object(&client)?;
+        let sid = win_custody::OwnedSid::from_string(&crate::windows_security::sid()?)?;
+        if !descriptor.owner().map_err(io::Error::other)?.matches(&sid) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unexpected pipe owner",
+            ));
+        }
+        Ok(Self::from_pipe(client))
     }
-    fn from_pipe(pipe: PipeStream) -> io::Result<Self> {
-        let peer_pid = pipe
-            .peer_creds()?
-            .pid()
-            .ok_or_else(|| io::Error::other("pipe has no peer PID"))?;
-        crate::windows_security::authorize_process(peer_pid)?;
+    fn from_pipe(pipe: impl AsyncRead + AsyncWrite + Unpin + Send + 'static) -> Self {
         // Named pipes have no directional shutdown. A bounded record layer
         // carries FIN independently in each direction so detach/upload can
         // finish writing while still awaiting the host's final response.
@@ -226,13 +267,12 @@ impl Stream {
             }
             result
         });
-        Ok(Self {
+        Self {
             io,
-            peer_pid,
             queued: 0,
             progress: Some(progress),
             pumps: vec![input, output],
-        })
+        }
     }
     /// In-memory pair for shared byte-protocol tests; native pipe tests use bind/connect.
     #[cfg(feature = "test-support")]
@@ -240,7 +280,6 @@ impl Stream {
         let (a, b) = tokio::io::duplex(65_536);
         let wrap = |io| Self {
             io,
-            peer_pid: std::process::id(),
             queued: 0,
             progress: None,
             pumps: Vec::new(),
@@ -296,10 +335,9 @@ impl AsyncWrite for Stream {
         }
     }
 }
-/// Verifies the peer's full Windows SID; the compatibility UID is never trusted.
-pub fn authorize_stream_peer(stream: &Stream, _: u32) -> Result<u32, LocalPlatformError> {
-    let pid = stream.peer_pid;
-    crate::windows_security::authorize_process(pid).map_err(failure)?;
+/// Accepted pipes pass the kernel's current-SID-only DACL check at open time.
+/// Outbound streams verify the owner of the connected pipe before construction.
+pub fn authorize_stream_peer(_: &Stream, _: u32) -> Result<u32, LocalPlatformError> {
     Ok(0)
 }
 /// Inspects the private endpoint marker without connecting or creating state.
@@ -318,16 +356,12 @@ pub fn bind_owned_daemon_socket(
     paths: &UserPaths,
     lock: &DaemonLock,
 ) -> Result<(Listener, DaemonSocketOwnership), LocalPlatformError> {
-    use ring::rand::SecureRandom;
     use std::io::Write;
     if lock.path() != paths.daemon_lock() {
         return Err(LocalPlatformError::UnsafeSocket(paths.socket().into()));
     }
     paths.prepare_runtime_directory()?;
-    let mut nonce = vec![0; 32];
-    ring::rand::SystemRandom::new()
-        .fill(&mut nonce)
-        .map_err(failure)?;
+    let nonce = random_marker().map_err(failure)?.to_vec();
     crate::user_state::atomic_write(paths.socket(), paths.uid(), |f| f.write_all(&nonce))?;
     Ok((
         Listener(paths.socket().into()),

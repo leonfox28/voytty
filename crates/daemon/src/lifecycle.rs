@@ -458,6 +458,20 @@ fn run_owned_daemon_listener(
                 format!("unable to build daemon runtime: {error}"),
             )
         })?;
+    runtime.spawn(async {
+        let mut hour = tokio::time::interval(Duration::from_secs(3600));
+        hour.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            hour.tick().await;
+            if !matches!(
+                tokio::task::spawn_blocking(voytty_platform::upload::StagedUpload::clean_expired)
+                    .await,
+                Ok(Ok(()))
+            ) {
+                tracing::warn!(component = "daemon", "Could not clean expired uploads");
+            }
+        }
+    });
     let mut network = spawn_inside_runtime(&runtime, || {
         network.map(|(startup, handle)| startup.spawn(handle))
     });

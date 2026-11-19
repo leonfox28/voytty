@@ -523,7 +523,7 @@ pub fn validate_owned_executable(path: &Path, uid: u32) -> Result<(), PathError>
     let parent = path
         .parent()
         .ok_or_else(|| PathError::NotAbsolute(path.to_path_buf()))?;
-    validate_executable_parent(parent)?;
+    validate_executable_parent(parent, uid)?;
     let metadata = fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
     if metadata.file_type().is_symlink() {
         return Err(PathError::Symlink(path.to_path_buf()));
@@ -569,16 +569,26 @@ pub fn activate_executable(
     uid: u32,
     writer: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> Result<ExecutableActivation, PathError> {
+    activate_verified_executable(target, uid, writer, |_| Ok(()))
+}
+
+/// Verifies the actual staged file before making it reachable at the installed path.
+pub fn activate_verified_executable(
+    target: &Path,
+    uid: u32,
+    writer: impl FnOnce(&mut File) -> io::Result<()>,
+    verify: impl FnOnce(&Path) -> io::Result<()>,
+) -> Result<ExecutableActivation, PathError> {
     validate_owned_executable(target, uid)?;
     let parent = target
         .parent()
         .ok_or_else(|| PathError::NotAbsolute(target.to_path_buf()))?;
-    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let staged = parent.join(format!(".voytty.update-{}-{sequence}", std::process::id()));
-    let backup = parent.join(format!(
-        ".voytty.rollback-{}-{sequence}",
-        std::process::id()
+    let suffix = executable_nonce(parent)?;
+    let staged = parent.join(format!(
+        ".voytty.update-{suffix}{}",
+        std::env::consts::EXE_SUFFIX
     ));
+    let backup = parent.join(format!(".voytty.rollback-{suffix}"));
     let mut file = create_new_executable(&staged)?;
     let result = writer(&mut file)
         .and_then(|()| file.sync_all())
@@ -590,6 +600,10 @@ pub fn activate_executable(
     }
     drop(file);
 
+    if let Err(error) = verify(&staged) {
+        let _ = fs::remove_file(&staged);
+        return Err(io_error(&staged, error));
+    }
     #[cfg(unix)]
     let retain = fs::hard_link(target, &backup);
     #[cfg(windows)]
@@ -628,7 +642,7 @@ pub fn install_executable(source: &Path, target: &Path, uid: u32) -> Result<(), 
     let parent = target
         .parent()
         .ok_or_else(|| PathError::NotAbsolute(target.to_path_buf()))?;
-    validate_executable_parent(parent)?;
+    validate_executable_parent(parent, uid)?;
     if fs::symlink_metadata(target).is_ok() {
         return Err(PathError::Io {
             path: target.to_path_buf(),
@@ -636,8 +650,7 @@ pub fn install_executable(source: &Path, target: &Path, uid: u32) -> Result<(), 
         });
     }
 
-    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let staged = parent.join(format!(".voytty.install-{}-{sequence}", std::process::id()));
+    let staged = parent.join(format!(".voytty.install-{}", executable_nonce(parent)?));
     let mut input = File::open(source).map_err(|error| io_error(source, error))?;
     let mut output = create_new_executable(&staged)?;
     let result = io::copy(&mut input, &mut output)
@@ -979,16 +992,75 @@ fn create_new_executable(path: &Path) -> Result<File, PathError> {
     Ok(file)
 }
 
-fn validate_executable_parent(path: &Path) -> Result<(), PathError> {
+fn executable_nonce(parent: &Path) -> Result<String, PathError> {
+    use ring::rand::{SecureRandom, SystemRandom};
+    let mut bytes = [0; 16];
+    SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| io_error(parent, io::Error::other("OS randomness unavailable")))?;
+    Ok(format!("{:032x}", u128::from_be_bytes(bytes)))
+}
+
+fn validate_executable_parent(path: &Path, uid: u32) -> Result<(), PathError> {
     ensure_absolute(path)?;
     #[cfg(windows)]
-    crate::windows_security::validate_parent(path).map_err(|error| io_error(path, error))?;
-    let metadata = fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
-    if metadata.file_type().is_symlink() {
-        return Err(PathError::Symlink(path.to_path_buf()));
+    {
+        let _ = uid;
+        if !fs::symlink_metadata(path)
+            .map_err(|e| io_error(path, e))?
+            .is_dir()
+        {
+            return Err(PathError::WrongType(path.into()));
+        }
+        crate::windows_security::validate_parent(path).map_err(|error| io_error(path, error))?;
     }
-    if !metadata.is_dir() {
-        return Err(PathError::WrongType(path.to_path_buf()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if path
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+        {
+            return Err(io_error(
+                path,
+                io::Error::other("parent traversal in executable path"),
+            ));
+        }
+        for ancestor in path.ancestors() {
+            let metadata =
+                fs::symlink_metadata(ancestor).map_err(|error| io_error(ancestor, error))?;
+            if metadata.is_symlink() {
+                // macOS supplies these aliases in its root-owned system directory.
+                #[cfg(target_os = "macos")]
+                if metadata.uid() == 0
+                    && ["/tmp", "/var", "/etc"]
+                        .iter()
+                        .any(|alias| ancestor == Path::new(alias))
+                {
+                    let real = fs::canonicalize(ancestor).map_err(|e| io_error(ancestor, e))?;
+                    validate_executable_parent(&real, uid)?;
+                    continue;
+                }
+                return Err(PathError::Symlink(ancestor.into()));
+            }
+            if !metadata.is_dir() {
+                return Err(PathError::WrongType(ancestor.into()));
+            }
+            if metadata.uid() != 0 && metadata.uid() != uid {
+                return Err(PathError::WrongOwner {
+                    path: ancestor.into(),
+                    expected: uid,
+                    actual: metadata.uid(),
+                });
+            }
+            if metadata.mode() & 0o002 != 0 && metadata.mode() & 0o1000 == 0 {
+                return Err(PathError::WrongMode {
+                    path: ancestor.into(),
+                    expected: 0o755,
+                    actual: metadata.mode() & 0o7777,
+                });
+            }
+        }
     }
     Ok(())
 }
@@ -1187,6 +1259,30 @@ mod tests {
         (temporary, paths)
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn executable_parents_check_ancestors_and_allow_private_or_shared_group_bins() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let parent = root.join("install");
+        let bin = parent.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let uid = nix::unistd::geteuid().as_raw();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o775)).unwrap();
+        validate_executable_parent(&bin, uid).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(matches!(
+            validate_executable_parent(&bin, uid),
+            Err(PathError::WrongMode { .. })
+        ));
+        symlink(&parent, root.join("alias")).unwrap();
+        assert!(matches!(
+            validate_executable_parent(&root.join("alias/bin"), uid),
+            Err(PathError::Symlink(_))
+        ));
+    }
+
     #[test]
     fn user_paths_debug_redacts_every_managed_path_without_changing_accessors() {
         const HOME_SENTINEL: &str = "/private/tmp/USER_PATH_HOME_SENTINEL_f31d";
@@ -1304,6 +1400,19 @@ mod tests {
             .expect("old executable mode");
         let uid = Uid::effective().as_raw();
 
+        let original = fs::read(&target).unwrap();
+        let failed = activate_verified_executable(
+            &target,
+            uid,
+            |file| file.write_all(b"unverified"),
+            |staged| {
+                assert_eq!(fs::read(staged)?, b"unverified");
+                assert_eq!(fs::read(&target)?, original);
+                Err(io::Error::other("fixture rejected staged candidate"))
+            },
+        );
+        assert!(failed.is_err());
+        assert_eq!(fs::read(&target).unwrap(), original);
         let activation = activate_executable(&target, uid, |file| file.write_all(b"new"))
             .expect("activate candidate");
         assert_eq!(fs::read(&target).expect("active candidate"), b"new");

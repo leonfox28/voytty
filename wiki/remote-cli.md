@@ -321,6 +321,12 @@ The fixed local command prefix is `Ctrl+]`:
 
 The former `--escape` customization/disable option has been removed.
 
+The host keeps uploaded files for 24 hours after their last modification. Copy a
+file elsewhere on the host to keep it longer. Each session can hold up to 200 MB
+and 64 files, with 4 uploads in progress. The account can hold up to 1 GB and
+256 files, with 16 uploads in progress. An upload reserves its declared size
+when it starts. Cancelling it frees the reservation.
+
 For file upload, copy exactly one regular file in the system file manager, or
 copy an image, then press `Ctrl+]` followed by plain `v`. Text containing a path
 or URL is not an upload source. Files of any type are accepted up to **50 MB
@@ -334,10 +340,11 @@ cursor, using bracketed paste when enabled, without pressing Enter. Detaching,
 disconnecting or losing control cancels the operation and prevents delayed input
 from reaching another attachment. A single-row terminal must be enlarged first.
 
-Uploads are private to the host's effective user under
-`/tmp/voytty-<uid>/<session>/<transfer>/file[.ext]`. Successful files are retained
-without a voytty age or cumulative-size cleanup policy; normal host `/tmp` cleanup
-may still remove them. An uncertain result can mean a file remains on the host;
+On Unix the host saves uploads under
+`/tmp/voytty-upload-<uid>/<session>/<transfer>/file[.ext]`. Windows uses
+`voytty-upload-<SID>` inside the account profile. The daemon checks for expired
+files at startup, hourly and on upload. Normal host temporary-file cleanup may
+also remove files. An uncertain result can mean a file remains on the host;
 retrying is an explicit new upload. The AI tool decides how to interpret the
 inserted path and supported file format.
 

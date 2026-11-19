@@ -41,9 +41,10 @@ are created only beneath parents whose mutation rights are limited to the curren
 account, Administrators and SYSTEM. Numeric compatibility UIDs are never used for
 Windows authorization.
 
-Local requests use a namespaced named pipe derived from the full SID and endpoint
-path. The DACL admits the account; both ends authenticate the peer process token
-before protocol traffic. A bounded record layer carries directional FIN because
+Local requests use a named pipe whose random name is stored in the private
+endpoint marker. The kernel checks the connecting user's SID against the pipe
+DACL and rejects remote clients. The client checks the owner on its connected
+handle and grants only identification-level impersonation. A bounded record layer carries directional FIN because
 named pipes do not provide Unix socket half-close. Flush/shutdown wait until the
 writer has delivered accepted records. Lifecycle handoff uses a separate random,
 local-only pipe and verifies the exact spawned child process.

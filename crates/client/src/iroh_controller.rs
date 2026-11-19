@@ -685,6 +685,7 @@ impl IrohController {
                 }
             }
         };
+        attempt.require_confirmation()?;
         let confirmation =
             self.normal(remote, &peer, deadline)
                 .await

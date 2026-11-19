@@ -282,7 +282,13 @@ impl SessionWireServer {
 fn control_deadline() -> Instant {
     Instant::now() + DEFAULT_SESSION_WIRE_DEADLINE
 }
-fn storage_error(_: std::io::Error) -> DaemonError {
+fn storage_error(error: std::io::Error) -> DaemonError {
+    if error.kind() == std::io::ErrorKind::QuotaExceeded {
+        return DaemonError::new(
+            DomainErrorKind::ResourceExhausted,
+            "host upload quota reached",
+        );
+    }
     DaemonError::new(
         DomainErrorKind::UploadStorageFailed,
         "host could not write or publish the upload",

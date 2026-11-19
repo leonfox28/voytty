@@ -268,7 +268,7 @@ async fn malformed_streams_remove_staging_without_disturbing_controller() {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         let path = format!(
-            "/tmp/voytty-{}/{}/{transfer}",
+            "/tmp/voytty-upload-{}/{}/{transfer}",
             nix::unistd::geteuid(),
             fixture.binding().session_id
         );

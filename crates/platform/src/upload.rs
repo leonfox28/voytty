@@ -1,5 +1,8 @@
 //! Private effective-user upload staging. Only explicit successful publication persists.
 
+#[path = "upload_quota.rs"]
+mod quota;
+
 use crate::user_state::{create_new_file, create_or_validate_directory, validate_directory};
 #[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
@@ -15,7 +18,9 @@ use voytty_core::{
 
 /// One unique staging directory. Drop removes only an incomplete attempt.
 pub struct StagedUpload {
-    file: File,
+    file: Option<File>,
+    root: PathBuf,
+    uid: u32,
     directory: PathBuf,
     public_path: String,
     metadata: UploadMetadata,
@@ -30,22 +35,51 @@ impl StagedUpload {
         id: TransferId,
         metadata: UploadMetadata,
     ) -> io::Result<Self> {
+        let (root, public, uid) = Self::location()?;
+        Self::create_at(root, public, uid, session, id, metadata)
+    }
+
+    /// Reclaims abandoned staging and expired files, including after a restart.
+    pub fn clean_expired() -> io::Result<()> {
+        let (root, _, uid) = Self::location()?;
+        if root.try_exists()? {
+            validate_directory(&root, uid).map_err(private_path_error)?;
+            let _lock = quota::lock(&root, uid)?;
+            quota::scan(&root, uid, None, false)?;
+        }
+        #[cfg(unix)]
+        {
+            // Older daemons used the fallback runtime directory. Only collect
+            // canonical transfer names after the retention period on that tree.
+            let legacy = fs::canonicalize("/tmp")?.join(format!("voytty-{uid}"));
+            if legacy.try_exists()? && validate_directory(&legacy, uid).is_ok() {
+                // Runtime cleanup owns the old root and must never see a new control file.
+                quota::scan(&legacy, uid, None, true)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn location() -> io::Result<(PathBuf, String, u32)> {
         #[cfg(windows)]
         {
             let account = crate::account::EffectiveAccount::current().map_err(io::Error::other)?;
-            let name = format!("voytty-upload-{}", crate::windows_security::sid()?);
-            let root = account.home().join(name);
+            let root = account
+                .home()
+                .join(format!("voytty-upload-{}", crate::windows_security::sid()?));
             let public = root.to_str().ok_or_else(invalid_bytes)?.replace('\\', "/");
-            Self::create_at(root, public, account.uid(), session, id, metadata)
+            Ok((root, public, account.uid()))
         }
         #[cfg(unix)]
-        let uid = nix::unistd::geteuid().as_raw();
-        #[cfg(unix)]
-        let name = format!("voytty-{uid}");
-        #[cfg(unix)]
-        let root = fs::canonicalize("/tmp")?.join(&name);
-        #[cfg(unix)]
-        Self::create_at(root, format!("/tmp/{name}"), uid, session, id, metadata)
+        {
+            let uid = nix::unistd::geteuid().as_raw();
+            let name = format!("voytty-upload-{uid}");
+            Ok((
+                fs::canonicalize("/tmp")?.join(&name),
+                format!("/tmp/{name}"),
+                uid,
+            ))
+        }
     }
 
     fn create_at(
@@ -57,6 +91,8 @@ impl StagedUpload {
         metadata: UploadMetadata,
     ) -> io::Result<Self> {
         create_or_validate_directory(&root, uid).map_err(private_path_error)?;
+        let _lock = quota::lock(&root, uid)?;
+        quota::scan(&root, uid, Some((session, metadata.size())), false)?;
         let session_name = session.to_string();
         let parent = root.join(&session_name);
         create_or_validate_directory(&parent, uid).map_err(private_path_error)?;
@@ -73,11 +109,16 @@ impl StagedUpload {
         crate::windows_security::create_directory(&directory)?;
         let created = (|| {
             validate_directory(&directory, uid).map_err(private_path_error)?;
-            create_new_file(&directory.join(".part")).map_err(private_path_error)
+            let file = create_new_file(&directory.join(".part")).map_err(private_path_error)?;
+            file.lock()?;
+            // Reserve the declared size before releasing the account lock.
+            file.set_len(metadata.size())?;
+            Ok(file)
         })();
         let file = match created {
             Ok(file) => file,
             Err(error) => {
+                let _ = fs::remove_file(directory.join(".part"));
                 let _ = fs::remove_dir(&directory);
                 return Err(error);
             }
@@ -88,7 +129,9 @@ impl StagedUpload {
             format!("file.{}", metadata.extension())
         };
         Ok(Self {
-            file,
+            file: Some(file),
+            root,
+            uid,
             directory,
             public_path: format!("{public_root}/{session_name}/{transfer_name}/{filename}"),
             metadata,
@@ -105,7 +148,10 @@ impl StagedUpload {
         if offset != self.accepted || end > self.metadata.size() || data.is_empty() {
             return Err(invalid_bytes());
         }
-        self.file.write_all(data)?;
+        self.file
+            .as_mut()
+            .ok_or_else(invalid_bytes)?
+            .write_all(data)?;
         self.accepted = end;
         Ok(())
     }
@@ -123,7 +169,9 @@ impl StagedUpload {
         }
         let result = UploadedFile::new(self.public_path.clone(), self.accepted)
             .map_err(|_| invalid_bytes())?;
-        self.file.sync_all()?;
+        self.file.as_ref().ok_or_else(invalid_bytes)?.sync_all()?;
+        let _lock = quota::lock(&self.root, self.uid)?;
+        drop(self.file.take());
         let filename = self
             .public_path
             .rsplit('/')
@@ -140,6 +188,10 @@ impl StagedUpload {
 impl Drop for StagedUpload {
     fn drop(&mut self) {
         if !self.committed {
+            let Ok(_lock) = quota::lock(&self.root, self.uid) else {
+                return;
+            };
+            drop(self.file.take());
             let _ = fs::remove_file(self.directory.join(".part"));
             let _ = fs::remove_dir(&self.directory);
         }
@@ -210,6 +262,87 @@ mod tests {
                 .expect("upload fixture")
                 .size(),
             0
+        );
+    }
+
+    #[test]
+    fn active_reservations_release_capacity_and_expired_files_are_collected() {
+        use std::time::{Duration, SystemTime};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("uploads");
+        let mut active: Vec<_> = (0..4)
+            .map(|id| create(root.clone(), id, 1).unwrap())
+            .collect();
+        assert_eq!(
+            create(root.clone(), 6, 1).err().unwrap().kind(),
+            io::ErrorKind::QuotaExceeded
+        );
+        active.pop();
+        let finished = create(root.clone(), 6, 0).unwrap();
+        let path = finished.directory.join("file.pdf");
+        finished.publish().unwrap();
+        let file = File::open(&path).unwrap();
+        file.set_modified(SystemTime::now() - Duration::from_secs(25 * 3600))
+            .unwrap();
+        drop(file);
+        let next = create(root.clone(), 7, 0).unwrap();
+        assert!(!path.exists());
+        assert!(active[0].directory.join(".part").exists());
+        drop(next);
+    }
+
+    #[test]
+    fn published_files_count_against_session_and_account_byte_limits_after_reopen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("uploads");
+        let uid = nix::unistd::geteuid().as_raw();
+        // Sparse fixtures exercise actual on-disk accounting without writing 1 GB.
+        for session in 0..5 {
+            let staged = StagedUpload::create_at(
+                root.clone(),
+                "/tmp/voytty-1".into(),
+                uid,
+                SessionId::from_array([session; 16]),
+                TransferId::from_array([0; 16]),
+                UploadMetadata::new(0, "").unwrap(),
+            )
+            .unwrap();
+            let path = staged.directory.join("file");
+            staged.publish().unwrap();
+            File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_len(200_000_000)
+                .unwrap();
+            assert_eq!(
+                StagedUpload::create_at(
+                    root.clone(),
+                    "/tmp/voytty-1".into(),
+                    uid,
+                    SessionId::from_array([session; 16]),
+                    TransferId::from_array([1; 16]),
+                    UploadMetadata::new(1, "").unwrap()
+                )
+                .err()
+                .unwrap()
+                .kind(),
+                io::ErrorKind::QuotaExceeded
+            );
+        }
+        assert_eq!(
+            StagedUpload::create_at(
+                root,
+                "/tmp/voytty-1".into(),
+                uid,
+                SessionId::from_array([9; 16]),
+                TransferId::from_array([1; 16]),
+                UploadMetadata::new(1, "").unwrap()
+            )
+            .err()
+            .unwrap()
+            .kind(),
+            io::ErrorKind::QuotaExceeded
         );
     }
 
