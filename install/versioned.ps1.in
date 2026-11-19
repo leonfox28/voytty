@@ -84,6 +84,15 @@ $client.DefaultRequestHeaders.UserAgent.ParseAdd('voytty-installer')
 $temporary = Join-Path $InstallDir ('.voytty-install-' + [guid]::NewGuid().ToString('N'))
 # Protect staging before any downloaded executable or authentication data exists.
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+# A private child ACL cannot prevent another account from deleting it via the parent.
+$trusted = @($sid.Value, 'S-1-5-18', 'S-1-5-32-544')
+$parentAcl = Get-Acl -LiteralPath $InstallDir
+if ($parentAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted) { throw 'Untrusted install directory owner' }
+foreach ($rule in $parentAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+    if ($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin $trusted -and
+        -not ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -and
+        ([int64]$rule.FileSystemRights -band 0x500D0156)) { throw 'Install directory permits modification by another account' }
+}
 $acl = New-Object Security.AccessControl.DirectorySecurity
 $acl.SetOwner($sid)
 $acl.SetAccessRuleProtection($true, $false)
