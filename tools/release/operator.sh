@@ -143,6 +143,12 @@ require_tag_and_release_vacancy() {
 }
 
 require_release_vacancy() {
+    # GitHub omits drafts from release listings for readers without push access.
+    permission=$(gh repo view "$repository" --json viewerPermission --jq .viewerPermission)
+    case "$permission" in
+        ADMIN|MAINTAIN|WRITE) ;;
+        *) fail "the release operator needs repository write access to check existing drafts" ;;
+    esac
     sh "$script_dir/require-vacant-release.sh" "$repository" "$tag"
 }
 

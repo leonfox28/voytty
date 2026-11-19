@@ -18,6 +18,10 @@ reviewed feature branch + version commit in one PR
 `VERSION` is canonical SemVer without the `v` prefix or build metadata.
 Prereleases such as `0.2.0-rc.1` are supported. Run `just doctor` first. The
 operator never installs global tools or changes repository protection settings.
+Use an account with repository write access so GitHub includes drafts in the
+paginated vacancy check. The read-only tag validation checks the releases it
+can see. The publish job repeats the check with its write-scoped token immediately
+before creating the draft. [GitHub release visibility](https://docs.github.com/en/rest/releases/releases#list-releases)
 
 ## Prepare one reviewable PR
 

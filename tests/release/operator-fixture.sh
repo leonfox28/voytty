@@ -48,7 +48,10 @@ shift || true
 case "$command_name" in
     auth) exit 0 ;;
     repo)
-        printf '%s\n' "$FAKE_REPOSITORY"
+        case "$*" in
+            *viewerPermission*) printf '%s\n' "${FAKE_RELEASE_PERMISSION:-WRITE}" ;;
+            *) printf '%s\n' "$FAKE_REPOSITORY" ;;
+        esac
         ;;
     release) exit 1 ;;
     pr)
@@ -269,6 +272,15 @@ if run_operator >"$case_root/stdout" 2>"$case_root/stderr"; then
     fail "noncanonical next version was accepted"
 fi
 assert_no_remote_tag invalid-version
+
+new_case insufficient-draft-visibility
+operator_command=prepare
+operator_version=0.1.10
+if run_operator FAKE_RELEASE_PERMISSION=READ >"$case_root/stdout" 2>"$case_root/stderr"; then
+    fail "a reader without draft visibility proved release vacancy"
+fi
+grep -Fq 'write access to check existing drafts' "$case_root/stderr" || fail "draft visibility was not checked"
+assert_no_remote_tag insufficient-draft-visibility
 
 new_case existing-release
 operator_command=prepare
