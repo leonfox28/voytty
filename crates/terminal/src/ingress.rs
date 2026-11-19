@@ -153,12 +153,12 @@ impl UpdateCollector {
         }
     }
 
-    fn push_reply(&mut self, reply: &[u8]) -> Result<(), IngressError> {
+    fn push_reply(&mut self, reply: &[u8]) {
         if self.replies.len().saturating_add(reply.len()) > MAX_REPLY_BYTES_PER_UPDATE {
-            return Err(IngressError::ReplyOverflow);
+            self.dropped_events = self.dropped_events.saturating_add(1);
+            return;
         }
         self.replies.extend_from_slice(reply);
-        Ok(())
     }
 
     fn set_host_effect(&mut self, effect: TerminalHostEffect) {
@@ -177,11 +177,6 @@ impl UpdateCollector {
         }
         (self.replies, self.events, self.host_effects)
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum IngressError {
-    ReplyOverflow,
 }
 
 pub(crate) enum PresentationBoundary {
@@ -217,17 +212,17 @@ impl TerminalIngressPolicy {
         bytes: &[u8],
         engine: &mut AlacrittyEngine,
         output: &mut UpdateCollector,
-    ) -> Result<usize, IngressError> {
+    ) -> usize {
         for (index, byte) in bytes.iter().enumerate() {
-            self.process_byte(*byte, engine, output)?;
+            self.process_byte(*byte, engine, output);
             for event in engine.take_events() {
                 output.push_event(event);
             }
             if self.boundary.is_some() {
-                return Ok(index + 1);
+                return index + 1;
             }
         }
-        Ok(bytes.len())
+        bytes.len()
     }
 
     pub(crate) fn take_boundary(&mut self) -> Option<PresentationBoundary> {
@@ -243,7 +238,7 @@ impl TerminalIngressPolicy {
         byte: u8,
         engine: &mut AlacrittyEngine,
         output: &mut UpdateCollector,
-    ) -> Result<(), IngressError> {
+    ) {
         let state = std::mem::replace(&mut self.state, PolicyState::Ground);
         self.state = match state {
             PolicyState::Ground => self.process_ground(byte, engine, output),
@@ -322,7 +317,7 @@ impl TerminalIngressPolicy {
                 } else {
                     sequence.push(byte);
                     if is_csi_final(byte) {
-                        self.dispatch_csi(sequence, engine, output)?;
+                        self.dispatch_csi(sequence, engine, output);
                         PolicyState::Ground
                     } else {
                         PolicyState::Csi(sequence)
@@ -332,31 +327,20 @@ impl TerminalIngressPolicy {
             PolicyState::String(mut string) => {
                 if matches!(byte, 0x18 | 0x1a) {
                     PolicyState::Ground
-                } else if (byte == 0x9c
-                    && (string.saw_escape || !string.is_utf8_continuation(byte)))
-                    || (matches!(string.kind, StringKind::Osc) && byte == 0x07)
-                {
-                    self.dispatch_string(
-                        string,
-                        engine,
-                        output,
-                        if byte == 7 { "\x07" } else { "\x1b\\" },
-                    )?;
+                } else if string.saw_escape {
+                    if byte != b'\\' {
+                        self.state = PolicyState::Escape(Sequence::new(b"\x1b"));
+                        return self.process_byte(byte, engine, output);
+                    }
+                    self.dispatch_string(string, engine, output, "\x1b\\");
                     PolicyState::Ground
-                } else if string.saw_escape && byte == b'\\' {
-                    string.saw_escape = false;
-                    self.dispatch_string(
-                        string,
-                        engine,
-                        output,
-                        if byte == 7 { "\x07" } else { "\x1b\\" },
-                    )?;
+                } else if byte == 0x9c && !string.is_utf8_continuation(byte) {
+                    self.dispatch_string(string, engine, output, "\x1b\\");
+                    PolicyState::Ground
+                } else if matches!(string.kind, StringKind::Osc) && byte == 7 {
+                    self.dispatch_string(string, engine, output, "\x07");
                     PolicyState::Ground
                 } else {
-                    if string.saw_escape {
-                        string.push(0x1b);
-                        string.saw_escape = false;
-                    }
                     if byte == 0x1b {
                         string.saw_escape = true;
                     } else {
@@ -366,7 +350,6 @@ impl TerminalIngressPolicy {
                 }
             }
         };
-        Ok(())
     }
 
     fn process_ground(
@@ -444,6 +427,7 @@ impl TerminalIngressPolicy {
         engine: &mut AlacrittyEngine,
         output: &mut UpdateCollector,
     ) {
+        self.preceding_character = None;
         if engine.accept_character(character) {
             engine.feed_raw(character.encode_utf8(&mut [0; 4]).as_bytes());
             self.preceding_character = Some(character);
@@ -481,12 +465,12 @@ impl TerminalIngressPolicy {
         sequence: Sequence,
         engine: &mut AlacrittyEngine,
         output: &mut UpdateCollector,
-    ) -> Result<(), IngressError> {
+    ) {
         if sequence.overflowed || sequence.bytes.len() < 3 {
             output.push_event(TerminalSideEvent::UnsupportedSequence(
                 UnsupportedSequenceKind::Csi,
             ));
-            return Ok(());
+            return;
         }
         let final_byte = *sequence.bytes.last().unwrap_or(&0);
         let body = &sequence.bytes[2..sequence.bytes.len() - 1];
@@ -497,7 +481,7 @@ impl TerminalIngressPolicy {
         if final_byte == b'p' && body.ends_with(b"$") {
             let (private, values) = parse_parameters(&body[..body.len() - 1]);
             if !matches!(private, None | Some(b'?')) {
-                return Ok(());
+                return;
             }
             if let Some(values) = values {
                 for value in values {
@@ -507,22 +491,21 @@ impl TerminalIngressPolicy {
                         engine.report_mode(value, private == Some(b'?'))
                     };
                     let prefix = if private == Some(b'?') { "?" } else { "" };
-                    output.push_reply(format!("\x1b[{prefix}{value};{state}$y").as_bytes())?;
+                    output.push_reply(format!("\x1b[{prefix}{value};{state}$y").as_bytes());
                 }
             }
-            return Ok(());
+            return;
         }
         if body.ends_with(b"#") && matches!(final_byte, b'P' | b'Q' | b'R') {
             if final_byte == b'R' {
-                return if body == b"#" {
-                    output.push_reply(&engine.colors.stack_report())
-                } else {
-                    Ok(())
-                };
+                if body == b"#" {
+                    output.push_reply(&engine.colors.stack_report());
+                }
+                return;
             }
             let (marker, values) = parse_parameters(&body[..body.len() - 1]);
             if marker.is_some() {
-                return Ok(());
+                return;
             }
             if let Some(values) = values {
                 if values.is_empty() {
@@ -533,7 +516,7 @@ impl TerminalIngressPolicy {
                     }
                 }
             }
-            return Ok(());
+            return;
         }
 
         if final_byte == b'c' && marker.is_none() && matches!(parameters.as_deref(), Some([] | [0]))
@@ -549,7 +532,7 @@ impl TerminalIngressPolicy {
                     output.push_event(TerminalSideEvent::UnsupportedSequence(
                         UnsupportedSequenceKind::Csi,
                     ));
-                    return Ok(());
+                    return;
                 }
             }
         }
@@ -572,12 +555,12 @@ impl TerminalIngressPolicy {
                     UnsupportedSequenceKind::Csi,
                 ));
             }
-            return Ok(());
+            return;
         }
         if final_byte == b'u' {
             if body.is_empty() {
                 engine.feed_raw(&sequence.bytes);
-                return Ok(());
+                return;
             }
             return dispatch_keyboard_mode(sequence, marker, parameters, engine, output);
         }
@@ -591,6 +574,9 @@ impl TerminalIngressPolicy {
                 (Some(count), Some(character)) => {
                     for _ in 0..count {
                         self.print_character(character, engine, output);
+                        if self.preceding_character.is_none() {
+                            break;
+                        }
                     }
                 }
                 (None, _) => output.push_event(TerminalSideEvent::UnsupportedSequence(
@@ -598,14 +584,14 @@ impl TerminalIngressPolicy {
                 )),
                 _ => {}
             }
-            return Ok(());
+            return;
         }
         if matches!(final_byte, b'h' | b'l') && marker == Some(b'?') {
             let Some(parameters) = parameters else {
                 output.push_event(TerminalSideEvent::UnsupportedSequence(
                     UnsupportedSequenceKind::Csi,
                 ));
-                return Ok(());
+                return;
             };
             let enabled = final_byte == b'h';
             if parameters.contains(&2026) {
@@ -620,7 +606,7 @@ impl TerminalIngressPolicy {
             } else {
                 Self::apply_private_modes(&parameters, enabled, engine);
             }
-            return Ok(());
+            return;
         }
         let unsupported = final_byte == b'c' || body.contains(&b'$');
         if unsupported {
@@ -630,7 +616,6 @@ impl TerminalIngressPolicy {
         } else {
             engine.feed_raw(&sequence.bytes);
         }
-        Ok(())
     }
 
     pub(crate) fn apply_private_modes(
@@ -671,7 +656,7 @@ impl TerminalIngressPolicy {
         engine: &mut AlacrittyEngine,
         output: &mut UpdateCollector,
         end: &str,
-    ) -> Result<(), IngressError> {
+    ) {
         if string.overflowed {
             if matches!(string.kind, StringKind::Osc) && string.bytes.starts_with(b"8;") {
                 engine.close_hyperlink();
@@ -688,7 +673,7 @@ impl TerminalIngressPolicy {
                 };
                 output.push_event(TerminalSideEvent::UnsupportedSequence(kind));
             }
-            return Ok(());
+            return;
         }
         if let Ok(text) = std::str::from_utf8(&string.bytes) {
             if matches!(string.kind, StringKind::Dcs) {
@@ -721,7 +706,7 @@ impl TerminalIngressPolicy {
             output.push_event(TerminalSideEvent::UnsupportedSequence(
                 UnsupportedSequenceKind::Control,
             ));
-            return Ok(());
+            return;
         }
         let mut fields = string.bytes.splitn(2, |byte| *byte == b';');
         let command = fields.next().unwrap_or_default();
@@ -773,7 +758,6 @@ impl TerminalIngressPolicy {
                 UnsupportedSequenceKind::Osc,
             )),
         }
-        Ok(())
     }
 }
 
@@ -783,7 +767,7 @@ fn dispatch_keyboard_mode(
     parameters: Option<Vec<u16>>,
     engine: &mut AlacrittyEngine,
     output: &mut UpdateCollector,
-) -> Result<(), IngressError> {
+) {
     let admitted = match (marker, parameters.as_deref()) {
         (Some(b'?'), Some([])) => {
             let reply = format!("\x1b[?{}u", engine.keyboard_mode_bits());
@@ -800,11 +784,10 @@ fn dispatch_keyboard_mode(
         output.push_event(TerminalSideEvent::UnsupportedSequence(
             UnsupportedSequenceKind::Csi,
         ));
-        return Ok(());
+        return;
     }
 
     engine.feed_raw(&sequence.bytes);
-    Ok(())
 }
 
 fn dispatch_clipboard(payload: &[u8], output: &mut UpdateCollector) {

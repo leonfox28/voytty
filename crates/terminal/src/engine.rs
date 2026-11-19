@@ -171,6 +171,8 @@ pub(crate) struct AlacrittyEngine {
     sink: BoundedEventSink,
     legacy_x10_mouse: bool,
     combining: CombiningBudget,
+    combining_dirty: bool,
+    combining_scanned: bool,
     pub(crate) hyperlinks: crate::hyperlinks::Hyperlinks,
 }
 
@@ -192,6 +194,8 @@ impl AlacrittyEngine {
             sink,
             legacy_x10_mouse: false,
             combining: CombiningBudget::default(),
+            combining_dirty: false,
+            combining_scanned: false,
             hyperlinks: Default::default(),
         };
         // Alacritty enables alternate-scroll by default, while Voytty's public
@@ -201,7 +205,14 @@ impl AlacrittyEngine {
         engine
     }
 
+    pub(crate) fn begin_update(&mut self) {
+        self.combining_scanned = false;
+        self.hyperlinks.scanned = false;
+    }
+
     pub(crate) fn feed_raw(&mut self, bytes: &[u8]) {
+        self.combining_dirty = true;
+        self.hyperlinks.dirty = true;
         let previous_screen = self.active_screen();
         self.grid_input = true;
         self.processor.advance(&mut self.term, bytes);
@@ -349,7 +360,11 @@ impl AlacrittyEngine {
             // Ordinary printable input may have overwritten or evicted cells
             // since the last accounting update. Recount only at the boundary
             // where stale conservative usage would otherwise reject input.
+            if !self.combining_dirty || self.combining_scanned {
+                return false;
+            }
             self.reconcile_active_combining_budget();
+            self.combining_scanned = true;
             if self.combining_limit_exceeded(character_bytes, creates_cell) {
                 return false;
             }
@@ -418,6 +433,10 @@ impl AlacrittyEngine {
     }
 
     fn reconcile_active_combining_budget(&mut self) {
+        self.combining_dirty = false;
+        if self.combining.total_cells() == 0 {
+            return;
+        }
         let screen = self.active_screen();
         let grid = self.term.grid();
         let history = i32::try_from(grid.history_size()).unwrap_or(i32::MAX);

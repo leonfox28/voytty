@@ -1,6 +1,6 @@
 //! Exact query replies from the authoritative terminal state.
 use voytty_core::terminal::TerminalSize;
-use voytty_terminal::{MAX_REPLY_BYTES_PER_UPDATE, TerminalError, TerminalModel};
+use voytty_terminal::{MAX_REPLY_BYTES_PER_UPDATE, TerminalModel};
 
 #[test]
 fn extended_unknown_fields_are_encoded_in_order_across_chunks() {
@@ -45,8 +45,25 @@ fn encoded_unknown_queries_keep_the_reply_budget() {
     let mut model = TerminalModel::new(TerminalSize::new(3, 20), 0).expect("model");
     let query = format!("\x1b]21;{}=?\x07", "x".repeat(900));
     let input = query.repeat(MAX_REPLY_BYTES_PER_UPDATE / 900 + 1);
-    assert!(matches!(
-        model.ingest(input.as_bytes()),
-        Err(TerminalError::ReplyOverflow)
-    ));
+    let single = model
+        .ingest(query.as_bytes())
+        .expect("single query")
+        .replies;
+    let update = model.ingest(input.as_bytes()).expect("bounded replies");
+    assert_eq!(
+        update.replies,
+        single.repeat(MAX_REPLY_BYTES_PER_UPDATE / single.len())
+    );
+}
+
+#[test]
+fn a_new_escape_sequence_resumes_parsing_after_an_interrupted_string() {
+    for introducer in *b"]P_^X" {
+        let mut model = TerminalModel::new(TerminalSize::new(3, 20), 0).expect("model");
+        model
+            .ingest(&[0x1b, introducer, b'x', 0x1b])
+            .expect("partial string");
+        let update = model.ingest(b"[18t").expect("resume at CSI");
+        assert_eq!(update.replies, b"\x1b[8;3;20t");
+    }
 }

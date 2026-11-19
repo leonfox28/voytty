@@ -10,7 +10,7 @@ use voytty_core::terminal::{
 use voytty_terminal::{
     MAX_CELL_TEXT_BYTES, MAX_COMBINING_BYTES_PER_SESSION, MAX_COMBINING_CELLS_PER_SESSION,
     MAX_CONTROL_SEQUENCE_BYTES, MAX_CONTROL_STRING_BYTES, MAX_OSC52_BASE64_BYTES,
-    MAX_REPLY_BYTES_PER_UPDATE, TerminalError, TerminalModel,
+    MAX_REPLY_BYTES_PER_UPDATE, TerminalModel,
 };
 
 fn visible_text(model: &TerminalModel) -> String {
@@ -371,7 +371,17 @@ fn underline_color_and_ordinary_rgb_components_are_supported() {
 fn canonical_reply_stream_has_a_hard_per_update_limit() {
     let mut model = TerminalModel::new(TerminalSize::new(2, 8), 0).expect("model");
     let queries = b"\x1b[c".repeat(MAX_REPLY_BYTES_PER_UPDATE / 4 + 1);
-    assert_eq!(model.ingest(&queries), Err(TerminalError::ReplyOverflow));
+    let update = model.ingest(&queries).expect("model survives reply limit");
+    let reply = b"\x1b[?1;2c";
+    let retained = MAX_REPLY_BYTES_PER_UPDATE / reply.len();
+    assert_eq!(update.replies, reply.repeat(retained));
+    assert_eq!(
+        update.events,
+        [TerminalSideEvent::EventsDropped {
+            count: (queries.len() / 3 - retained) as u64,
+        }]
+    );
+    assert_eq!(model.ingest(b"\x1b[c").expect("next update").replies, reply);
 }
 
 #[test]

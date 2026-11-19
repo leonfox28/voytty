@@ -14,12 +14,17 @@ pub(crate) struct Hyperlinks {
     values: HashMap<Hyperlink, Arc<TerminalHyperlink>>,
     screens: [HashSet<Hyperlink>; 2],
     bytes: usize,
+    pub(crate) dirty: bool,
+    pub(crate) scanned: bool,
     next_id: u64,
 }
 
 impl AlacrittyEngine {
     pub(crate) fn close_hyperlink(&mut self) {
-        self.term.grid_mut().cursor.template.set_hyperlink(None);
+        if self.term.grid().cursor.template.hyperlink().is_some() {
+            self.hyperlinks.dirty = true;
+            self.term.grid_mut().cursor.template.set_hyperlink(None);
+        }
     }
 
     pub(crate) fn set_web_hyperlink(&mut self, payload: &str) -> bool {
@@ -60,7 +65,11 @@ impl AlacrittyEngine {
         if self.hyperlinks.values.len() >= MAX_TERMINAL_HYPERLINKS
             || self.hyperlinks.bytes + value.payload_bytes() > MAX_TERMINAL_HYPERLINK_BYTES
         {
+            if !self.hyperlinks.dirty || self.hyperlinks.scanned {
+                return false;
+            }
             self.reconcile_hyperlinks();
+            self.hyperlinks.scanned = true;
         }
         if self.hyperlinks.values.len() >= MAX_TERMINAL_HYPERLINKS
             || self.hyperlinks.bytes + value.payload_bytes() > MAX_TERMINAL_HYPERLINK_BYTES
@@ -84,6 +93,10 @@ impl AlacrittyEngine {
     }
 
     pub(crate) fn reconcile_hyperlinks(&mut self) {
+        self.hyperlinks.dirty = false;
+        if self.hyperlinks.values.is_empty() {
+            return;
+        }
         let index =
             usize::from(self.active_screen() == voytty_core::terminal::ActiveScreen::Alternate);
         let grid = self.term.grid();

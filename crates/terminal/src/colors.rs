@@ -320,7 +320,7 @@ pub(crate) fn sgr(style: TerminalStyle) -> String {
 }
 pub(crate) fn capabilities(payload: &str) -> Vec<u8> {
     let mut result = String::new();
-    for encoded_name in payload.split(';') {
+    for encoded_name in payload.split(';').take(256) {
         let Some(name) = decode_hex(encoded_name) else {
             result.push_str("\x1bP0+r\x1b\\");
             break;

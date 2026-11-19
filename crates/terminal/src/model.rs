@@ -13,7 +13,7 @@ use voytty_core::terminal::{
 };
 
 use crate::engine::AlacrittyEngine;
-use crate::ingress::{IngressError, PresentationBoundary, TerminalIngressPolicy, UpdateCollector};
+use crate::ingress::{PresentationBoundary, TerminalIngressPolicy, UpdateCollector};
 use crate::projection::{CHECKPOINT_FORMAT_VERSION, ProjectedScreen, project, project_row};
 
 /// Opaque, content-redacted baseline for one merged latest-state delta.
@@ -111,14 +111,6 @@ impl fmt::Display for TerminalError {
 
 impl std::error::Error for TerminalError {}
 
-impl From<IngressError> for TerminalError {
-    fn from(error: IngressError) -> Self {
-        match error {
-            IngressError::ReplyOverflow => Self::ReplyOverflow,
-        }
-    }
-}
-
 /// Host-authoritative Alacritty-backed terminal model.
 pub struct TerminalModel {
     engine: AlacrittyEngine,
@@ -213,6 +205,7 @@ impl TerminalModel {
             });
         }
 
+        self.engine.begin_update();
         let mut output = UpdateCollector::new();
         while !bytes.is_empty() {
             if self.expire_synchronized_output(Instant::now()) {
@@ -222,7 +215,7 @@ impl TerminalModel {
             self.engine.grid_input = false;
             let consumed =
                 self.ingress
-                    .process_until_boundary(bytes, &mut self.engine, &mut output)?;
+                    .process_until_boundary(bytes, &mut self.engine, &mut output);
             bytes = &bytes[consumed..];
             self.commit_metadata();
             match self.ingress.take_boundary() {
