@@ -194,6 +194,9 @@ impl Drop for StagedUpload {
             drop(self.file.take());
             let _ = fs::remove_file(self.directory.join(".part"));
             let _ = fs::remove_dir(&self.directory);
+            if let Some(session) = self.directory.parent() {
+                let _ = fs::remove_dir(session);
+            }
         }
     }
 }

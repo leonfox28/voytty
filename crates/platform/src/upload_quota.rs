@@ -51,21 +51,50 @@ pub(super) fn lock(root: &Path, uid: u32) -> io::Result<File> {
     Ok(lock)
 }
 
-fn remove_empty_directory(path: &Path, legacy: bool) -> io::Result<()> {
-    // Old processes do not take our account lock. Leave their freshly created
-    // transfer and session directories alone during a rolling upgrade.
-    if legacy
-        && !fs::symlink_metadata(path)?
+// Published paths belong to the user, who may move them during an inventory.
+fn if_present<T>(result: io::Result<T>) -> io::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn managed_entries(path: &Path, uid: u32) -> io::Result<Option<fs::ReadDir>> {
+    if let Err(error) = validate_directory(path, uid) {
+        if if_present(fs::symlink_metadata(path))?.is_none() {
+            return Ok(None);
+        }
+        return Err(private_path_error(error));
+    }
+    if_present(fs::read_dir(path))
+}
+
+fn retire_directory(path: &Path, removed_file: bool) -> io::Result<()> {
+    // Leave freshly emptied directories for callers removing their own files.
+    let Some(metadata) = if_present(fs::symlink_metadata(path))? else {
+        return Ok(());
+    };
+    if !removed_file
+        && !metadata
             .modified()?
             .elapsed()
             .is_ok_and(|age| age >= RETENTION)
     {
         return Ok(());
     }
-    if fs::read_dir(path)?.next().is_none() {
-        fs::remove_dir(path)?;
+    match fs::remove_dir(path) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+            ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
     }
-    Ok(())
 }
 
 /// Caller holds the account lock while scanning and reserving its next transfer.
@@ -87,8 +116,10 @@ pub(super) fn scan(
             continue;
         };
         let parent = entry.path();
-        validate_directory(&parent, uid).map_err(private_path_error)?;
-        for transfer in fs::read_dir(&parent)? {
+        let Some(transfers) = managed_entries(&parent, uid)? else {
+            continue;
+        };
+        for transfer in transfers {
             let transfer = transfer?;
             if !transfer.file_name().to_str().is_some_and(|name| {
                 name.len() == TransferId::LENGTH * 2
@@ -99,8 +130,11 @@ pub(super) fn scan(
                 continue;
             }
             let directory = transfer.path();
-            validate_directory(&directory, uid).map_err(private_path_error)?;
-            for entry in fs::read_dir(&directory)? {
+            let Some(files) = managed_entries(&directory, uid)? else {
+                continue;
+            };
+            let mut removed_file = false;
+            for entry in files {
                 let entry = entry?;
                 let name = entry.file_name();
                 let Some(name) = name.to_str() else { continue };
@@ -117,10 +151,12 @@ pub(super) fn scan(
                 }
                 let path = entry.path();
                 // A user can change or replace their published file. Never follow links.
-                if !entry.file_type()?.is_file() {
+                let Some(metadata) = if_present(fs::symlink_metadata(&path))? else {
+                    continue;
+                };
+                if !metadata.is_file() {
                     continue;
                 }
-                let metadata = fs::symlink_metadata(&path)?;
                 let stale = if active && !legacy {
                     let part = open_read(&path, uid).map_err(private_path_error)?;
                     match part.try_lock() {
@@ -135,7 +171,7 @@ pub(super) fn scan(
                         .is_ok_and(|age| age >= RETENTION)
                 };
                 if stale && validate_regular_file(&path, uid).is_ok() {
-                    fs::remove_file(path)?;
+                    removed_file |= if_present(fs::remove_file(path))?.is_some();
                 } else {
                     account.add(metadata.len(), active);
                     if request.is_some_and(|(requested, _)| id == requested) {
@@ -143,9 +179,9 @@ pub(super) fn scan(
                     }
                 }
             }
-            remove_empty_directory(&directory, legacy)?;
+            retire_directory(&directory, removed_file)?;
         }
-        remove_empty_directory(&parent, legacy)?;
+        retire_directory(&parent, false)?;
     }
     if let Some((_, size)) = request
         && (!account.admits(size, &ACCOUNT_LIMIT) || !session.admits(size, &SESSION_LIMIT))
