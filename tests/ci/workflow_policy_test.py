@@ -30,6 +30,8 @@ class ClassificationTests(unittest.TestCase):
             (["crates/client/src/transport.rs"], {"rust", "mobile"}),
             (["wiki/remote-cli.md", "crates/client/src/transport.rs"], {"rust", "mobile"}),
             (["proto/voytty/v2/session.proto"], {"rust", "mobile"}),
+            (["crates/core/src/release.rs"], {"rust", "mobile", "native"}),
+            (["crates/daemon/src/distribution.rs"], {"rust", "native"}),
             (["crates/core/build.rs"], {"rust", "mobile", "native"}),
             (["crates/platform/Cargo.toml"], {"rust", "native"}),
             (["deploy/relay/Dockerfile", "docs/relay.md"], {"relay"}),

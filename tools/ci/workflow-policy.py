@@ -49,7 +49,9 @@ def path_plan(paths: list[str]) -> dict[str, bool]:
             if path.startswith(("crates/client/", "crates/core/", "crates/proto/",
                                 "crates/diagnostics/", "proto/")):
                 plan["mobile"] = True
-            if path.endswith("Cargo.toml") or path.endswith("build.rs") or path.startswith("crates/core/src/release/"):
+            if (path.endswith(("Cargo.toml", "build.rs"))
+                    or path in {"crates/core/src/release.rs", "crates/daemon/src/distribution.rs"}
+                    or path.startswith("crates/core/src/release/")):
                 plan["native"] = True
         else:
             # Dependency/toolchain/CI/vendor edits and unknown inputs are broad.
