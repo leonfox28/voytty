@@ -1,6 +1,8 @@
 //! Real local socket evidence; Relay and address lookup services are disabled.
 
+use std::io::ErrorKind;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+use std::time::Duration;
 
 use iroh::{Endpoint, RelayMode, SecretKey, endpoint::presets};
 use voytty_daemon::transport::InfrastructureProfile;
@@ -28,17 +30,35 @@ async fn automatic_allocation_and_fixed_dual_stack_rebinding() {
     // Iroh releases the OS sockets only after the last Endpoint handle drops.
     drop(automatic);
 
+    let addresses = [
+        SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)),
+        SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)),
+    ];
     for _ in 0..2 {
+        // Windows can still hold the port while cancelled socket I/O completes.
+        for address in addresses {
+            wait_for_udp_release(address).await;
+        }
         let endpoint = builder(port).bind().await.expect("fixed bind and rebind");
-        assert_eq!(
-            endpoint.bound_sockets(),
-            vec![
-                SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)),
-                SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)),
-            ]
-        );
+        assert_eq!(endpoint.bound_sockets(), addresses);
         endpoint.close().await;
     }
+}
+
+async fn wait_for_udp_release(address: SocketAddr) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match UdpSocket::bind(address) {
+                Ok(_) => return,
+                Err(error) if error.kind() == ErrorKind::AddrInUse => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("probe UDP address {address}: {error}"),
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("UDP address {address} still occupied after endpoint shutdown"));
 }
 
 #[tokio::test]
