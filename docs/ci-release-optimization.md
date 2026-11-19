@@ -8,6 +8,10 @@
 剩余事项。日常命令以 [development.md](development.md) 和
 [releasing.md](releasing.md) 为准；本文是这一轮优化的依据和记录。
 
+普通 CI 的 Cargo 下载缓存仅包含 registry 索引与压缩包，由 main 写入。
+原生候选和签发作业重新下载依赖，避开已解包源码。正式发布按目标 SHA 选择
+成功的完整 main 手动运行，并在建草稿前再次查遍全部 Release 页。
+
 ## 各阶段运行什么
 
 | 阶段 | 运行内容 | 说明 |

@@ -2,10 +2,10 @@
 # Canonical metadata and verification helpers for the upstream relay artifact.
 # This file is sourced by the Docker build and the host-side regression tests.
 
-IROH_VERSION="1.0.3"
+IROH_VERSION="1.3.0"
 IROH_RELEASE_ROOT="https://github.com/n0-computer/iroh/releases/download"
-IROH_RELAY_SHA256_AMD64="9e25e394c6d09b449d86bb222de535d2a6e68de8030ee8ef39f682ab6ff0cd2c"
-IROH_RELAY_SHA256_ARM64="331a2f35519a778a5b0a2a34baa7f495d3540b3cdb549b8203cbfdd209df7641"
+IROH_RELAY_SHA256_AMD64="677f4c62342a6ba8044459b5fd4302f2b1dcb8402542072e3a4ade5039bc0b9e"
+IROH_RELAY_SHA256_ARM64="dc4b9d620642026966d498763ec8ba3a6eefde8d39994b2d63e3d15d7af770f8"
 
 iroh_relay_resolve() {
     case "${1-}" in

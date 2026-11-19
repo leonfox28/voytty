@@ -23,13 +23,13 @@ jobs:
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: cargo-downloads-v3-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'vendor/*/Cargo.lock', 'tests/relay/handshake-probe/Cargo.lock') }}
           restore-keys: |
-            cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
+            cargo-downloads-v3-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
       - uses: ./.github/actions/setup-ci-tools
         with:
           profile: dependencies
-      - name: Run both dependency-policy owners
+      - name: Audit the workspace, transport and relay probe lockfiles
         run: just ci-dependencies

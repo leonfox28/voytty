@@ -112,15 +112,14 @@ case "$command_name" in
             *'/branches/main/protection '*)
                 printf '%s\n' "${FAKE_PROTECTION:-true}"
                 ;;
-            *'/releases/tags/'*)
+            *'/releases?per_page=100'*)
                 if [ "${FAKE_RELEASE_API_ERROR:-0}" = 1 ]; then
                     echo 'gh: service unavailable (HTTP 500)' >&2
                     exit 1
                 elif [ "${FAKE_RELEASE_EXISTS:-0}" = 1 ]; then
-                    printf '%s\n' '{"tag_name":"fixture"}'
+                    printf '%s\n' '[[],[{"tag_name":"v0.1.10","draft":true}]]'
                 else
-                    echo 'gh: Not Found (HTTP 404)' >&2
-                    exit 1
+                    printf '%s\n' '[[]]'
                 fi
                 ;;
             *'/actions/workflows/ci.yml/runs '*)

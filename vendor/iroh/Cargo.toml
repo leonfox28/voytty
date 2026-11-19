@@ -388,6 +388,7 @@ version = "1.0.0"
 features = ["anyhow"]
 
 [dev-dependencies.postcard]
+default-features = false
 version = "1.1.1"
 features = ["use-std"]
 

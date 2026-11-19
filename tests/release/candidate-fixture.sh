@@ -52,7 +52,7 @@ jq -n --arg commit "$commit" '[1, 2] | .[] | {artifacts: [{
 # The full dispatch must be discoverable alongside historical push evidence;
 # newer PR, wrong-source and wrong-branch successes must not be selected.
 jq -n --arg commit "$commit" '{workflow_runs: [
-    {id: 1, event: "push", head_branch: "main", head_sha: $commit, created_at: "2026-01-01"},
+    {id: 1, event: "push", head_branch: "main", head_sha: $commit, created_at: "2026-01-06"},
     {id: 123, event: "workflow_dispatch", head_branch: "main", head_sha: $commit, created_at: "2026-01-02"},
     {id: 900, event: "pull_request", head_branch: "main", head_sha: $commit, created_at: "2026-01-03"},
     {id: 901, event: "workflow_dispatch", head_branch: "topic", head_sha: $commit, created_at: "2026-01-04"},

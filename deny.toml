@@ -7,6 +7,7 @@ version = 2
 yanked = "deny"
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "Informational unmaintained notice for transitive paste 1.0.15; no patched paste release exists, and pinned Iroh/Patchbay require it." },
+    { id = "RUSTSEC-2026-0542", reason = "Only the vendor all-features graph enables n0-qlog with humantime. Its chrono-related maintenance notice covers every version." },
     { id = "RUSTSEC-2026-0543", reason = "No maintained chrono version is available. Revisit when Patchbay, the Relay ACME dependency and Windows netwatch/wmi no longer pull it in." },
 ]
 
@@ -26,6 +27,8 @@ confidence-threshold = 0.8
 # Keep non-baseline licenses scoped to the exact transitive crates introduced by
 # pinned Iroh instead of allowing them for future dependencies globally.
 exceptions = [
+    # Optional upstream noq FIPS provider in the isolated all-features audit.
+    { crate = "aws-lc-fips-sys@0.14.3", allow = ["OpenSSL"] },
     # Windows named-pipe and known-folder adapters; exact transitive licenses reviewed.
     { crate = "doctest-file@1.1.1", allow = ["0BSD"] },
     { crate = "recvmsg@1.0.0", allow = ["0BSD"] },

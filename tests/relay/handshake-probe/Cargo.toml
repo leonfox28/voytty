@@ -9,5 +9,5 @@ publish = false
 license = "PolyForm-Noncommercial-1.0.0"
 
 [dependencies]
-iroh = { version = "=1.0.3", default-features = false, features = ["tls-ring"] }
+iroh = { version = "=1.3.0", default-features = false, features = ["tls-ring"] }
 tokio = { version = "=1.53.3", features = ["macros", "rt", "time"] }

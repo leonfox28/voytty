@@ -1955,7 +1955,11 @@ impl Actor {
                 regular: mut ips,
                 loopback,
             } = self.local_interfaces_watcher.get().local_addresses;
-            if ips.is_empty() && addrs.is_empty() {
+            // Unit-test endpoints run on the same host. A VPN or host firewall
+            // can advertise LAN interfaces that cannot route packets back to this host.
+            if cfg!(test) {
+                ips.extend(loopback);
+            } else if ips.is_empty() && addrs.is_empty() {
                 // Include loopback addresses only if there are no other interfaces
                 // or public addresses, this allows testing offline.
                 ips = loopback;

@@ -5,5 +5,7 @@ enable_quic_addr_discovery = false
 enable_metrics = false
 access = "everyone"
 
-# No [tls] or [limits] section: the host proxy owns TLS and upstream unlimited
-# defaults remain in effect.
+# Per-client receive allowance for sustained and burst traffic.
+[limits.client.rx]
+bytes_per_second = 8388608
+max_burst_bytes = 16777216

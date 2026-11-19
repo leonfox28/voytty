@@ -7,6 +7,13 @@ Upstream: <https://github.com/n0-computer/iroh>, revision
 The registry installation marker is omitted. The standalone workspace uses the
 same patched NOQ as the product. Android's vendor source inputs cover this crate.
 
+The CI owner `just ci-iroh` runs the complete upstream library test suite with
+the patched transport features, including the three real TLS relay regressions.
+Same-host unit-test endpoints advertise loopback alongside active LAN/VPN
+interfaces. The standalone lockfile is checked by `just ci-dependencies`.
+The postcard metrics round-trip uses its std feature without the optional
+heapless default, which would otherwise pull in unmaintained atomic-polyfill.
+
 ## Explicit direct-path upgrade
 
 `Endpoint::request_direct_path` lets an application ask an existing relayed peer

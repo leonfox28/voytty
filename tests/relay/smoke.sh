@@ -27,6 +27,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 docker run --detach --name "$container_name" \
+    --read-only --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 128 --memory 256m \
     --publish 127.0.0.1::38451 \
     --mount "type=bind,src=$relay_config,dst=/etc/iroh-relay/relay.toml,readonly" \
     "$image" >/dev/null
@@ -48,8 +49,9 @@ until health=$(curl --fail --silent --show-error \
 done
 
 printf '%s\n' "$health" | grep -Fq '"status":"ok"'
-printf '%s\n' "$health" | grep -Fq '"version":"1.0.3"'
+printf '%s\n' "$health" | grep -Fq '"version":"1.3.0"'
 curl --fail --silent --show-error --output /dev/null \
     "http://127.0.0.1:$relay_port/generate_204"
 
-echo "relay runtime health smoke test passed"
+sh "$repo_root/tests/relay/public-handshake.sh" "http://127.0.0.1:$relay_port"
+echo "relay health and authenticated handshake passed"

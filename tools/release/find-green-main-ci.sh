@@ -18,10 +18,10 @@ run=$(gh api --method GET \
     -H 'Accept: application/vnd.github+json' \
     -H 'X-GitHub-Api-Version: 2022-11-28' \
     "repos/$repository/actions/workflows/ci.yml/runs" \
-    -f branch=main -f status=success \
+    -f event=workflow_dispatch -f branch=main -f status=success \
     -f head_sha="$commit" -f per_page=100 \
     --jq ".workflow_runs
-        | map(select((.event == \"push\" or .event == \"workflow_dispatch\")
+        | map(select(.event == \"workflow_dispatch\"
             and .head_branch == \"main\"
             and .head_sha == \"$commit\"
             and .status == \"completed\"

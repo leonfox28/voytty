@@ -88,13 +88,15 @@ licensing-check:
 ci-noq:
     cargo +1.98.0 test --locked --manifest-path vendor/noq-proto/Cargo.toml --target-dir target/noq-tests --lib
 
-# Endpoint lifecycle and socket-free cold-relay queue expiry regressions.
+# Upstream endpoint tests and patched relay regressions, including real TLS sockets.
 ci-iroh:
-    cargo +1.98.0 test --locked --manifest-path vendor/iroh/Cargo.toml --target-dir target/iroh-tests --no-default-features --features tls-ring,unstable-custom-transports --lib voytty_
+    cargo +1.98.0 test --locked --manifest-path vendor/iroh/Cargo.toml --target-dir target/iroh-tests --no-default-features --features tls-ring,unstable-custom-transports --lib
 
-# Workspace and isolated relay-probe dependency policy.
+# Audit each independently resolved lockfile.
 ci-dependencies:
     cargo +1.98.0 deny check
+    cargo +1.98.0 deny --manifest-path vendor/iroh/Cargo.toml --config deny.toml check
+    cargo +1.98.0 deny --manifest-path vendor/noq-proto/Cargo.toml --config deny.toml check
     cargo +1.98.0 deny --manifest-path tests/relay/handshake-probe/Cargo.toml --config tests/relay/handshake-probe/deny.toml check
 
 # Docker-free relay contracts: probe Clippy, shell syntax, and pinned upstream artifacts.

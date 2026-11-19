@@ -2,8 +2,13 @@
 param([string]$Version = '', [string]$InstallDir = '', [switch]$NoPath)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-if ($Version -and $Version -notmatch '^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$') { throw 'Version must be a release version, for example 0.2.0' }
+# Preserve the OS TLS policy (including TLS 1.3) on newer runtimes.
+if ([int][Net.ServicePointManager]::SecurityProtocol -ne 0) {
+    [Net.ServicePointManager]::SecurityProtocol = ([int][Net.ServicePointManager]::SecurityProtocol -band 12288) -bor [int][Net.SecurityProtocolType]::Tls12
+}
+$number = '(?:0|[1-9][0-9]*)'
+$identifier = "(?:$number|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+if ($Version -and $Version -cnotmatch "\Av?$number\.$number\.$number(?:-$identifier(?:\.$identifier)*)?\z") { throw 'Version must be a release version, for example 0.2.0' }
 $origin = 'https://github.com/leonfox28/voytty/releases'
 $url = if ($Version) { "$origin/download/v$($Version.TrimStart('v'))/voytty-install.ps1" } else { "$origin/latest/download/voytty-install.ps1" }
 Add-Type -AssemblyName System.Net.Http
@@ -37,7 +42,9 @@ try {
         if ($memory.Length + $length -gt 262144 -or $watch.Elapsed.TotalSeconds -gt 60) { throw 'Installer download exceeded its bound' }
         $memory.Write($buffer, 0, $length)
     }
-    $installer = [scriptblock]::Create([Text.Encoding]::UTF8.GetString($memory.ToArray()))
+    $scriptText = [Text.Encoding]::UTF8.GetString($memory.ToArray())
+    if ([string]::IsNullOrWhiteSpace($scriptText)) { throw 'Downloaded installer is empty' }
+    $installer = [scriptblock]::Create($scriptText)
 } finally {
     $deadline.Cancel(); $deadline.Dispose()
     if ($stream) { $stream.Dispose() }; if ($response) { $response.Dispose() }

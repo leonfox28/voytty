@@ -1,6 +1,6 @@
 # Relay bundle
 
-This directory packages the unmodified official `iroh-relay` 1.0.3 binary and
+This directory packages the unmodified official `iroh-relay` 1.3.0 binary and
 contains the one supported deployment shape.
 
 - `artifact.sh` owns the upstream version, architecture mapping, download URLs,
@@ -11,26 +11,11 @@ contains the one supported deployment shape.
   explicitly disables unused metrics and UDP QAD.
 - `compose.yaml` publishes that listener only on host loopback, where a
   same-host TLS reverse proxy can reach it.
-- `resolve-publication.sh` maps the native-release workflow's trusted
-  `workflow_call` inputs to the production GHCR package and manual
-  `workflow_dispatch` inputs to the development package.
 
-The default server directory is
-`/opt/1panel/docker/compose/voytty-relay`. Update it manually:
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
-Compose uses `ghcr.io/leonfox28/zterm-relay:latest`; ordinary Docker or host
-restarts reuse the already pulled image. The project and its only container are
-both named `voytty-relay`. Docker's `local` log driver supplies bounded,
-compressed rotation without changing daemon-wide settings.
-
-The image keeps its historical name because publication is paused. Existing
-servers retain their old Compose project/container names and deployment paths;
-renaming this source bundle does not migrate a running relay.
+Copy the bundle to `/opt/1panel/docker/compose/voytty-relay` and run
+`docker compose up --build -d`. Compose builds the versioned image locally.
+Publication is paused. The container runs with a read-only root filesystem,
+no Linux capabilities, a 128-process limit and 256 MiB of memory.
 
 Public TLS, WebSocket forwarding, and certificates belong to the host reverse
 proxy. This bundle deliberately exposes no direct TLS/ACME template, metrics

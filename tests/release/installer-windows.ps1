@@ -106,6 +106,23 @@ keyUsage = critical,digitalSignature,keyCertSign
         try {
             if ($client.GetStringAsync($base + '/health.txt').GetAwaiter().GetResult() -cne 'voytty HTTPS fixture') { throw 'HTTPS fixture response mismatch' }
         } finally { $client.Dispose() }
+        # Redirect only this disposable copy's fixed origin to the trusted loopback fixture.
+        $bootstrap = [IO.File]::ReadAllText((Join-Path $PSScriptRoot '../../install/install.ps1'))
+        $origin = 'https://github.com/leonfox28/voytty/releases'
+        if (-not $bootstrap.Contains($origin)) { throw 'Unknown bootstrap origin' }
+        $bootstrap = [scriptblock]::Create($bootstrap.Replace($origin, $base))
+        $download = Join-Path $ReleaseDirectory 'download/v1.2.3-rc.1'
+        [IO.Directory]::CreateDirectory($download) | Out-Null
+        $asset = Join-Path $download 'voytty-install.ps1'
+        [IO.File]::WriteAllText($asset, 'param($InstallDir, [switch]$NoPath) "$InstallDir/$NoPath"')
+        if ((& $bootstrap -Version 'v1.2.3-rc.1' -InstallDir 'fixture' -NoPath) -cne 'fixture/True') { throw 'Bootstrap failed to run the selected installer' }
+        [IO.File]::WriteAllText($asset, '')
+        Expect-Rejection { & $bootstrap -Version '1.2.3-rc.1' } 'Bootstrap accepted an empty installer'
+        $beforeRequests = [IO.File]::ReadAllText($requests)
+        foreach ($invalid in @('1.2.3-01', '1.2.3-rc..1', '01.2.3', '1.2.3+build')) {
+            Expect-Rejection { & $bootstrap -Version $invalid } "Bootstrap accepted version $invalid"
+        }
+        if ([IO.File]::ReadAllText($requests) -cne $beforeRequests) { throw 'Invalid version triggered a request' }
         foreach ($baseline in @(0, 17)) {
             $global:LASTEXITCODE = $baseline
             $script:observedNativeCode = $null

@@ -6,7 +6,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+# Preserve the OS TLS policy (including TLS 1.3) on newer runtimes.
+if ([int][Net.ServicePointManager]::SecurityProtocol -ne 0) {
+    [Net.ServicePointManager]::SecurityProtocol = ([int][Net.ServicePointManager]::SecurityProtocol -band 12288) -bor [int][Net.SecurityProtocolType]::Tls12
+}
 $releaseTag = '@TAG@'
 $baseUrl = '@BASE_URL@'
 $manifestHash = '@MANIFEST_SHA256@'
@@ -23,6 +26,23 @@ if (-not ('VoyttyInstallerPlatform' -as [type])) {
 using System;
 using System.Runtime.InteropServices;
 public static class VoyttyInstallerPlatform {
+    [StructLayout(LayoutKind.Sequential)]
+    struct SecurityAttributes { public int Length; public IntPtr Descriptor; public int Inherit; }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool CreateDirectoryW(string path, ref SecurityAttributes attributes);
+
+    public static void CreatePrivateDirectory(string path, byte[] descriptor) {
+        var pinned = GCHandle.Alloc(descriptor, GCHandleType.Pinned);
+        try {
+            var attributes = new SecurityAttributes {
+                Length = Marshal.SizeOf(typeof(SecurityAttributes)), Descriptor = pinned.AddrOfPinnedObject()
+            };
+            if (!CreateDirectoryW(path, ref attributes))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        } finally { pinned.Free(); }
+    }
+
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool IsWow64Process2(IntPtr process, out ushort processMachine, out ushort nativeMachine);
@@ -40,6 +60,19 @@ $artifact = @($artifacts | Where-Object { $_.target -eq $target })
 if ($artifact.Count -ne 1) { throw 'Release is missing the native Windows target' }
 $artifact = $artifact[0]
 $InstallDir = [IO.Path]::GetFullPath($InstallDir)
+function Assert-InstallDirectory([IO.DirectoryInfo]$Directory) {
+    for ($node = $Directory; $null -ne $node; $node = $node.Parent) {
+        try { $attributes = [IO.File]::GetAttributes($node.FullName) }
+        catch [IO.FileNotFoundException] { continue }
+        catch [IO.DirectoryNotFoundException] { continue }
+        if (($attributes -band [IO.FileAttributes]::ReparsePoint) -or -not ($attributes -band [IO.FileAttributes]::Directory)) {
+            throw "Unsafe installation directory: $node"
+        }
+    }
+}
+Assert-InstallDirectory $InstallDir
+[IO.Directory]::CreateDirectory($InstallDir) | Out-Null
+Assert-InstallDirectory $InstallDir
 $destination = Join-Path $InstallDir 'voytty.exe'
 if (Test-Path -LiteralPath $destination) { throw 'voytty.exe already exists; use voytty update' }
 Add-Type -AssemblyName System.Net.Http
@@ -48,15 +81,14 @@ $handler.AllowAutoRedirect = $false
 $client = New-Object System.Net.Http.HttpClient($handler)
 $client.Timeout = [TimeSpan]::FromMinutes(10)
 $client.DefaultRequestHeaders.UserAgent.ParseAdd('voytty-installer')
-$temporary = Join-Path ([IO.Path]::GetTempPath()) ('voytty-install-' + [guid]::NewGuid().ToString('N'))
-[IO.Directory]::CreateDirectory($temporary) | Out-Null
+$temporary = Join-Path $InstallDir ('.voytty-install-' + [guid]::NewGuid().ToString('N'))
 # Protect staging before any downloaded executable or authentication data exists.
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
 $acl = New-Object Security.AccessControl.DirectorySecurity
 $acl.SetOwner($sid)
 $acl.SetAccessRuleProtection($true, $false)
 $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
-Set-Acl -LiteralPath $temporary -AclObject $acl
+[VoyttyInstallerPlatform]::CreatePrivateDirectory($temporary, $acl.GetSecurityDescriptorBinaryForm())
 function Get-BoundedAsset([string]$Name, [long]$Maximum) {
     $response = $null; $inputStream = $null; $output = $null
     $watch = [Diagnostics.Stopwatch]::StartNew()
@@ -108,16 +140,19 @@ try {
     & tar.exe -xzf $archive -C $temporary
     if ($LASTEXITCODE -ne 0) { throw 'Unable to extract native archive' }
     $candidate = Join-Path $temporary 'voytty.exe'
+    $attributes = [IO.File]::GetAttributes($candidate)
+    if ($attributes -band ([IO.FileAttributes]::ReparsePoint -bor [IO.FileAttributes]::Directory)) { throw 'Expected a regular candidate executable' }
     $identity = & $candidate --internal-release-self-check | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or $identity.build.target -cne $target -or ('v' + $identity.build.version) -cne $releaseTag) { throw 'Candidate identity mismatch' }
     & $candidate --internal-release-verify $manifest (Join-Path $temporary 'voytty-release.json.sig')
     if ($LASTEXITCODE -ne 0) { throw 'Release signature verification failed' }
-    if (-not (Test-Path -LiteralPath $InstallDir)) { [IO.Directory]::CreateDirectory($InstallDir) | Out-Null }
-    if ((Get-Item -LiteralPath $InstallDir).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Install directory must not be a reparse point' }
+    Assert-InstallDirectory $InstallDir
     & $candidate --internal-release-install $destination
     if ($LASTEXITCODE -ne 0) { throw 'Atomic installation failed' }
     if (-not $NoPath) {
-        if (@($env:Path -split ';') -notcontains $InstallDir) { $env:Path += ";$InstallDir" }
+        $entries = @($env:Path -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if (@($entries | ForEach-Object { $_.Trim().Trim('"').TrimEnd('\') }) -notcontains $InstallDir.TrimEnd('\')) { $entries += $InstallDir }
+        $env:Path = $entries -join ';'
     }
     Write-Output "Add $InstallDir to your user PATH for future terminals."
     Write-Output "Installed voytty $releaseTag for $target to $destination. Run voytty setup."

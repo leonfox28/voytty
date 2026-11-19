@@ -7,7 +7,7 @@ by default. This document covers the separately operable, optional self-hosted
 Relay; it is not silently added to that default profile.
 
 voytty does not implement or fork a Relay data plane. Its optional image
-downloads the official Iroh 1.0.3 Linux musl artifact, selects it from
+downloads the official Iroh 1.3.0 Linux musl artifact, selects it from
 BuildKit's `TARGETARCH`, verifies the upstream SHA-256, and copies the binary
 and Alpine CA bundle into a shell-free `scratch` runtime. The process runs as
 numeric UID/GID 65532.
@@ -16,11 +16,11 @@ Canonical upstream metadata lives in `deploy/relay/artifact.sh`:
 
 | Docker architecture | Official target | SHA-256 |
 | --- | --- | --- |
-| `amd64` | `x86_64-unknown-linux-musl` | `9e25e394c6d09b449d86bb222de535d2a6e68de8030ee8ef39f682ab6ff0cd2c` |
-| `arm64` | `aarch64-unknown-linux-musl` | `331a2f35519a778a5b0a2a34baa7f495d3540b3cdb549b8203cbfdd209df7641` |
+| `amd64` | `x86_64-unknown-linux-musl` | `677f4c62342a6ba8044459b5fd4302f2b1dcb8402542072e3a4ade5039bc0b9e` |
+| `arm64` | `aarch64-unknown-linux-musl` | `dc4b9d620642026966d498763ec8ba3a6eefde8d39994b2d63e3d15d7af770f8` |
 
 These values match the official
-[Iroh v1.0.3 release](https://github.com/n0-computer/iroh/releases/tag/v1.0.3).
+[Iroh v1.3.0 release](https://github.com/n0-computer/iroh/releases/tag/v1.3.0).
 The checksum is verified at the artifact-download boundary. Deployment does
 not add another image digest parser; Docker and GHCR already transfer images by
 content address.
@@ -38,17 +38,18 @@ There is one supported configuration for the optional self-hosted Relay:
 - Iroh serves plain HTTP inside the container on TCP 38451;
 - Docker publishes that listener only as `127.0.0.1:38451`;
 - QAD and metrics are disabled;
-- Relay access is `everyone`, with no voytty-specific limits;
+- Relay access is `everyone`, with 8 MiB/s per client and a 16 MiB burst;
 - Docker's rotating and compressed `local` log driver bounds logs.
 
 The complete deployment consists of only:
 
 - `deploy/relay/compose.yaml`;
-- `deploy/relay/relay.toml`.
+- `deploy/relay/relay.toml`;
+- the local build inputs `Dockerfile`, `.dockerignore` and `artifact.sh`.
 
 Compose project and container are both named `voytty-relay`. The image supplies
 its own default `--config-path /etc/iroh-relay/relay.toml` command, so Compose
-does not repeat it. There is no server-side build, `.env` image indirection,
+does not repeat it. There is no `.env` image indirection,
 container healthcheck, custom probe, metrics port, certificate volume, monitor,
 or direct TLS/ACME/QAD variant.
 
@@ -69,7 +70,7 @@ sh tests/relay/secret-scan.sh
 - `static.sh` checks the minimal image, publication workflow, configuration,
   and rendered Compose contract.
 - `smoke.sh` reuses the native-platform image built by `build-platforms.sh`,
-  then verifies `/healthz` and `/generate_204` without rebuilding it or
+  then verifies `/healthz`, `/generate_204`, and an authenticated Iroh handshake without rebuilding it or
   introducing a second Compose shape.
 
 The public acceptance probe creates an ephemeral Iroh endpoint identity and
@@ -95,32 +96,18 @@ versions. Existing Compose deployments and isolated relay build/runtime tests
 retain their current behavior. Historical production/development publication
 evidence is recorded in [Phase Zero verification](phase-zero-verification.md).
 
-The source bundle now names new Compose projects/containers `voytty-relay`, but
-pulls the existing `zterm-relay` image. A repository rename does not publish a
-new GHCR package or modify running servers. Existing deployments retain their
-old project/container names and paths; do not run the renamed Compose project
-beside an existing instance on the same port.
-
 ## Manual deployment and updates
 
-The default 1Panel Compose directory is:
-
-```text
-/opt/1panel/docker/compose/voytty-relay
-```
-
-Place the reviewed `compose.yaml` and `relay.toml` there. The normal install and
-every later update use the same two commands:
+Copy the reviewed `deploy/relay/` bundle to the 1Panel Compose directory and run:
 
 ```bash
 cd /opt/1panel/docker/compose/voytty-relay
-docker compose pull
-docker compose up -d
+docker compose up --build -d
 ```
 
-`pull` is deliberate: `up -d` and ordinary Docker/host restarts reuse the local
-image and do not fetch a new `latest`. Updates therefore remain manually
-triggered.
+Compose builds the versioned image locally using the verified upstream archive.
+The container uses a read-only filesystem with all capabilities dropped, a
+128-process limit, a 256 MiB memory limit, and privilege escalation disabled.
 
 After an update, accept the deployment once:
 
@@ -133,7 +120,7 @@ sh tests/relay/public-handshake.sh https://relay.zenithconsulting.cn
 
 Also inspect the host once to confirm that only loopback TCP 38451 is published,
 the container is named `voytty-relay`, its configured image is
-`ghcr.io/leonfox28/zterm-relay:latest`, and its log driver is `local`. Stop after
+`voytty/iroh-relay:1.3.0`, and its log driver is `local`. Stop after
 those checks pass; do not restart or switch images merely to repeat the same
 evidence.
 

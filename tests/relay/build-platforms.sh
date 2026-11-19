@@ -16,5 +16,5 @@ for relay_arch in amd64 arm64; do
     }
 
     docker run --rm --platform "linux/$relay_arch" "$image" --version \
-        | grep -F 'iroh-relay 1.0.3'
+        | grep -F 'iroh-relay 1.3.0'
 done

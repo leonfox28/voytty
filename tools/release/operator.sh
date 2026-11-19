@@ -143,18 +143,7 @@ require_tag_and_release_vacancy() {
 }
 
 require_release_vacancy() {
-    set +e
-    release_lookup=$(github_api --include \
-        "repos/$repository/releases/tags/$tag" 2>&1)
-    release_status=$?
-    set -e
-    case "$release_status" in
-        0) fail "GitHub Release $tag already exists; releases and assets are never replaced" ;;
-        *)
-            printf '%s\n' "$release_lookup" | grep -Eq 'HTTP[/][^ ]+ 404|HTTP 404' \
-                || fail "could not prove GitHub Release $tag is vacant"
-            ;;
-    esac
+    sh "$script_dir/require-vacant-release.sh" "$repository" "$tag"
 }
 
 require_prepare_branch_vacancy() {

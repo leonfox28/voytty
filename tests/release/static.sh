@@ -325,8 +325,14 @@ grep -Fq 'if: always()' "$ci_workflow" \
     || fail "CI gate must aggregate failed, cancelled, and skipped owners"
 [ "$(grep -Fc 'timeout-minutes:' "$ci_workflow")" -eq 12 ] \
     || fail "every CI job must have an explicit timeout"
-grep -Fq 'actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7' "$ci_workflow" \
+grep -Fq 'actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7' "$ci_workflow" \
     || fail "CI must use the pinned cache owner"
+if grep -Eq '^[[:space:]]*~/.cargo/(registry/?|registry/src/?|git/?)$|uses: actions/cache@' "$ci_workflow" "$workflow"; then
+    fail "CI must restore only checksum-verifiable Cargo downloads"
+fi
+if grep -Fq 'actions/cache' "$workflow" || printf '%s\n' "$macos_build_job" "$linux_build_job" | grep -Fq '/.cargo/'; then
+    fail "signing and native candidates must fetch fresh registry sources"
+fi
 for profile in 'just ci-policy' 'just ci-unix' \
     'just ci-dependencies' 'just ci-relay' 'just mobile-core-check'; do
     grep -Fq "$profile" "$ci_workflow" \
@@ -380,7 +386,8 @@ for floor in 'minimum_macos=13.0' 'minimum_glibc=2.28'; do
     grep -Fq "$floor" "$native_build" \
         || fail "shared native build lacks platform floor owner: $floor"
 done
-for api_owner in "$workflow:3" "$operator:1" "$green_ci_lookup:1"; do
+[ "$(grep -Fc 'sh tools/release/require-vacant-release.sh' "$workflow")" -eq 2 ] || fail "tag validation and draft creation must check all releases"
+for api_owner in "$workflow:1" "$repo_root/tools/release/require-vacant-release.sh:1" "$operator:1" "$green_ci_lookup:1"; do
     owner_path=${api_owner%:*}
     expected_headers=${api_owner##*:}
     actual_headers=$(grep -Fc 'X-GitHub-Api-Version: 2022-11-28' \

@@ -22,7 +22,7 @@ fail() {
 # shellcheck source=../../deploy/relay/artifact.sh
 . "$artifact_file"
 
-[ "$IROH_VERSION" = "1.0.3" ] || fail "unexpected Iroh version"
+[ "$IROH_VERSION" = "1.3.0" ] || fail "unexpected Iroh version"
 [ "${#IROH_RELAY_SHA256_AMD64}" -eq 64 ] || fail "invalid amd64 checksum"
 [ "${#IROH_RELAY_SHA256_ARM64}" -eq 64 ] || fail "invalid arm64 checksum"
 
@@ -71,8 +71,8 @@ for obsolete_file in \
         || fail "obsolete deployment artifact remains: $obsolete_file"
 done
 
-grep -Fq 'iroh = { version = "=1.0.3"' "$handshake_manifest" \
-    || fail "public handshake probe does not pin Iroh 1.0.3"
+grep -Fq 'iroh = { version = "=1.3.0"' "$handshake_manifest" \
+    || fail "public handshake probe does not pin Iroh 1.3.0"
 grep -Fq 'RelayConfig::new(relay_url.clone(), None)' "$handshake_source" \
     || fail "public handshake probe does not explicitly disable QAD"
 if grep -Fq 'expect_reconnect' "$handshake_source"; then
@@ -94,10 +94,11 @@ grep -Fqx 'enable_quic_addr_discovery = false' "$relay_config" \
 grep -Fqx 'enable_metrics = false' "$relay_config" \
     || fail "unused metrics are not disabled"
 grep -Fqx 'access = "everyone"' "$relay_config" || fail "relay access is not Everyone"
-if grep -Eiq '^[[:space:]]*(metrics_bind_addr|\[tls\]|\[limits\]|access[.])' "$relay_config"; then
-    fail "unsupported metrics, TLS, limits, or access policy remains"
+if grep -Eiq '^[[:space:]]*(metrics_bind_addr|\[tls\]|access[.])' "$relay_config"; then
+    fail "unsupported metrics, TLS, or access policy remains"
 fi
 
+grep -Fqx '[limits.client.rx]' "$relay_config" || fail "missing per-client receive limit"
 command -v jq >/dev/null 2>&1 || fail "jq is required to inspect Compose"
 docker compose -f "$compose_file" config --quiet
 compose_json=$(docker compose -f "$compose_file" config --format json)
@@ -105,7 +106,7 @@ printf '%s\n' "$compose_json" | jq -e '
     .name == "voytty-relay"
     and (.services | keys) == ["relay"]
     and .services.relay.container_name == "voytty-relay"
-    and .services.relay.image == "ghcr.io/leonfox28/zterm-relay:latest"
+    and .services.relay.image == "voytty/iroh-relay:1.3.0"
     and .services.relay.command == null
     and .services.relay.entrypoint == null
     and .services.relay.restart == "unless-stopped"
@@ -120,11 +121,14 @@ printf '%s\n' "$compose_json" | jq -e '
     and (.services.relay.volumes[0].source | endswith("/deploy/relay/relay.toml"))
     and .services.relay.volumes[0].target == "/etc/iroh-relay/relay.toml"
     and .services.relay.volumes[0].read_only == true
-    and (.services.relay | has("build") | not)
+    and (.services.relay.build.context | endswith("/deploy/relay"))
     and (.services.relay | has("environment") | not)
     and (.services.relay | has("healthcheck") | not)
-    and (.services.relay | has("read_only") | not)
-    and (.services.relay | has("security_opt") | not)
+    and .services.relay.read_only == true
+    and .services.relay.cap_drop == ["ALL"]
+    and .services.relay.pids_limit == 128
+    and (.services.relay.mem_limit | tonumber) == 268435456
+    and .services.relay.security_opt == ["no-new-privileges:true"]
     and (.services.relay | has("tmpfs") | not)
 ' >/dev/null || fail "Compose does not match the approved minimal contract"
 

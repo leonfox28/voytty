@@ -20,6 +20,6 @@ Invoke-Checked { cargo +1.98.0 test --locked --workspace --all-features --no-fai
 Invoke-Checked { & target/debug/voytty.exe --help }
 Invoke-Checked { & target/debug/voytty.exe --version }
 if ($Transport -eq 'true') {
-    Invoke-Checked { cargo +1.98.0 test --locked --manifest-path vendor/noq-proto/Cargo.toml --target-dir target/noq-tests --lib }
-    Invoke-Checked { cargo +1.98.0 test --locked --manifest-path vendor/iroh/Cargo.toml --target-dir target/iroh-tests --no-default-features --features tls-ring,unstable-custom-transports --lib voytty_ }
+    Invoke-Checked { just ci-noq }
+    Invoke-Checked { just ci-iroh }
 }

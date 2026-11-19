@@ -65,14 +65,14 @@ jobs:
           rustup toolchain install 1.98.0 --profile minimal
           --component rustfmt
       - name: Restore dependency downloads
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: cargo-downloads-v3-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'vendor/*/Cargo.lock', 'tests/relay/handshake-probe/Cargo.lock') }}
           restore-keys: |
-            cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
+            cargo-downloads-v3-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
       - uses: ./.github/actions/setup-ci-tools
         with:
           profile: policy
@@ -157,14 +157,14 @@ jobs:
           rustup toolchain install 1.98.0 --profile minimal
           --component clippy --component rust-src
       - name: Restore dependency downloads
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: cargo-downloads-v3-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'vendor/*/Cargo.lock', 'tests/relay/handshake-probe/Cargo.lock') }}
           restore-keys: |
-            cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
+            cargo-downloads-v3-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
       - name: Restore compiled dependencies
         id: compiled
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -277,15 +277,6 @@ jobs:
         run: sh tests/source-policy.sh
       - name: Install exact Rust toolchain
         run: rustup toolchain install 1.98.0 --profile minimal
-      - name: Restore dependency downloads
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
       - name: Restore native dependencies only for PR checks
         id: compiled-native
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -372,15 +363,6 @@ jobs:
           sh tests/source-policy.sh
       - name: Prepare the pinned glibc builder
         run: sh tools/release/setup-glibc-builder.sh
-      - name: Restore dependency downloads
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
       - name: Restore native dependencies only for PR checks
         id: compiled-native
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -494,19 +476,28 @@ jobs:
       - name: Install exact Rust toolchain
         run: rustup toolchain install 1.98.0 --profile minimal
       - name: Restore dependency downloads
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        id: downloads
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: cargo-downloads-v3-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'vendor/*/Cargo.lock', 'tests/relay/handshake-probe/Cargo.lock') }}
           restore-keys: |
-            cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
+            cargo-downloads-v3-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
       - uses: ./.github/actions/setup-ci-tools
         with:
           profile: dependencies
-      - name: Run both dependency-policy owners
+      - name: Audit the workspace, transport and relay probe lockfiles
         run: just ci-dependencies
+      - name: Save reviewed main dependency downloads
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.downloads.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: cargo-downloads-v3-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'vendor/*/Cargo.lock', 'tests/relay/handshake-probe/Cargo.lock') }}
       - name: Explain reproduction on failure
         if: failure()
         run: echo "Reproduce with just ci-dependencies." >> "$GITHUB_STEP_SUMMARY"
@@ -526,14 +517,14 @@ jobs:
           rustup toolchain install 1.98.0 --profile minimal
           --component clippy
       - name: Restore dependency downloads
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: cargo-downloads-v3-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'vendor/*/Cargo.lock', 'tests/relay/handshake-probe/Cargo.lock') }}
           restore-keys: |
-            cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
+            cargo-downloads-v3-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
       - uses: ./.github/actions/setup-ci-tools
         with:
           profile: rust
@@ -600,15 +591,6 @@ jobs:
       - name: Install exact Rust toolchain
         run: rustup toolchain install 1.98.0 --profile minimal
 
-      - name: Restore dependency downloads
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-downloads-v2-rust-1.98.0-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Download the five native candidates
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
