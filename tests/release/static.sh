@@ -382,6 +382,13 @@ grep -Fq "echo \"\$HOME/.cargo/bin\" >>\"\$GITHUB_PATH\"" "$glibc_setup" \
 if grep -Fq '/root/.cargo/bin' "$glibc_setup"; then
     fail "container setup must not assume root HOME"
 fi
+if grep -Fq 'sh.rustup.rs' "$glibc_setup"; then
+    fail "container setup must download a versioned rustup binary"
+fi
+[ "$(grep -Ec '(x86_64|aarch64)\) sha=[0-9a-f]{64} ;;' "$glibc_setup")" -eq 2 ] || fail "missing native rustup digests"
+awk '/sha256sum --check --status/ { verified = 1 }
+     /^"\$installer" -y/ && verified { installed = 1 }
+     END { exit !installed }' "$glibc_setup" || fail "rustup must be verified before execution"
 for floor in 'minimum_macos=13.0' 'minimum_glibc=2.28'; do
     grep -Fq "$floor" "$native_build" \
         || fail "shared native build lacks platform floor owner: $floor"
