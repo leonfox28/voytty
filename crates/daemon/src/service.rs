@@ -234,6 +234,74 @@ impl DeviceManagement {
         }
     }
 
+    async fn finish_revoke(
+        &self,
+        device_id: DeviceId,
+        mut guard: crate::authorization::AuthorizationWriteGuard,
+        sessions: SessionService,
+        deadline: Instant,
+    ) -> Result<(), DaemonError> {
+        use voytty_diagnostics::{Event as DiagnosticEvent, Kind, Level, Operation, Outcome};
+        let diagnostic = Operation::default();
+        let revoked_at_unix = now_unix_i64();
+        let generation = self
+            .store
+            .run_blocking_until(deadline, move |store, deadline| {
+                store.revoke_for_publication(device_id, revoked_at_unix, deadline)
+            })
+            .await?;
+        tracing::info!(
+            component = "authorization",
+            operation = "revoked",
+            generation = generation.get(),
+            "Inbound authorization revoked"
+        );
+        voytty_diagnostics::record(
+            DiagnosticEvent::new(Kind::AuthorizationRevoked)
+                .operation(&diagnostic)
+                .committed(true)
+                .count(generation.get()),
+        );
+        let cleanup = async {
+            guard.publish(AuthorizationSnapshot {
+                status: AuthorizationStatus::Revoked,
+                generation,
+            })?;
+
+            // Each cleanup owner receives a bounded opportunity even when SQLite
+            // committed at the end of the caller's budget or close failed.
+            let deadline = Instant::now() + voytty_client::protocol::DEFAULT_DEADLINE;
+            let close = await_service_until(
+                deadline,
+                self.remote_access.close_remote(device_id, deadline),
+                "closing revoked device connections",
+            )
+            .await
+            .and_then(|result| result);
+            let deadline = Instant::now() + voytty_client::protocol::DEFAULT_DEADLINE;
+            let detach = run_service_blocking_until(deadline, move || {
+                sessions
+                    .detach_remote_principal_until(device_id, deadline)
+                    .map(|_| ())
+            })
+            .await;
+            close.and(detach)
+        }
+        .await;
+        let mut event = DiagnosticEvent::new(Kind::AuthorizationCleanup)
+            .operation(&diagnostic)
+            .committed(true);
+        event = match &cleanup {
+            Ok(()) => event.outcome(Outcome::Success),
+            Err(error) => event
+                .level(Level::Warn)
+                .outcome(Outcome::PartialCompletion)
+                .error(error.kind()),
+        };
+        voytty_diagnostics::record(event);
+        cleanup
+    }
+
     /// Installs a deterministic notification after the revoke writer's first
     /// actual lock poll proves that it has queued or acquired the fair gate.
     #[cfg(test)]
@@ -784,81 +852,47 @@ impl DaemonService {
         devices: &DeviceManagement,
         deadline: Instant,
     ) -> Result<ServiceReply, DaemonError> {
-        use voytty_diagnostics::{Event as DiagnosticEvent, Kind, Level, Operation, Outcome};
-        let diagnostic = Operation::default();
         let request: v2::LocalDeviceRevokeRequest = decode_request(&frame)?;
         let device_id = request.try_into().map_err(device_wire_error)?;
 
         // The write permit is held across the complete ordered revoke. A
         // queued sensitive commit cannot overtake it, while an already-held
         // read permit completes before the durable transaction begins.
-        #[cfg(test)]
-        let mut guard = match &devices.revoke_guard_after_first_poll_for_test {
-            Some(observer) => {
-                devices
+        let acquire = async {
+            #[cfg(test)]
+            if let Some(observer) = &devices.revoke_guard_after_first_poll_for_test {
+                return devices
                     .authorization
                     .revoke_guard_after_first_poll_for_test(device_id, observer)
-                    .await?
+                    .await;
             }
-            None => devices.authorization.revoke_guard(device_id).await?,
+            devices.authorization.revoke_guard(device_id).await
         };
-        #[cfg(not(test))]
-        let mut guard = devices.authorization.revoke_guard(device_id).await?;
-        let store = devices.store.clone();
-        let revoked_at_unix = now_unix_i64();
-        let generation = store
-            .run_blocking_until(deadline, move |store, deadline| {
-                store.revoke(device_id, revoked_at_unix, deadline)
-            })
-            .await?;
-        tracing::info!(
-            component = "authorization",
-            operation = "revoked",
-            generation = generation.get(),
-            "Inbound authorization revoked"
-        );
-        voytty_diagnostics::record(
-            DiagnosticEvent::new(Kind::AuthorizationRevoked)
-                .operation(&diagnostic)
-                .committed(true)
-                .count(generation.get()),
-        );
-        let cleanup = async {
-            guard.publish(AuthorizationSnapshot {
-                status: AuthorizationStatus::Revoked,
-                generation,
-            })?;
-
-            await_service_until(
-                deadline,
-                devices.remote_access.close_remote(device_id, deadline),
-                "closing revoked device connections",
-            )
-            .await??;
-            let sessions = self.sessions.clone();
-            run_service_blocking_until(deadline, move || {
-                sessions
-                    .detach_remote_principal_until(device_id, deadline)
-                    .map(|_| ())
-            })
-            .await?;
-            Ok::<(), DaemonError>(())
-        }
-        .await;
-        let mut event = DiagnosticEvent::new(Kind::AuthorizationCleanup)
-            .operation(&diagnostic)
-            .committed(true);
-        event = match &cleanup {
-            Ok(()) => event.outcome(Outcome::Success),
-            Err(error) => event
-                .level(Level::Warn)
-                .outcome(Outcome::PartialCompletion)
-                .error(error.kind()),
-        };
-        voytty_diagnostics::record(event);
-        cleanup?;
-        drop(guard);
-
+        let guard =
+            await_service_until(deadline, acquire, "waiting for the revoke permit").await??;
+        let management = devices.clone();
+        let sessions = self.sessions.clone();
+        // Once submitted, the worker owns the permit through commit, publication
+        // and cleanup even if the IPC handler or its caller goes away.
+        let worker = tokio::spawn(async move {
+            management
+                .finish_revoke(device_id, guard, sessions, deadline)
+                .await
+        });
+        tokio::time::timeout_at(deadline.into(), worker)
+            .await
+            .map_err(|_| {
+                DaemonError::new(
+                    DomainErrorKind::OperationOutcomeUnknown,
+                    "revocation was submitted but its result was unavailable before the deadline",
+                )
+            })?
+            .map_err(|error| {
+                DaemonError::new(
+                    DomainErrorKind::OperationOutcomeUnknown,
+                    format!("revocation worker ended before reporting its outcome: {error}"),
+                )
+            })??;
         let device = self.device_summary(devices, device_id, deadline).await?;
         ServiceReply::message(
             WireKind::LocalDeviceRevokeResponse,
@@ -1209,7 +1243,7 @@ fn now_unix_i64() -> i64 {
 #[cfg(any(unix, windows))]
 pub(crate) struct ServiceReply {
     pub(crate) bytes: Zeroizing<Vec<u8>>,
-    pub(crate) stop_after_flush: bool,
+    pub(crate) stop_committed: bool,
 }
 
 #[cfg(any(unix, windows))]
@@ -1218,7 +1252,7 @@ impl ServiceReply {
         kind: WireKind,
         request_id: u64,
         message: &Message,
-        stop_after_flush: bool,
+        stop_committed: bool,
     ) -> Result<Self, DaemonError>
     where
         Message: prost::Message,
@@ -1227,7 +1261,7 @@ impl ServiceReply {
             Zeroizing::new(encode_message(kind, request_id, 0, message).map_err(protocol_error)?);
         Ok(Self {
             bytes,
-            stop_after_flush,
+            stop_committed,
         })
     }
 
@@ -1242,7 +1276,7 @@ impl ServiceReply {
         );
         Self {
             bytes,
-            stop_after_flush: false,
+            stop_committed: false,
         }
     }
 
@@ -1258,7 +1292,7 @@ impl ServiceReply {
         );
         Ok(Self {
             bytes,
-            stop_after_flush: false,
+            stop_committed: false,
         })
     }
 }

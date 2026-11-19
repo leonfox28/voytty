@@ -3945,6 +3945,81 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn submitted_revoke_survives_cancellation_while_waiting_for_sqlite() {
+        let sessions = empty_service(device(0x80));
+        let mut harness = DirectRevokeHarness::start(sessions.clone());
+        let store = harness.store.clone();
+        let (entered, blocked) = std_mpsc::sync_channel(1);
+        let (release, hold) = std_mpsc::channel();
+        let barrier = tokio::task::spawn_blocking(move || {
+            store.block_for_test(Instant::now() + Duration::from_secs(5), entered, hold)
+        });
+        blocked
+            .recv_timeout(Duration::from_secs(2))
+            .expect("SQLite actor paused");
+        let request = harness.spawn_revoke(401, MATRIX_REMOTE);
+        harness.wait_for_writer(MATRIX_REMOTE).await;
+        request.abort();
+        assert!(
+            request
+                .await
+                .expect_err("IPC caller cancelled")
+                .is_cancelled()
+        );
+        release.send(()).expect("resume SQLite actor");
+        barrier.await.expect("barrier task").expect("actor resumed");
+        let close = harness.access.wait_for_close(0).await;
+        assert_eq!(close.durable.status, AuthorizationStatus::Revoked);
+        assert_eq!(close.memory, close.durable);
+        harness.access.release_first_close();
+        // The write guard is released only after the worker completes cleanup.
+        let guard = tokio::time::timeout(
+            Duration::from_secs(2),
+            harness.authorization.revoke_guard(MATRIX_REMOTE),
+        )
+        .await
+        .expect("cleanup completed")
+        .expect("reacquire permit");
+        assert_eq!(guard.snapshot(), close.durable);
+        drop(guard);
+        assert_eq!(harness.finish(&sessions), close.durable);
+    }
+
+    #[tokio::test]
+    async fn revoke_deadline_while_waiting_for_the_permit_has_no_side_effect() {
+        let sessions = empty_service(device(0x80));
+        let harness = DirectRevokeHarness::start(sessions.clone());
+        let guard = harness
+            .authorization
+            .revoke_guard(MATRIX_REMOTE)
+            .await
+            .expect("hold permit");
+        let frame = decoded_message(
+            WireKind::LocalDeviceRevokeRequest,
+            402,
+            &v2::LocalDeviceRevokeRequest {
+                device_id: Some(MATRIX_REMOTE.into()),
+            },
+        );
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            harness
+                .service
+                .dispatch_until(frame, Instant::now() + Duration::from_millis(40)),
+        )
+        .await
+        .expect("bounded permit wait");
+        assert_eq!(
+            service_error_kind(&result.bytes),
+            DomainErrorKind::DeadlineExceeded
+        );
+        let before = guard.snapshot();
+        drop(guard);
+        assert_eq!(harness.access.close_count(), 0);
+        assert_eq!(harness.finish(&sessions), before);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn real_revoke_writer_orders_remote_effect_matrix_and_preserves_sessions() {
         let own = device(0x80);
         let pty_temporary = tempfile::tempdir().expect("temporary revoke-matrix PTY fixture");

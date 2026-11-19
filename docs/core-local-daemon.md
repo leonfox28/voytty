@@ -149,10 +149,10 @@ timers. The daemon's shared dial worker also bounds each normal setup attempt to
 Pairing attempt limits and inbound first-frame admission limits remain separate.
 
 A stop acknowledgement is produced only after bounded concurrent session
-cleanup succeeds, then flushed before the listener exits and removes its
-socket. Cleanup deadline or failed acknowledgement delivery leaves the daemon
-and listener running for status/retry, while stopping an already stopped daemon
-is a CLI-level success. M4's create/rename/close/takeover mutations use
+cleanup succeeds. The listener attempts to flush the acknowledgement within the
+request deadline, then exits and removes its socket even if the client has
+disconnected. A cleanup failure keeps the daemon available for status and retry.
+Stopping an already stopped daemon is a CLI-level success. M4's create/rename/close/takeover mutations use
 per-operation exact-result singleflight; a completed request whose response was
 lost replays on a new socket without repeating its side effect.
 Recoverable listener accept errors stay inside the serve loop. On fatal server

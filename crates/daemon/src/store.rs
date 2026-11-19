@@ -827,7 +827,7 @@ impl StoreHandle {
         deadline: Instant,
         queued: mpsc::Sender<()>,
     ) -> Result<Option<DeviceMetadata>, DaemonError> {
-        self.request_observed(deadline, Some(queued), |meta, reply| {
+        self.request_observed(deadline, Some(queued), false, |meta, reply| {
             StoreCommand::Metadata { meta, reply }
         })
     }
@@ -863,6 +863,22 @@ impl StoreHandle {
         deadline: Instant,
     ) -> Result<AuthGeneration, DaemonError> {
         self.request(deadline, |meta, reply| StoreCommand::Revoke {
+            meta,
+            endpoint_id,
+            now_unix,
+            reply,
+        })
+    }
+
+    /// The revoke worker uses the deadline for admission. Once SQLite starts the
+    /// transaction it needs the final result to publish the same generation.
+    pub(crate) fn revoke_for_publication(
+        &self,
+        endpoint_id: DeviceId,
+        now_unix: i64,
+        deadline: Instant,
+    ) -> Result<AuthGeneration, DaemonError> {
+        self.request_observed(deadline, None, true, |meta, reply| StoreCommand::Revoke {
             meta,
             endpoint_id,
             now_unix,
@@ -1106,13 +1122,14 @@ impl StoreHandle {
         deadline: Instant,
         build: impl FnOnce(CommandMeta, SyncSender<Result<R, DaemonError>>) -> StoreCommand,
     ) -> Result<R, DaemonError> {
-        self.request_observed(deadline, None, build)
+        self.request_observed(deadline, None, false, build)
     }
 
     fn request_observed<R>(
         &self,
         deadline: Instant,
         queued: Option<mpsc::Sender<()>>,
+        await_started_revoke: bool,
         build: impl FnOnce(CommandMeta, SyncSender<Result<R, DaemonError>>) -> StoreCommand,
     ) -> Result<R, DaemonError> {
         let gate = Arc::new(CommandGate::default());
@@ -1150,7 +1167,7 @@ impl StoreHandle {
                 }
             }
         }
-        wait_for_store_response(response, gate, deadline)
+        wait_for_store_response(response, gate, deadline, await_started_revoke)
     }
 }
 
@@ -1500,6 +1517,7 @@ fn wait_for_store_response<R>(
     response: Receiver<Result<R, DaemonError>>,
     gate: Arc<CommandGate>,
     deadline: Instant,
+    await_started_revoke: bool,
 ) -> Result<R, DaemonError> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     match response.recv_timeout(remaining) {
@@ -1525,6 +1543,14 @@ fn wait_for_store_response<R>(
             Ok(_) | Err(COMMAND_EXPIRED) => {
                 Err(deadline_exceeded("store command expired before starting"))
             }
+            // The revoke worker must retain the write permit and publish the
+            // actual generation once SQLite completes an admitted transaction.
+            Err(COMMAND_STARTED) if await_started_revoke => response.recv().map_err(|_| {
+                DaemonError::new(
+                    DomainErrorKind::OperationOutcomeUnknown,
+                    "store actor disconnected during revocation",
+                )
+            })?,
             Err(_) => Err(DaemonError::new(
                 DomainErrorKind::OperationOutcomeUnknown,
                 "store command started but did not report an outcome before its deadline",
@@ -1867,6 +1893,7 @@ mod tests {
                 response,
                 Arc::clone(&gate),
                 Instant::now() - Duration::from_secs(1),
+                false,
             );
             assert_eq!(result.expect_err("elapsed deadline").kind(), expected);
             assert_eq!(

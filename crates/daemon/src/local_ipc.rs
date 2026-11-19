@@ -150,7 +150,7 @@ impl LocalIpcLimits {
     }
 }
 
-/// Runs one local listener until a flushed stop response requests shutdown.
+/// Runs one local listener until a committed stop finishes its acknowledgement attempt.
 #[cfg(any(unix, windows))]
 pub async fn serve_local(
     listener: voytty_platform::local::Listener,
@@ -283,7 +283,7 @@ async fn serve_local_inner(
     drop(listener);
     drop(stop_sender);
     // An explicit stop arrives only after Session shutdown has succeeded and
-    // its acknowledgement has been flushed. Retire this listener's remaining
+    // its acknowledgement has been attempted. Retire this listener's remaining
     // connections now: an idle first frame or a remote controller tunnel has
     // no completion that the stopping daemon should await. A local terminal
     // attachment does: its writer may still be fetching the final update for
@@ -502,47 +502,55 @@ async fn handle_connection(
             return;
         }
     };
-    let remaining = deadline.saturating_sub(started.elapsed());
     let session_wire = SessionWireServer::new(service.sessions().clone());
     let report_progress = frame.kind == WireKind::LocalSessionUnaryRequest;
-    let reply = match tokio::time::timeout(
-        remaining,
-        crate::connection_progress::local::observe(
-            &mut stream,
-            request_id,
-            absolute_deadline,
-            report_progress,
-            |progress| async {
-                if SessionWireServer::handles_unary(frame.kind) {
-                    session_wire
-                        .dispatch_local_unary_until(frame, absolute_deadline)
-                        .await
-                } else {
-                    service
-                        .dispatch_until_with_progress(frame, absolute_deadline, progress)
-                        .await
-                }
-            },
-        ),
-    )
-    .await
-    {
-        Ok(reply) => reply,
-        Err(_) => ServiceReply::error(
-            request_id,
-            &DaemonError::new(
-                DomainErrorKind::DeadlineExceeded,
-                "local request exceeded its deadline",
-            ),
-        ),
+    // These services arbitrate admission, commit and timeout themselves. Dropping
+    // their result here could lose a committed stop or a typed pairing outcome.
+    let owns_outcome = matches!(
+        frame.kind,
+        WireKind::LocalPairAcceptRequest
+            | WireKind::LocalDeviceRevokeRequest
+            | WireKind::LocalStopRequest
+    );
+    let dispatch = crate::connection_progress::local::observe(
+        &mut stream,
+        request_id,
+        absolute_deadline,
+        report_progress,
+        |progress| async {
+            if SessionWireServer::handles_unary(frame.kind) {
+                session_wire
+                    .dispatch_local_unary_until(frame, absolute_deadline)
+                    .await
+            } else {
+                service
+                    .dispatch_until_with_progress(frame, absolute_deadline, progress)
+                    .await
+            }
+        },
+    );
+    let deadline = tokio::time::Instant::from_std(absolute_deadline);
+    let reply = if owns_outcome {
+        dispatch.await
+    } else {
+        tokio::time::timeout_at(deadline, dispatch)
+            .await
+            .unwrap_or_else(|_| {
+                ServiceReply::error(
+                    request_id,
+                    &DaemonError::new(
+                        DomainErrorKind::DeadlineExceeded,
+                        "local request exceeded its deadline",
+                    ),
+                )
+            })
     };
-    if stream.write_all(&reply.bytes).await.is_err() {
-        return;
-    }
-    if stream.shutdown().await.is_err() {
-        return;
-    }
-    if reply.stop_after_flush {
+    let _ = tokio::time::timeout_at(deadline, async {
+        stream.write_all(&reply.bytes).await?;
+        stream.shutdown().await
+    })
+    .await;
+    if reply.stop_committed {
         let _ = stop_sender.send(());
     }
 }
@@ -603,12 +611,8 @@ mod tests {
     use voytty_client::protocol::resolved_target_wire;
     use voytty_proto::{FrameDecoder, encode_message};
 
-    #[tokio::test]
-    async fn accepted_stop_does_not_wait_for_an_idle_ingress_handler() {
-        let temporary = tempfile::tempdir().expect("private stop fixture");
-        let socket = temporary.path().join("stop.sock");
-        let listener = voytty_platform::local::Listener::bind(&socket).expect("fixture listener");
-        let setup = crate::bootstrap::BootstrapResult {
+    fn stop_setup() -> crate::bootstrap::BootstrapResult {
+        crate::bootstrap::BootstrapResult {
             device_id: DeviceId::from_array([0x72; DeviceId::LENGTH]),
             endpoint_id: "stop-fixture-endpoint".to_owned(),
             config: crate::config::validate_setup_input(
@@ -616,11 +620,52 @@ mod tests {
                 crate::config::ValidatedInfrastructure::OfficialN0,
             )
             .expect("fixture setup"),
-        };
+        }
+    }
+
+    #[tokio::test]
+    async fn committed_stop_survives_a_disconnected_client() {
+        let temporary = tempfile::tempdir().expect("private stop fixture");
+        let socket = temporary.path().join("stop.sock");
+        let listener = voytty_platform::local::Listener::bind(&socket).expect("fixture listener");
+        let mut client = tokio::net::UnixStream::connect(&socket)
+            .await
+            .expect("connect");
+        let frame = encode_message(
+            WireKind::LocalStopRequest,
+            1,
+            1000,
+            &v2::LocalStopRequest {
+                force: false,
+                operation_id: None,
+            },
+        )
+        .expect("stop frame");
+        client.write_all(&frame).await.expect("submit stop");
+        drop(client);
+        // Start serving after the close so the reply cannot reach the requester.
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            serve_local(
+                listener,
+                nix::unistd::Uid::effective().as_raw(),
+                Arc::new(DaemonService::with_started_at(stop_setup(), 1)),
+            ),
+        )
+        .await
+        .expect("listener exited after committed stop")
+        .expect("clean stop");
+    }
+
+    #[tokio::test]
+    async fn accepted_stop_does_not_wait_for_an_idle_ingress_handler() {
+        let temporary = tempfile::tempdir().expect("private stop fixture");
+        let socket = temporary.path().join("stop.sock");
+        let listener = voytty_platform::local::Listener::bind(&socket).expect("fixture listener");
         let mut server = tokio::spawn(serve_local_inner(
             listener,
             nix::unistd::Uid::effective().as_raw(),
-            Arc::new(DaemonService::with_started_at(setup, 1)),
+            Arc::new(DaemonService::with_started_at(stop_setup(), 1)),
             LocalIpcLimits::default(),
             None,
         ));

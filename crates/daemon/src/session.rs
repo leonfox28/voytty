@@ -1044,6 +1044,7 @@ impl SessionService {
         approved: bool,
         deadline: Instant,
     ) -> Result<ShutdownOutcome, DaemonError> {
+        ensure_before_deadline(deadline)?;
         let cancelled_creations = match self.inner.begin_shutdown(approved) {
             Ok(creations) => creations,
             Err(names) => return Ok(ShutdownOutcome::NeedsConfirmation(names)),
