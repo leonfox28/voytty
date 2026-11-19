@@ -10,12 +10,26 @@
   4. 构建/CI、供应链、发布流水线、安装脚本、Relay 部署、补丁维护与文档一致性
 
 > [!IMPORTANT]
-> **证据口径说明**：本文档各条目区分三类依据——（1）**源码静态核对**（全部条目的路径与行号均核对自当前磁盘源码）；（2）**本地只读/实测观测**（下表本地基线门禁、`H16` 直接调用 `path_plan` 实测、既有 `normal_confirmation` 用例等）；（3）**尚待运行实测**（如 `C2`/`C3` 的运行态触发、恢复与跨平台持续时长，以及标注为 `HOSTED-ONLY` 的托管环境验证边界），各条目内均按此口径如实标注。
+> **证据口径说明**：本文档各条目区分三类依据——（1）**源码静态核对**（原始发现的路径与行号核对自 `9ad6b81`）；（2）**本地只读/实测观测**（下表本地基线门禁、`H16` 直接调用 `path_plan` 实测、既有 `normal_confirmation` 用例等）；（3）**尚待运行实测**（如 `C2` 的运行态触发与跨平台持续时长，以及标注为 `HOSTED-ONLY` 的托管环境验证边界），各条目内均按此口径如实标注。
 >
 > **2026-11-19 复核修订说明**：经与同工作区 Codex 按 `9ad6b81` 交叉复核，本文档保留全部原始编号与交叉引用，并按现行共识同步调整了正文位置、等级与路线图：
 > - **已撤回（误报）**：`M23`、`H4` 中 `AcceptCell::wait_until` 子项、`M14`（详见[误报与修订核查](project-review-2026-11-19-false-positives.md)）。
 > - **保留原编号并调级**：`C2`（Critical → **High / P1**）、`C3`（Critical → **High / 优先处理**）、`M1`（Medium → **Low / P2**）。
 > - **实测与证据口径补充**：`C1` 明确公开追踪与扫描豁免已证实、令牌当前有效性未知；`H16` 经直接运行 `path_plan` 实测确认两处发布源文件均为 `native=false` 并列为 **P1**。
+
+## P0 修复记录
+
+2026-11-19，`fix/project-review-p0` 分支完成了本轮选定的修复。本轮代码验证截至 `02857b8`。后文的问题数量和原始发现均以 `9ad6b81` 为基准。
+
+| 编号 | 状态与提交 | 修复结果及验证 |
+| --- | --- | --- |
+| C4 | 已修复 · `1961dc8` | 单按 `Esc` 后，即使没有下一次输入，40 ms 的等待窗口结束时也会送出按键。测试覆盖了紧随其后的鼠标移动、翻页键、分段到达的转义序列和跨输入轮次的按键。[输入回归测试](../crates/cli/src/terminal_ui.rs#L6759) |
+| C5 | 已修复 · `3f95d3e` | 生成的 systemd 用户单元使用 `WorkingDirectory=%h`。在 ARM64 Linux 虚拟机上，实际生成的单元通过了 `systemd-analyze --user verify`。已有安装可再次运行 `voytty daemon autostart enable` 更新旧单元。[自动启动说明](autostart.md#L28) |
+| M21 | 部分修复 · `3f95d3e` | Linux 实测接受属主独占主组的 `0775` 目录，并拒绝共享组可写、带扩展访问 ACL 的组可写目录及 `0777` 目录。Windows 启动程序校验和交互终端的 panic 日志仍待处理。[目录权限测试](../crates/platform/src/autostart.rs#L627) |
+| C3 | 已修复 · `02857b8` | 回归测试确认，等待撤权写锁超时会在写库前退出。撤权已提交给后台任务后，即使请求被取消，数据库与内存仍会同步为已撤权，并关闭该设备的连接、解除其终端会话挂接。停机成功后，即使客户端在回包前断开，监听器也会退出。[撤权测试](../crates/daemon/src/session_wire.rs#L3948) · [停机测试](../crates/daemon/src/local_ipc.rs#L627) |
+| C1 | 按维护者要求跳过 | 本轮未处置 Penpot 配置与令牌。 |
+
+修复提交 `02857b8` 在 macOS 上通过了 `just check-changes origin/main`，涵盖工作区 Clippy 与测试、依赖策略、传输层补丁测试及 Relay 静态检查。Linux 专项验证覆盖了单元文件和目录权限。实际登录自启和托管跨平台 CI 尚未验证。
 
 ---
 
@@ -39,9 +53,9 @@
 | `cargo +1.98.0 deny --offline check licenses bans sources` | 通过（27 条重复依赖警告） | 离线环境未联网执行 `advisories` |
 | 其他 OS/架构、Docker/QEMU Relay、签名与发布 | `HOSTED-ONLY` | 由 GitHub Actions 托管验证，本次本地未运行 |
 
-### 问题分布总览
+### 审查基准的问题分布
 
-| 现行级别 | 数量 | 编号范围与主要集中领域 |
+| 复核后级别 | 基准数量 | 编号范围与主要集中领域 |
 | --- | :---: | --- |
 | **严重（Critical）** | 3 | `C1`、`C4`、`C5`：公开仓库追踪私密令牌配置与扫描豁免、单按 `Esc` 永久缓冲并破坏输入、Linux systemd `WorkingDirectory` 语法错误（原 `C2`/`C3` 保留编号并调至 High） |
 | **高危（High）** | 19 | `H1`–`H17` + 调级移入的 `C2`、`C3`：终端复杂度 DoS 与 `DCS +q` 杀会话、未闭合控制串卡死解析器、PTY 孙进程有条件等待无界（`C2`）、IPC 取消边界与停机回包漏发信号（`C3`）、`ConnectionBroker` `Notify` 唤醒丢失（`H4`，已移除 `AcceptCell` 误报子项）、PTY 双向死锁、单线程运行时饥饿、网络任务 100% 忙旋与关闭泄漏、客户端重连被指令打断/丢结果/无退避、Kitty 键盘编码、Windows 控制台与 `pair accept` `Ctrl+C` 终端残留、CI 分类器遗漏（`H16`）与供应链/缓存边界 |
@@ -52,8 +66,7 @@
 
 ## 二、严重问题（Critical）
 
-> [!CAUTION]
-> 以下 3 项现行严重问题（`C1`、`C4`、`C5`）直接涉及公开仓库凭据暴露风险、核心终端输入损坏或 Linux 自动启动失败，建议立即优先处置。原编号 `C2`、`C3` 经复核已调整为 **High** 并移至[第三节（高危问题）](#守护进程并发网络与生命周期)（保留原编号）。
+> 以下 3 项在审查基准上评为 Critical。C4、C5 已在修复分支验证，C1 按维护者要求跳过。
 
 ### C1. 公开仓库跟踪了含 Penpot MCP 令牌的配置文件，并在密钥扫描中被硬编码豁免
 - **位置**：[`.codex/config.toml`](../.codex/config.toml#L1-L3)、[`tests/secret-scan.sh`](../tests/secret-scan.sh#L5-L8)、[`tests/secret-scan-fixture.sh`](../tests/secret-scan-fixture.sh#L72-L91)、[`docs/ci-release-optimization.md`](ci-release-optimization.md#L77-L78)
@@ -64,7 +77,7 @@
 > **编号索引说明**：原 `C2`、`C3` 经 2026-11-19 复核降为 **High**，保留原编号并移至下文[守护进程并发、网络与生命周期](#守护进程并发网络与生命周期)小节。
 
 ### C4. Unix CLI 中单按 `Esc`（`0x1b`）在 `HostInputCodec` 被无限期缓冲，不仅卡死 `Esc` 还把后续鼠标移动/方向键拼成乱码注入终端
-- **位置**：[`crates/cli/src/terminal_ui.rs`](../crates/cli/src/terminal_ui.rs#L2744-L2813) / [`terminal_ui.rs#L2843-L2916`](../crates/cli/src/terminal_ui.rs#L2843-L2916) / [`terminal_ui.rs#L3001-L3006`](../crates/cli/src/terminal_ui.rs#L3001-L3006)、[`crates/cli/src/terminal_ui/session.rs`](../crates/cli/src/terminal_ui/session.rs#L196-L213)
+- **位置**：[`crates/cli/src/terminal_ui.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/cli/src/terminal_ui.rs#L2744-L2813) / [`terminal_ui.rs#L2843-L2916`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/cli/src/terminal_ui.rs#L2843-L2916) / [`terminal_ui.rs#L3001-L3006`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/cli/src/terminal_ui.rs#L3001-L3006)、[`crates/cli/src/terminal_ui/session.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/cli/src/terminal_ui/session.rs#L196-L213)
 - **触发路径**：
   - 在默认传统键盘模式（`keyboard_flags == 0`，Shell / Vim / tmux / fzf / htop 等）下，按下 `Esc` 只发送单字节 `0x1b`。
   - `known_host_prefix(b"\x1b")` 因 `PAGE_UP`（`\x1b[5~`）以 `\x1b` 开头而返回 `true`，导致 `HostInputCodec::feed` 直接 `break`，且整个 `TerminalUiSession::run_loop` 没有任何 ESC 歧义消解超时或 flush 机制。
@@ -75,7 +88,7 @@
 - **修复建议**：为 `HostInputCodec` 引入显式的 ESC 歧义消解计时器（如 25–50 ms），并在 `run_loop` / `await_while_inactive` 中轮询 flush；当 `pending == [0x1b]` 且下一字节仍是 `0x1b` 时，先刷出独立的 `0x1b` 再按新转义序列解析，禁止把 `\x1b\x1b` 合并为 2 字节 `Opaque`。
 
 ### C5. Linux systemd 自动启动生成了带字面双引号的无效 `WorkingDirectory="..."`
-- **位置**：[`crates/platform/src/autostart.rs`](../crates/platform/src/autostart.rs#L262-L266) / [`autostart.rs#L401-L409`](../crates/platform/src/autostart.rs#L401-L409)
+- **位置**：[`crates/platform/src/autostart.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/platform/src/autostart.rs#L262-L266) / [`autostart.rs#L401-L409`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/platform/src/autostart.rs#L401-L409)
 - **触发路径**：`Manager::Systemd` 渲染单元文件时使用 `unit_quote(home).replace("$$", "$")` 输出 `WorkingDirectory="/home/user"`。与 `ExecStart=` 不同，systemd 的 `WorkingDirectory=` 解析器（`config_parse_working_directory`）**不剥离双引号**，看到首字符 `"` 会判定非绝对路径并拒绝加载/启动单元，导致 Linux systemd 环境下 `voytty daemon autostart enable` 实际无法生效。
 - **修复建议**：直接使用 systemd 内置用户目录占位符 `WorkingDirectory=%h`，或在校验后的原始路径上仅做 `% -> %%` 转义（不加引号、不反斜杠转义，并拒绝以 `\` 结尾的路径）。
 
@@ -111,10 +124,10 @@
 - **修复建议**：先补齐 Unix 集成回归测试复现验证；为 `BlockingReader` 增加与 `InterruptibleWriter` 对称的 `mio::Waker` + 停止标志，使显式关闭能够立即唤醒并退出读线程；对自然退出增加有限宽限期的排空超时后再中断并关闭 master PTY；评估在显式关闭/强停时向 PTY 进程组发送 `SIGHUP`/`SIGTERM`。
 
 #### C3（保留原编号，现行等级：High / 优先处理）. 撤权持久化与内存发布存在取消边界，且 `local_ipc.rs` 停机回包失败会漏发停机信号
-- **位置**：[`crates/daemon/src/local_ipc.rs`](../crates/daemon/src/local_ipc.rs#L489-L547)、[`crates/daemon/src/service.rs`](../crates/daemon/src/service.rs#L463) / [`service.rs#L664-L667`](../crates/daemon/src/service.rs#L664-L667) / [`service.rs#L806-L860`](../crates/daemon/src/service.rs#L806-L860) / [`service.rs#L1002-L1020`](../crates/daemon/src/service.rs#L1002-L1020)、[`crates/daemon/src/session.rs`](../crates/daemon/src/session.rs#L1105-L1117) / [`session.rs#L1982-L2014`](../crates/daemon/src/session.rs#L1982-L2014)
-- **证据与两条独立路径**（均基于静态异步控制流分析，故障触发与恢复路径均尚无现成运行观测记录）：
+- **位置**：[`crates/daemon/src/local_ipc.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/local_ipc.rs#L489-L547)、[`crates/daemon/src/service.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/service.rs#L463) / [`service.rs#L664-L667`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/service.rs#L664-L667) / [`service.rs#L806-L860`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/service.rs#L806-L860) / [`service.rs#L1002-L1020`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/service.rs#L1002-L1020)、[`crates/daemon/src/session.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L1105-L1117) / [`session.rs#L1982-L2014`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L1982-L2014)
+- **证据与两条独立路径**（审查基准上的静态分析）。修复后的运行结果见 [P0 修复记录](#p0-修复记录)。
   1. **撤权持久化与内存发布取消边界（及配对超时契约违背）**：`local_ipc.rs:508` 用第二个 `tokio::time::timeout(remaining, ...)` 包裹已携带相同 `absolute_deadline` 的 `dispatch_until_with_progress`。在 `device_revoke_reply`（`service.rs:806-860`）中，`revoke_guard(device_id).await` 未受内层 `deadline` 约束；随后的 `store.run_blocking_until(...)`（L809-813）在后台执行 SQLite `store.revoke(...)`，外层仍在 `.await` 该后台结果——**若后台数据库工作已提交而外层此时被取消，就会出现 SQLite 已为 `Revoked` 而内存 `AuthorizationRegistry` 未发布的不一致**；一旦 `.await` 恢复轮询，到同步的 `guard.publish(Revoked)`（L827）之间不再有新的 `.await`，因此若取消发生在 `guard.publish` 之后，内存态已更新，受影响的则是后续 `close_remote` 与 `detach_remote_principal_until` 清理。同时该外层超时违背了 `service.rs:664-667` 不得覆盖 `PairOutcomeUnknown` 的注释契约。
-  2. **会话已关闭，守护进程可能漏收停机信号。** 成功处理停机后，注册表停止接收新会话。此时若写出回复或关闭回复流失败，IPC 处理函数会提前返回，跳过 `stop_sender.send(())`。另一个时序是外层请求先超时，后台停机工作仍可能完成。此时 IPC 返回的超时回复带有 `stop_after_flush = false`，即使写出成功也不会发送停机信号。两种情况下，进程都可能继续存活并拒绝新建会话。按源码，在会话已清空时重试 `voytty daemon stop` 可让进程正常退出，此恢复路径尚待实测。[请求超时与回包](../crates/daemon/src/local_ipc.rs#L528-L546) · [错误回复的停机标志](../crates/daemon/src/service.rs#L1234-L1246) · [空会话停机](../crates/daemon/src/session.rs#L1104-L1116)
+  2. **会话已关闭，守护进程可能漏收停机信号。** 成功处理停机后，注册表停止接收新会话。此时若写出回复或关闭回复流失败，IPC 处理函数会提前返回，跳过 `stop_sender.send(())`。另一个时序是外层请求先超时，后台停机工作仍可能完成。此时 IPC 返回的超时回复带有 `stop_after_flush = false`，即使写出成功也不会发送停机信号。两种情况下，进程都可能继续存活并拒绝新建会话。按源码，在会话已清空时重试 `voytty daemon stop` 可让进程正常退出，此恢复路径尚待实测。[请求超时与回包](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/local_ipc.rs#L528-L546) · [错误回复的停机标志](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/service.rs#L1234-L1246) · [空会话停机](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L1104-L1116)
 - **修复建议**：移除 `local_ipc.rs:508` 的重复外层 `timeout`，统一依赖内层 `absolute_deadline`（并为 `service.rs:806` 的 `revoke_guard` 加上 deadline）；当 `reply.stop_after_flush == true` 时无论回包写入是否成功均须触发 `stop_sender`；在 `store.revoke` 提交后通过不可取消边界保证完成 `guard.publish(Revoked)` 及后续断连清理。
 
 #### H4. `ConnectionBroker` 两处 `Notify::notified()` 在释放互斥锁后才创建，存在唤醒丢失
@@ -249,7 +262,8 @@
 - **说明**：`quiesce_until` 不等待已脱离的拨号/连接/持久化任务；每次 `PathEvent` 都新起 `tokio::spawn` 写 SQLite，网络抖动易打满 `STORE_COMMAND_CAPACITY`（64）；空闲/撤销对端的 `PeerSlot` 永不回收。
 
 #### M10. `local_ipc.rs` 回包无写超时（可耗尽连接槽位），进度帧写超时后继续写错包破坏帧边界
-- **位置**：[`crates/daemon/src/local_ipc.rs`](../crates/daemon/src/local_ipc.rs#L539-L544) / [`local_ipc.rs#L575-L584`](../crates/daemon/src/local_ipc.rs#L575-L584)、[`crates/daemon/src/connection_progress.rs`](../crates/daemon/src/connection_progress.rs#L106-L119)
+- **P0 后续状态**　C3 已给普通单次请求的最终回复写入和关闭设置截止时间。早期错误回包的写入期限、进度帧写到一半时的处理仍待修复。[最终回复路径](../crates/daemon/src/local_ipc.rs#L548)
+- **位置**：[`crates/daemon/src/local_ipc.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/local_ipc.rs#L539-L544) / [`local_ipc.rs#L575-L584`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/local_ipc.rs#L575-L584)、[`crates/daemon/src/connection_progress.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_progress.rs#L106-L119)
 - **说明**：同 UID 挂死客户端停止读取即可永久占住 `max_local_connections`；`LocalConnectionProgress` 的 `write_all` 被超时取消留下半帧后，外层继续往同一流写入 `ServiceReply::error` 破坏线缆 framing。
 
 #### M11. `SessionRuntime::takeover()` 失败时状态非原子变更，旧控制者失联且未收到 `LeaseLost`
@@ -294,7 +308,9 @@
 - **说明**：`select!` 中途取消 `transfer` 后向同一流写入 `Cancel` 可能污染半帧或在断链时卡满 5 秒；冷启动远端上传应使用 15 s `REMOTE_STARTUP_DEADLINE`。
 
 #### M21. `ScopedPanicHook::suppress` 吞掉交互期间所有 `voytty_diagnostics` panic 记录；自动启动权限校验跨平台不均
-- **位置**：[`crates/cli/src/terminal_ui.rs`](../crates/cli/src/terminal_ui.rs#L260-L273) / [`terminal_ui.rs#L1059-L1079`](../crates/cli/src/terminal_ui.rs#L1059-L1079)、[`crates/platform/src/autostart.rs`](../crates/platform/src/autostart.rs#L364-L370)、[`crates/platform/src/autostart_windows.rs`](../crates/platform/src/autostart_windows.rs#L34-L49)
+
+- **部分修复**　P0 已修复 Linux 目录权限误拒。下列 panic 日志和 Windows 校验问题仍待处理。[P0 修复记录](#p0-修复记录)
+- **位置**：[`crates/cli/src/terminal_ui.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/cli/src/terminal_ui.rs#L260-L273) / [`terminal_ui.rs#L1059-L1079`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/cli/src/terminal_ui.rs#L1059-L1079)、[`crates/platform/src/autostart.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/platform/src/autostart.rs#L364-L370)、[`crates/platform/src/autostart_windows.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/platform/src/autostart_windows.rs#L34-L49)
 - **说明**：
   - `ScopedPanicHook` 将全局 panic hook 替换为 `|_| {}`，使交互式终端内所有崩溃完全丢失诊断记录。
   - Linux 自动启动对 `$HOME` / `~/.config` 严禁 `0o022`，在 Ubuntu/Fedora/Debian 默认 UPG（`umask 0002`、`~/.config` 为 `0o775`）下直接失败；Windows 自动启动则相反，仅检查 `executable.is_file()`（跟随符号链接、未调 `validate_owned_executable`、未拦截控制字符）。
@@ -383,11 +399,7 @@ flowchart LR
     P2 --> P3["P3 架构减债与文档治理<br/>(拆文件、去重、修文档)"]
 ```
 
-1. **P0（立即处置）**：
-   - 轮换 Penpot 令牌、从 Git 移除 `.codex/config.toml` 并删除 `secret-scan.sh` 豁免（**C1**，Critical）。
-   - 修复 `HostInputCodec` 单按 `Esc` 无限期缓冲与鼠标乱码注入（**C4**，Critical）。
-   - 修复 Linux systemd `WorkingDirectory=%h`（**C5**，Critical）以及 UPG `0o775` `~/.config` 误拒（**M21**）。
-   - 优先修复 `local_ipc.rs` 重复超时导致的撤权取消边界与停机回包失败漏发信号（**C3**，现行等级 High，建议随 P0/P1 靠前处理）。
+1. **P0（本轮已完成）**　C4、C5、C3 与 M21 的 Linux 目录权限子项已修复，C1 按维护者要求跳过。[提交与验证记录](#p0-修复记录)
 2. **P1（核心稳定性与主线门禁）**：
    - 修复 CI 路径分类器遗漏 `crates/core/src/release.rs` 与 `crates/daemon/src/distribution.rs`（**H16**，已实测确认两处均为 `native=false`）。
    - 补齐 Unix 复现测试并修复 `BlockingReader` 缺 Waker 导致的孙进程有条件等待无界（**C2**，现行等级 High）。
