@@ -9,6 +9,21 @@ use voytty_platform::pty::{ExplicitPtyCommand, PtyChildState, PtyHost, PtySize};
 use voytty_platform::user_state::{FileLock, UserPaths, atomic_write, validate_regular_file};
 
 #[tokio::test]
+async fn explicit_pipe_markers_are_exclusive_and_rotate_on_rebind() {
+    let temporary = tempfile::tempdir().expect("private fixture");
+    let path = temporary.path().join("pipe");
+    let first = AsyncListener::bind(&path).expect("bind first incarnation");
+    let nonce = std::fs::read(&path).expect("read marker");
+    assert_eq!(nonce.len(), 32);
+    assert!(AsyncListener::bind(&path).is_err());
+    assert_eq!(std::fs::read(&path).expect("original marker"), nonce);
+    drop(first);
+    assert!(!path.exists());
+    let _second = AsyncListener::bind(&path).expect("rebind after drop");
+    assert_ne!(std::fs::read(&path).expect("new marker"), nonce);
+}
+
+#[tokio::test]
 async fn named_pipe_preserves_large_writes_directional_fin_and_drop_delivery() {
     let temporary = tempfile::tempdir().expect("fixture");
     let endpoint = temporary.path().join("pipe");

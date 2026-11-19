@@ -109,11 +109,15 @@ impl Listener {
     }
 }
 /// Same-account async named-pipe listener.
-pub struct AsyncListener(PipeListener);
+pub struct AsyncListener {
+    pipe: PipeListener,
+    // Explicit listeners own their marker. Daemon markers belong to DaemonLock.
+    marker: Option<(PathBuf, String)>,
+}
 impl AsyncListener {
     /// Creates the pipe with a protected current-user-only DACL.
     pub fn from_std(listener: Listener) -> io::Result<Self> {
-        Self::listen(&listener.0)
+        Self::listen(pipe_name(&listener.0)?)
     }
     /// Opens a private named pipe for an explicit endpoint path.
     pub fn bind(path: impl AsRef<Path>) -> io::Result<Self> {
@@ -121,27 +125,48 @@ impl AsyncListener {
         let path = path.as_ref();
         let nonce = random_marker()?;
         let mut marker = crate::user_state::create_new_file(path).map_err(io::Error::other)?;
-        marker.write_all(&nonce)?;
+        let result = marker.write_all(&nonce).and_then(|()| marker.sync_all());
         drop(marker);
-        Self::listen(path)
+        let result = result.and_then(|()| {
+            let name = pipe_name(path)?;
+            let mut listener = Self::listen(name.clone())?;
+            listener.marker = Some((path.into(), name));
+            Ok(listener)
+        });
+        if result.is_err() {
+            let _ = std::fs::remove_file(path);
+        }
+        result
     }
-    fn listen(path: &Path) -> io::Result<Self> {
+    fn listen(name: String) -> io::Result<Self> {
         let sid = crate::windows_security::sid()?;
         let sddl =
             widestring::U16CString::from_str(format!("O:{sid}D:P(A;;GA;;;{sid})S:(ML;;NW;;;ME)"))
                 .map_err(io::Error::other)?;
-        let name = pipe_name(path)?;
         let listener = ListenerOptions::new()
             .name(name.to_ns_name::<GenericNamespaced>()?)
             .security_descriptor(SecurityDescriptor::deserialize(&sddl)?)
             .create_tokio()?;
-        Ok(Self(listener))
+        Ok(Self {
+            pipe: listener,
+            marker: None,
+        })
     }
     /// Accepts a local client; the stream is authenticated before dispatch.
     pub async fn accept(&self) -> io::Result<(Stream, ())> {
-        Ok((Stream::from_pipe(self.0.accept().await?), ()))
+        Ok((Stream::from_pipe(self.pipe.accept().await?), ()))
     }
 }
+impl Drop for AsyncListener {
+    fn drop(&mut self) {
+        if let Some((path, name)) = &self.marker
+            && pipe_name(path).is_ok_and(|current| &current == name)
+        {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 /// Bidirectional named-pipe stream used by every local protocol.
 #[derive(Default)]
 struct WriteProgress {
