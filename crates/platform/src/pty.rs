@@ -17,6 +17,10 @@ struct InputStop {
     stopped: AtomicBool,
     #[cfg(unix)]
     wake: Option<mio::Waker>,
+    #[cfg(unix)]
+    reader_wake: Option<mio::Waker>,
+    #[cfg(unix)]
+    drain_deadline: std::sync::OnceLock<std::time::Instant>,
     #[cfg(windows)]
     master: NativeMaster,
 }
@@ -32,8 +36,14 @@ impl InputStop {
             std::thread::spawn(move || drop(master));
         }
         #[cfg(unix)]
-        if let Some(wake) = &self.wake {
-            let _ = wake.wake();
+        {
+            // Let the master drain the root process's final output, even if a
+            // background child keeps the slave open after the root has exited.
+            self.drain_deadline
+                .get_or_init(|| std::time::Instant::now() + std::time::Duration::from_millis(250));
+            for wake in [&self.wake, &self.reader_wake].into_iter().flatten() {
+                let _ = wake.wake();
+            }
         }
     }
 }
@@ -526,23 +536,50 @@ pub struct PtySession {
 /// prevent the session owner from terminating and reaping the root child.
 #[doc(hidden)]
 pub struct PtyIo {
-    master: NativeMaster,
-    writer: Box<dyn Write + Send>,
+    resize: PtyResize,
+    input: PtyInput,
+}
+
+/// Independent resize capability, usable while a PTY write waits for space.
+#[doc(hidden)]
+pub struct PtyResize(NativeMaster);
+
+impl PtyResize {
+    /// Resizes the native PTY after validating non-zero dimensions.
+    pub fn resize(&self, size: PtySize) -> Result<(), PtyError> {
+        validate_size(size)?;
+        resize_master(&self.0, size)
+    }
+}
+
+/// Sole writer of ordered input bytes.
+#[doc(hidden)]
+pub struct PtyInput(Box<dyn Write + Send>);
+
+impl PtyInput {
+    /// Writes and flushes ordered bytes to the PTY.
+    pub fn write_input(&mut self, bytes: &[u8]) -> Result<(), PtyError> {
+        self.0
+            .write_all(bytes)
+            .and_then(|()| self.0.flush())
+            .map_err(|error| operation_error(PtyOperation::WriteInput, error))
+    }
 }
 
 impl PtyIo {
+    /// Separates the capabilities so blocked input cannot stall resize.
+    pub fn split(self) -> (PtyResize, PtyInput) {
+        (self.resize, self.input)
+    }
+
     /// Writes and flushes ordered bytes to the PTY.
     pub fn write_input(&mut self, bytes: &[u8]) -> Result<(), PtyError> {
-        self.writer
-            .write_all(bytes)
-            .and_then(|()| self.writer.flush())
-            .map_err(|error| operation_error(PtyOperation::WriteInput, error))
+        self.input.write_input(bytes)
     }
 
     /// Resizes the native PTY after validating non-zero dimensions.
     pub fn resize(&self, size: PtySize) -> Result<(), PtyError> {
-        validate_size(size)?;
-        resize_master(&self.master, size)
+        self.resize.resize(size)
     }
 }
 
@@ -609,7 +646,6 @@ impl PtyChild {
             Some(status) => {
                 let status = map_exit_status(&status);
                 self.finished = Some(status.clone());
-                #[cfg(windows)]
                 self.input_stopped.stop();
                 Ok(PtyChildState::Exited(status))
             }
@@ -629,7 +665,6 @@ impl PtyChild {
             .map_err(|error| operation_error(PtyOperation::Wait, error))?;
         let status = map_exit_status(&status);
         self.finished = Some(status.clone());
-        #[cfg(windows)]
         self.input_stopped.stop();
         Ok(status)
     }
@@ -680,8 +715,8 @@ impl PtySession {
         Ok(PtyDriverParts {
             reader,
             io: PtyIo {
-                master: self.master,
-                writer: self.writer,
+                resize: PtyResize(self.master),
+                input: PtyInput(self.writer),
             },
             child: PtyChild {
                 child: self.child,

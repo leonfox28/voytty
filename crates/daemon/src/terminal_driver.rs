@@ -18,7 +18,8 @@ use voytty_core::terminal::{
 #[cfg(any(unix, windows))]
 use voytty_core::terminal::{TerminalHostEffect, TerminalHostEffects};
 use voytty_platform::pty::{
-    PtyChild, PtyChildInterrupt, PtyChildState, PtyError, PtyExitStatus, PtyIo, PtySession, PtySize,
+    PtyChild, PtyChildInterrupt, PtyChildState, PtyError, PtyExitStatus, PtyInput, PtyResize,
+    PtySession, PtySize,
 };
 use voytty_terminal::{TerminalCheckpoint, TerminalError, TerminalModel};
 
@@ -116,7 +117,10 @@ impl From<TerminalError> for TerminalDriverError {
 
 /// Host-owned runtime which drains one PTY independently of attachments.
 pub struct TerminalDriver {
-    io: Arc<Mutex<PtyIo>>,
+    io: Arc<Mutex<PtyInput>>,
+    resize: Mutex<PtyResize>,
+    replies: Option<SyncSender<Vec<u8>>>,
+    reply_thread: Option<JoinHandle<()>>,
     child: Arc<Mutex<PtyChild>>,
     interrupt: PtyChildInterrupt,
     ownership: TerminalDriverOwnership,
@@ -322,7 +326,8 @@ impl TerminalDriver {
 
         let parts = session.into_driver_parts()?;
         let mut reader = parts.reader;
-        let io = Arc::new(Mutex::new(parts.io));
+        let (resize, input) = parts.io.split();
+        let io = Arc::new(Mutex::new(input));
         let child = Arc::new(Mutex::new(parts.child));
         let interrupt = parts.interrupt;
         let ownership = TerminalDriverOwnership::new();
@@ -333,7 +338,24 @@ impl TerminalDriver {
 
         let model_queue = Arc::clone(&queue);
         let model_shared = Arc::clone(&shared);
-        let model_io = Arc::clone(&io);
+        // A blocked child can hold one write in flight and at most eight
+        // additional reply batches (each bounded by MAX_REPLY_BYTES_PER_UPDATE).
+        let (replies, received) = mpsc::sync_channel::<Vec<u8>>(8);
+        let reply_io = Arc::clone(&io);
+        let reply_thread = thread::Builder::new()
+            .name("voytty-pty-replies".into())
+            .spawn(move || {
+                for bytes in received {
+                    if cleanup_lock(&reply_io).write_input(&bytes).is_err() {
+                        break;
+                    }
+                }
+            })
+            .map_err(|error| {
+                close_startup_child(&child)
+                    .unwrap_or_else(|| TerminalDriverError::Read(error.to_string()))
+            })?;
+        let model_replies = replies.clone();
         #[cfg(any(unix, windows))]
         let model_effects = effects.clone();
         #[cfg(test)]
@@ -393,15 +415,7 @@ impl TerminalDriver {
                             }
                         };
                         if !update.replies.is_empty() {
-                            let result = lock(&model_io, "PTY I/O").and_then(|mut io| {
-                                io.write_input(&update.replies).map_err(Into::into)
-                            });
-                            if let Err(error) = result {
-                                model_queue.complete();
-                                model_shared.fail(error);
-                                model_queue.abort();
-                                return;
-                            }
+                            let _ = model_replies.try_send(update.replies);
                         }
                         #[cfg(any(unix, windows))]
                         {
@@ -475,6 +489,9 @@ impl TerminalDriver {
 
         Ok(Self {
             io,
+            resize: Mutex::new(resize),
+            replies: Some(replies),
+            reply_thread: Some(reply_thread),
             child,
             interrupt,
             ownership,
@@ -511,7 +528,7 @@ impl TerminalDriver {
     pub fn resize(&self, size: TerminalSize) -> Result<Revision, TerminalDriverError> {
         let _commit = lock(&self.shared.commit, "terminal commit")?;
         lock(&self.shared.model, "terminal model")?.preflight_resize(size)?;
-        lock(&self.io, "PTY I/O")?.resize(PtySize::new(size.rows, size.columns))?;
+        lock(&self.resize, "PTY size")?.resize(PtySize::new(size.rows, size.columns))?;
         let revision = {
             let mut model = lock(&self.shared.model, "terminal model")?;
             let revision = model.resize(size)?.revision;
@@ -538,11 +555,9 @@ impl TerminalDriver {
             (update, changed, model.published_revision())
         };
         if !update.replies.is_empty()
-            && let Err(error) = lock(&self.io, "PTY I/O")
-                .and_then(|mut io| io.write_input(&update.replies).map_err(Into::into))
+            && let Some(replies) = &self.replies
         {
-            self.shared.fail(error.clone());
-            return Err(error);
+            let _ = replies.try_send(update.replies);
         }
         if changed {
             self.shared.publish_revision(published)?;
@@ -641,6 +656,13 @@ impl TerminalDriver {
             .expect("live terminal driver owns its model thread")
             .join()
             .map_err(|_| TerminalDriverError::Synchronization("terminal model thread"));
+        self.replies.take();
+        let writer = self
+            .reply_thread
+            .take()
+            .expect("live reply writer")
+            .join()
+            .map_err(|_| TerminalDriverError::Synchronization("PTY reply thread"));
         let health = self.shared.check_failure();
         if status.is_ok() {
             // Both joins have returned (including a panic result), and the
@@ -652,6 +674,7 @@ impl TerminalDriver {
         let status = status?;
         reader?;
         model?;
+        writer?;
         health?;
         Ok(status)
     }
@@ -717,6 +740,8 @@ impl Drop for TerminalDriver {
         let ownership = self.ownership.clone();
         let reader = self.reader_thread.take();
         let model = self.model_thread.take();
+        self.replies.take();
+        let replies = self.reply_thread.take();
         spawn_background_reaper("voytty-terminal-reaper", move || {
             let child = cleanup_lock(&child).close_explicitly();
             queue.abort();
@@ -725,6 +750,9 @@ impl Drop for TerminalDriver {
             }
             if let Some(model) = model {
                 let _ = model.join();
+            }
+            if let Some(replies) = replies {
+                let _ = replies.join();
             }
             if child.is_ok() {
                 ownership.release();
@@ -1841,7 +1869,7 @@ mod tests {
     }
     #[cfg(unix)]
     #[test]
-    fn color_base_commits_cannot_overtake_a_query_blocked_on_pty_io() {
+    fn blocked_reply_writer_preserves_query_order_while_color_commits_progress() {
         use voytty_core::terminal::{
             COLOR_BACKGROUND, TerminalAppearance, TerminalColorProfile, TerminalColorValue,
         };
@@ -1885,47 +1913,25 @@ mod tests {
         let before = driver.latest_revision();
         let io_guard = driver.io.lock().expect("hold PTY writer gate");
         assert!(driver.queue.push(b"\x1b]11;?\x07".to_vec()));
-        let query_revision = loop {
-            let revision = driver
-                .shared
-                .model
-                .lock()
-                .expect("model remains available during I/O")
-                .revision();
-            if revision > before {
-                break revision;
-            }
-            assert!(Instant::now() < deadline, "query never entered commit gate");
-            thread::yield_now();
-        };
-        assert!(
-            driver.shared.commit.try_lock().is_err(),
-            "query retains ordered commit ownership through I/O"
-        );
+        let query_revision = attachment
+            .wait_for_revision_after(before, deadline.saturating_duration_since(Instant::now()))
+            .expect("query revision publishes while PTY input is blocked");
         assert_eq!(
-            driver.latest_revision(),
-            before,
-            "unwritten replies cannot be published"
+            driver
+                .update_base_colors(base.clone())
+                .expect("unchanged base"),
+            None
         );
-        thread::scope(|scope| {
-            let update = scope.spawn(|| {
-                assert_eq!(
-                    driver
-                        .update_base_colors(base.clone())
-                        .expect("unchanged base"),
-                    None,
-                    "concurrent query output must not count as a base change"
-                );
-                base.values[COLOR_BACKGROUND] = TerminalColorValue::Rgb(90, 90, 90);
-                driver.update_base_colors(base).expect("ordered new base")
-            });
-            drop(io_guard);
-            let revision = update
-                .join()
-                .expect("base writer joins")
-                .expect("changed base revision");
-            assert!(revision > query_revision);
-        });
+        base.values[COLOR_BACKGROUND] = TerminalColorValue::Rgb(90, 90, 90);
+        let revision = driver
+            .update_base_colors(base)
+            .expect("ordered new base")
+            .expect("changed base");
+        assert!(revision > query_revision);
+        driver
+            .resize(TerminalSize::new(3, 40))
+            .expect("resize while input is blocked");
+        drop(io_guard);
         let expected = b"\x1b]11;rgb:5050/5050/5050\x07\x1b[?997;2n";
         loop {
             let snapshot = driver.latest_snapshot().expect("completion snapshot");

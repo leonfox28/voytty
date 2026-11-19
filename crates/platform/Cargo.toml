@@ -25,6 +25,9 @@ nix.workspace = true
 filedescriptor.workspace = true
 mio.workspace = true
 
+[target.'cfg(unix)'.dev-dependencies]
+nix = { workspace = true, features = ["term"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { workspace = true, features = ["fs"] }
 

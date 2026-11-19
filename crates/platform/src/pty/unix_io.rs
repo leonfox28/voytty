@@ -34,11 +34,14 @@ pub(super) fn interruptible(
     let stopped = Arc::new(InputStop {
         stopped: AtomicBool::new(false),
         wake: Some(Waker::new(writer_ready.poll.registry(), Token(1))?),
+        reader_wake: Some(Waker::new(reader_ready.poll.registry(), Token(1))?),
+        ..Default::default()
     });
     Ok((
         Box::new(BlockingReader {
             inner: reader,
             readiness: reader_ready,
+            stopped: Arc::clone(&stopped),
         }),
         Box::new(InterruptibleWriter {
             inner: writer,
@@ -68,8 +71,8 @@ impl Readiness {
         })
     }
 
-    fn wait(&mut self) -> io::Result<()> {
-        match self.poll.poll(&mut self.events, None) {
+    fn wait(&mut self, timeout: Option<std::time::Duration>) -> io::Result<()> {
+        match self.poll.poll(&mut self.events, timeout) {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => Ok(()),
             result => result,
         }
@@ -79,14 +82,24 @@ impl Readiness {
 struct BlockingReader {
     inner: Reader,
     readiness: Readiness,
+    stopped: Arc<InputStop>,
 }
 
 impl Read for BlockingReader {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         loop {
+            let remaining = self
+                .stopped
+                .drain_deadline
+                .get()
+                .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
+            if remaining.is_some_and(|duration| duration.is_zero()) {
+                return Ok(0);
+            }
             match self.inner.read(bytes) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    self.readiness.wait()?;
+                    self.readiness.wait(remaining)?;
                 }
                 result => return result,
             }
@@ -113,7 +126,7 @@ impl Write for InterruptibleWriter {
             // writes; one large input frame must not monopolize the PTY driver.
             match self.inner.write(&bytes[..bytes.len().min(1024)]) {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    self.readiness.wait()?;
+                    self.readiness.wait(None)?;
                 }
                 result => return result,
             }
@@ -169,6 +182,7 @@ mod tests {
         let stopped = Arc::new(InputStop {
             stopped: AtomicBool::new(false),
             wake: Some(Waker::new(readiness.poll.registry(), Token(1)).expect("input wake")),
+            ..Default::default()
         });
         let (blocked, observed) = mpsc::sync_channel(1);
         (
@@ -184,6 +198,43 @@ mod tests {
             observed,
             stopped,
         )
+    }
+
+    #[test]
+    fn stopped_reader_drains_final_output_with_the_slave_still_open() {
+        use std::fs::File;
+        let pty = nix::pty::openpty(None, None).expect("open test terminal");
+        let mut slave = File::from(pty.slave);
+        let master = File::from(pty.master);
+        let mut fd = FileDescriptor::dup(&master).expect("duplicate master for poll");
+        fd.set_non_blocking(true).expect("nonblocking master");
+        let readiness = Readiness::new(Arc::new(fd), Interest::READABLE).expect("register master");
+        let stopped = Arc::new(InputStop {
+            reader_wake: Some(
+                Waker::new(readiness.poll.registry(), Token(1)).expect("reader wake"),
+            ),
+            ..Default::default()
+        });
+        let mut reader = BlockingReader {
+            inner: Box::new(master),
+            readiness,
+            stopped: Arc::clone(&stopped),
+        };
+        slave.write_all(b"final line").expect("final root output");
+        let (finished, result) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let mut output = Vec::new();
+            reader.read_to_end(&mut output).expect("drain terminal");
+            finished.send(output).expect("publish output");
+        });
+        stopped.stop();
+        assert_eq!(
+            result
+                .recv_timeout(Duration::from_secs(3))
+                .expect("bounded drain"),
+            b"final line"
+        );
+        worker.join().expect("reader joined");
     }
 
     #[test]
