@@ -304,7 +304,11 @@ fn console_event_bytes(event: Event) -> Vec<u8> {
             };
             format!("\x1b[{code};{}:{kind}u", console_modifier(modifiers)).into_bytes()
         }
-        Event::Paste(text) => [b"\x1b[200~".as_slice(), text.as_bytes(), b"\x1b[201~"].concat(),
+        Event::Paste(text) => {
+            // Keep delimiter-shaped clipboard text visible inside this single paste.
+            let text = text.replace("\x1b[200~", "␛[200~").replace("\x1b[201~", "␛[201~");
+            [PASTE_START, text.as_bytes(), PASTE_END].concat()
+        }
         Event::FocusGained => b"\x1b[I".to_vec(),
         Event::FocusLost => b"\x1b[O".to_vec(),
         Event::Mouse(mouse) => {

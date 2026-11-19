@@ -353,7 +353,11 @@ impl TerminalUiSession {
                                                 }
                                             }
                                         }
-                                        HostInputEvent::Paste(bytes) => {
+                                        HostInputEvent::Paste(mut bytes) => {
+                                            if !self.surface.modes().bracketed_paste {
+                                                bytes.truncate(bytes.len() - PASTE_END.len());
+                                                bytes.drain(..PASTE_START.len());
+                                            }
                                             if let Err(error) = invalidate_selection_stdout(
                                                 &mut self.selection,
                                                 &mut self.viewport,

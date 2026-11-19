@@ -34,6 +34,7 @@ struct Round {
 pub(super) struct HostColors {
     pub(super) profile: TerminalColorProfile,
     round: Option<Round>,
+    can_probe: bool,
     refresh: bool,
     enable: bool,
     mode_observed: bool,
@@ -46,6 +47,7 @@ impl Default for HostColors {
         Self {
             profile: TerminalColorProfile::default(),
             round: None,
+            can_probe: true,
             refresh: true,
             enable: false,
             mode_observed: false,
@@ -56,6 +58,9 @@ impl Default for HostColors {
     }
 }
 impl HostColors {
+    pub(super) fn for_host(owned_subscription: Arc<AtomicBool>, can_probe: bool) -> Self {
+        Self { owned_subscription, can_probe, refresh: can_probe, ..Self::default() }
+    }
     pub(super) fn deadline(&self) -> Option<Instant> {
         self.round
             .as_ref()
@@ -75,7 +80,7 @@ impl HostColors {
         }
     }
     pub(super) fn request_refresh(&mut self) {
-        self.refresh = true;
+        self.refresh = self.can_probe;
     }
     pub(super) fn next_command(&mut self, now: Instant) -> Option<HostColorCommand> {
         self.expire(now);
@@ -395,6 +400,16 @@ mod tests {
             .expect("color fixture operation succeeds");
         assert!(matches!(events.last(),Some(HostInputEvent::Bytes(bytes)) if bytes == b"K"));
     }
+    #[test]
+    fn hosts_without_terminal_replies_finish_immediately_on_every_refresh() {
+        let mut colors = HostColors::for_host(Arc::default(), false);
+        for _ in 0..2 {
+            assert!(colors.initial_complete());
+            assert!(colors.next_command(Instant::now()).is_none());
+            colors.request_refresh();
+        }
+    }
+
     #[test]
     fn missing_fence_closes_acceptance_and_coalesces_refresh_without_relabeling_late_values() {
         let now = Instant::now();

@@ -372,8 +372,7 @@ mod unix {
         let mut presenter = DesktopPresenter::default();
         let mut startup = StartupProgress::new(&request, progress.clone(), history);
         startup.present(&mut stdout.lock(), &mut presenter, physical_size)?;
-        let mut host_colors = HostColors::default();
-        host_colors.owned_subscription = appearance_owned;
+        let mut host_colors = HostColors::for_host(appearance_owned, cfg!(unix));
         host_colors.flush_commands(&mut presenter, &mut stdout.lock())?;
         let initial_color_deadline = Instant::now() + Duration::from_millis(250);
         // Collect before any create/attach side effect, so a child's first query

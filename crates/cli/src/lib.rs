@@ -1124,7 +1124,12 @@ fn read_pair_ticket(
             .GetConsoleMode()
             .map_err(|e| CliError::Io(e.to_string()))?;
         input
-            .SetConsoleMode(original & !winsafe::co::CONSOLE::ENABLE_ECHO_INPUT)
+            .SetConsoleMode(
+                original
+                    & !(winsafe::co::CONSOLE::ENABLE_ECHO_INPUT
+                        | winsafe::co::CONSOLE::ENABLE_LINE_INPUT
+                        | winsafe::co::CONSOLE::ENABLE_PROCESSED_INPUT),
+            )
             .map_err(|e| CliError::Io(e.to_string()))?;
         struct Restore(winsafe::HSTD, winsafe::co::CONSOLE);
         impl Drop for Restore {
@@ -1133,7 +1138,14 @@ fn read_pair_ticket(
             }
         }
         let guard = Restore(input, original);
-        let result = read_pair_ticket_line(&mut io::stdin().lock(), None);
+        let editing = TicketEditing {
+            interrupt: 3,
+            erase: 8,
+            kill: 21,
+            eof: 26,
+            word_erase: 23,
+        };
+        let result = read_pair_ticket_line(&mut io::stdin().lock(), Some(editing));
         let restored = guard
             .0
             .SetConsoleMode(guard.1)
@@ -1194,9 +1206,10 @@ where
     let original = tcgetattr(terminal).map_err(|error| CliError::Io(error.to_string()))?;
     let mut no_echo = original.clone();
     // Canonical input can discard a valid ticket (and its newline) at MAX_CANON.
-    // Keep signal processing and the terminal's configured editing characters.
+    // Read the interrupt key ourselves so the guard can restore the terminal.
     let chars = &original.control_chars;
     let editing = TicketEditing {
+        interrupt: chars[Cc::VINTR as usize],
         erase: chars[Cc::VERASE as usize],
         kill: chars[Cc::VKILL as usize],
         eof: chars[Cc::VEOF as usize],
@@ -1204,7 +1217,7 @@ where
     };
     no_echo
         .local_flags
-        .remove(LocalFlags::ECHO | LocalFlags::ECHONL | LocalFlags::ICANON);
+        .remove(LocalFlags::ECHO | LocalFlags::ECHONL | LocalFlags::ICANON | LocalFlags::ISIG);
     no_echo.control_chars[Cc::VMIN as usize] = 1;
     no_echo.control_chars[Cc::VTIME as usize] = 0;
     tcsetattr(terminal, SetArg::TCSANOW, &no_echo)
@@ -1257,6 +1270,7 @@ impl<T: std::os::fd::AsFd + ?Sized> Drop for EchoGuard<'_, T> {
 
 #[cfg(any(unix, windows))]
 struct TicketEditing {
+    interrupt: u8,
     erase: u8,
     kill: u8,
     eof: u8,
@@ -1278,6 +1292,9 @@ fn read_pair_ticket_line(
             Ok(_) => {}
         }
         let ch = byte[0];
+        if editing.as_ref().is_some_and(|keys| ch == keys.interrupt) {
+            return Err(CliError::Io("pair ticket input interrupted".to_owned()));
+        }
         if matches!(ch, b'\r' | b'\n') || editing.as_ref().is_some_and(|keys| ch == keys.eof) {
             break;
         }
@@ -2574,6 +2591,41 @@ mod tests {
                 .expect("restored termios")
                 .local_flags
                 .contains(LocalFlags::ECHO)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_echo_ticket_reader_restores_original_mode_on_configured_interrupt() {
+        use nix::sys::termios::{
+            LocalFlags, SetArg, SpecialCharacterIndices, tcgetattr, tcsetattr,
+        };
+        use std::fs::File;
+        let pty = nix::pty::openpty(None, None).expect("test PTY");
+        let mut master = File::from(pty.master);
+        let terminal = File::from(pty.slave);
+        let mut original = tcgetattr(&terminal).expect("test terminal operation succeeds");
+        original.control_chars[SpecialCharacterIndices::VINTR as usize] = 7;
+        tcsetattr(&terminal, SetArg::TCSANOW, &original).expect("test terminal operation succeeds");
+        let mut reader = terminal
+            .try_clone()
+            .expect("test terminal operation succeeds");
+        let error = read_pair_ticket_no_echo_with_observer(&terminal, &mut reader, || {
+            assert!(
+                !tcgetattr(&terminal)
+                    .expect("test terminal operation succeeds")
+                    .local_flags
+                    .intersects(LocalFlags::ISIG | LocalFlags::ICANON | LocalFlags::ECHO)
+            );
+            master
+                .write_all(&[7])
+                .expect("test terminal operation succeeds");
+        })
+        .expect_err("interrupt ends the prompt");
+        assert!(error.to_string().contains("interrupted"));
+        assert_eq!(
+            tcgetattr(&terminal).expect("test terminal operation succeeds"),
+            original
         );
     }
 
