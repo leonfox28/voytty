@@ -76,7 +76,7 @@ fn executable_script(root: &Path, updated: bool) -> String {
     };
     let binary = std::env::current_exe().expect("test binary");
     format!(
-        "#!/bin/sh\nset -eu\ncase \"$1\" in\n--internal-release-self-check) {post_check}printf '%s\\n' '{json}'; exit 0;;\n--internal-release-verify) exit 0;;\n--fixture-daemon) {startup}role=daemon;;\n--fixture-update) role=foreground;;\n--fixture-restart) role=restart-foreground;;\n--fixture-stop) role=stop-foreground;;\n--internal-handoff) role=worker;;\n*) exit 2;;\nesac\nexec env {FIXTURE_ROOT}={} {FIXTURE_ROLE}=\"$role\" {FIXTURE_VERSION}={} {} --exact handoff::tests::fixture_process --nocapture\n",
+        "#!/bin/sh\nset -eu\ncase \"$1\" in\n--internal-release-self-check) {post_check}printf '%s\\n' '{json}'; exit 0;;\n--internal-release-verify) exit 0;;\n--fixture-daemon) {startup}role=daemon;;\n--fixture-update) role=foreground;;\n--fixture-restart) role=restart-foreground;;\n--fixture-stop) role=stop-foreground;;\n--fixture-cleanup) role=cleanup-foreground;;\n--internal-handoff) role=worker;;\n*) exit 2;;\nesac\nexec env {FIXTURE_ROOT}={} {FIXTURE_ROLE}=\"$role\" {FIXTURE_VERSION}={} {} --exact handoff::tests::fixture_process --nocapture\n",
         quote(root),
         if updated {
             "9.1.0"
@@ -130,6 +130,8 @@ fn fixture_process() {
                         ExplicitPtyCommand::new("/bin/sleep", &cwd).arg("30")
                     } else if cwd.join("restart-from-session").exists() {
                         ExplicitPtyCommand::new(cwd.join("voytty"), &cwd).arg("--fixture-restart")
+                    } else if cwd.join("cleanup-from-session").exists() {
+                        ExplicitPtyCommand::new(cwd.join("voytty"), &cwd).arg("--fixture-cleanup")
                     } else if cwd.join("stop-from-session").exists() {
                         ExplicitPtyCommand::new(cwd.join("voytty"), &cwd).arg("--fixture-stop")
                     } else {
@@ -153,6 +155,28 @@ fn fixture_process() {
                 Duration::from_secs(5),
             )
             .expect("daemon runs");
+        }
+        "cleanup-foreground" => {
+            block_on(async {
+                let runtime = runtime(&root);
+                let expected = runtime
+                    .identity_reset_preflight()
+                    .await
+                    .expect("preflight")
+                    .device_id;
+                let result = if fs::read(root.join("cleanup-from-session"))
+                    .expect("cleanup command")
+                    == b"uninstall"
+                {
+                    runtime.uninstall(expected, true).await.map(|_| ())
+                } else {
+                    runtime.reset_identity(expected, true).await.map(|_| ())
+                };
+                if let Err(error) = result {
+                    fs::write(root.join("cleanup-error"), error.kind().code())
+                        .expect("frontend error");
+                }
+            });
         }
         "foreground" => {
             let result = update(
@@ -464,6 +488,74 @@ fn stop_completes_after_its_originating_pty_ends() {
         }
     });
     assert_eq!(daemon_starts(root), 1);
+}
+
+#[test]
+fn reset_removes_identity_after_its_originating_pty_ends() {
+    cleanup_from_session(Cleanup::Reset);
+}
+
+#[test]
+fn uninstall_from_its_originating_pty_obeys_the_build_identity() {
+    cleanup_from_session(Cleanup::Uninstall);
+}
+
+fn cleanup_from_session(operation: Cleanup) {
+    let fixture = Fixture::new();
+    let root = fixture.root.path();
+    let uninstall = operation == Cleanup::Uninstall;
+    let command = if uninstall { "uninstall" } else { "reset" };
+    fs::write(root.join("cleanup-from-session"), command).expect("cleanup origin mode");
+    block_on(async {
+        runtime(root)
+            .ensure_configured_daemon()
+            .await
+            .expect("fixture daemon");
+        let paths = paths(root);
+        let client = LocalClient::new(paths.socket());
+        let _ = client
+            .create_session(
+                &voytty_core::SessionName::new("cleanup-origin").expect("name"),
+                None,
+                None,
+            )
+            .await;
+        let executable = root.join("voytty");
+        let error_path = root.join("cleanup-error");
+        let managed = voytty_core::release::require_official_distribution_build(
+            &voytty_core::BuildIdentity::current(),
+        )
+        .is_ok();
+        tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                if error_path.exists()
+                    || (!paths.state_root().exists()
+                        && !paths.socket().exists()
+                        && (!uninstall || !executable.exists()))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("detached cleanup result");
+        if uninstall && !managed {
+            assert_eq!(
+                fs::read_to_string(error_path).expect("development refusal"),
+                DomainErrorKind::PathUnsafe.code()
+            );
+            assert!(paths.identity().is_file() && executable.is_file());
+            client
+                .status()
+                .await
+                .expect("development refusal preserves the daemon");
+        } else {
+            assert!(!error_path.exists());
+            assert!(!paths.state_root().exists() && !paths.socket().exists());
+            assert_eq!(executable.exists(), !uninstall);
+        }
+    });
 }
 
 fn hold_session(root: &Path) {
@@ -828,6 +920,35 @@ fn failed_child_launch_leaves_daemon_and_sessions_untouched() {
     )
     .expect_err("spawn failure");
     assert_unchanged(root, &original);
+}
+
+#[test]
+fn concurrent_update_before_setup_preserves_the_installation() {
+    let fixture = Fixture::new();
+    let root = fixture.root.path();
+    let paths = paths(root);
+    fs::remove_dir_all(paths.state_root()).expect("unconfigured fixture");
+    let executable = root.join("voytty");
+    let previous = fs::read(&executable).expect("original");
+    let lock = voytty_platform::user_state::FileLock::try_lock_installation(&executable, &paths)
+        .expect("installation lock")
+        .expect("first updater");
+    assert_eq!(
+        direct_update(root).expect_err("competing updater").kind(),
+        DomainErrorKind::UpdateRejected
+    );
+    assert_eq!(
+        fs::read(&executable).expect("unchanged installation"),
+        previous
+    );
+    assert!(!paths.state_root().exists());
+    drop(lock);
+    assert_eq!(
+        direct_update(root)
+            .expect("released installation")
+            .installed_version,
+        "9.1.0"
+    );
 }
 
 #[test]

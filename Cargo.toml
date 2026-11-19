@@ -54,13 +54,13 @@ png = "=0.18.1"
 ring = "=0.17.14"
 reqwest = { version = "=0.13.4", default-features = false, features = ["blocking", "rustls-no-provider"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std"] }
-rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
+rusqlite = { version = "=0.41.0", default-features = false, features = ["bundled"] }
 semver = "=1.0.28"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 tar = "=0.4.46"
 tempfile = "=3.27.0"
-rustix = { version = "1.1.4", features = ["event", "pipe", "termios"] }
+rustix = { version = "1.1.6", features = ["event", "pipe", "termios"] }
 tokio = { version = "1.53.3", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 time = { version = "=0.3.55", features = ["formatting", "parsing"] }

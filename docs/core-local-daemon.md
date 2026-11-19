@@ -96,6 +96,13 @@ operation replay windows, or pairing offers.
 
 There is one daemon per OS user and one installed executable. `lifecycle.lock`
 serializes setup/launch briefly; `daemon.lock` is held for the process lifetime.
+During an update an independent installation lock covers version checks, executable
+replacement and rollback, including before setup. Uninstall takes the same lock
+before removing state or the executable. Unix locks the installation
+directory. Windows locks a file in the account's private runtime directory.
+When a running daemon must stop for reset or uninstall, the detached worker
+rechecks the confirmed identity and completes cleanup after the original PTY exits.
+
 The daemon does not acquire the lifecycle lock, and there is no PID-file kill
 fallback. After spawning, the launcher polls readiness for up to five seconds:
 the child binds its socket before it can answer, so a single unanswered

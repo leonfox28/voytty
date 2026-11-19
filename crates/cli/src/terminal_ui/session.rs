@@ -115,7 +115,10 @@ impl TerminalUiSession {
                         Ok(size) => size,
                         Err(error) => break Err(error),
                     };
-                    if self.physical_size != latest_physical { self.input_epoch.invalidate_geometry(); }
+                    if self.physical_size == latest_physical {
+                        continue;
+                    }
+                    self.input_epoch.invalidate_geometry();
                     self.physical_size = latest_physical;
                     let layout = ChromeLayout::new(
                         latest_physical,
@@ -293,11 +296,15 @@ impl TerminalUiSession {
                                             }
                                         }
                                         HostInputEvent::EnhancedKey(key) => {
-                                            let outer_flags = self.presenter.presented_keyboard_flags();
+                                            let host = if cfg!(windows) {
+                                                HostKeyboard::WindowsConsole
+                                            } else {
+                                                HostKeyboard::Terminal(self.presenter.presented_keyboard_flags())
+                                            };
                                             match route_enhanced_input(
                                                 &key,
                                                 self.surface.modes(),
-                                                outer_flags,
+                                                host,
                                                 self.selection.is_finalized(),
                                                 &mut self.copy_key_lease,
                                             ) {

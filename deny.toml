@@ -7,6 +7,7 @@ version = 2
 yanked = "deny"
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "Informational unmaintained notice for transitive paste 1.0.15; no patched paste release exists, and pinned Iroh/Patchbay require it." },
+    { id = "RUSTSEC-2026-0543", reason = "No maintained chrono version is available. Revisit when Patchbay, the Relay ACME dependency and Windows netwatch/wmi no longer pull it in." },
 ]
 
 [licenses]

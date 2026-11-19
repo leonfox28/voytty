@@ -1133,7 +1133,7 @@ fn read_pair_ticket(
             }
         }
         let guard = Restore(input, original);
-        let result = read_pair_ticket_line(&mut io::stdin().lock());
+        let result = read_pair_ticket_line(&mut io::stdin().lock(), None);
         let restored = guard
             .0
             .SetConsoleMode(guard.1)
@@ -1187,11 +1187,26 @@ where
     R: Read,
     F: FnOnce(),
 {
-    use nix::sys::termios::{LocalFlags, SetArg, tcgetattr, tcsetattr};
+    use nix::sys::termios::{
+        LocalFlags, SetArg, SpecialCharacterIndices as Cc, tcgetattr, tcsetattr,
+    };
 
     let original = tcgetattr(terminal).map_err(|error| CliError::Io(error.to_string()))?;
     let mut no_echo = original.clone();
-    no_echo.local_flags.remove(LocalFlags::ECHO);
+    // Canonical input can discard a valid ticket (and its newline) at MAX_CANON.
+    // Keep signal processing and the terminal's configured editing characters.
+    let chars = &original.control_chars;
+    let editing = TicketEditing {
+        erase: chars[Cc::VERASE as usize],
+        kill: chars[Cc::VKILL as usize],
+        eof: chars[Cc::VEOF as usize],
+        word_erase: chars[Cc::VWERASE as usize],
+    };
+    no_echo
+        .local_flags
+        .remove(LocalFlags::ECHO | LocalFlags::ECHONL | LocalFlags::ICANON);
+    no_echo.control_chars[Cc::VMIN as usize] = 1;
+    no_echo.control_chars[Cc::VTIME as usize] = 0;
     tcsetattr(terminal, SetArg::TCSANOW, &no_echo)
         .map_err(|error| CliError::Io(error.to_string()))?;
     let guard = EchoGuard {
@@ -1201,8 +1216,12 @@ where
     };
     disabled();
 
-    let result = read_pair_ticket_line(reader);
-    guard.restore()?;
+    let result = read_pair_ticket_line(reader, Some(editing));
+    guard.restore(if result.is_err() {
+        SetArg::TCSAFLUSH
+    } else {
+        SetArg::TCSANOW
+    })?;
     result
 }
 
@@ -1215,13 +1234,9 @@ struct EchoGuard<'a, T: std::os::fd::AsFd + ?Sized> {
 
 #[cfg(unix)]
 impl<T: std::os::fd::AsFd + ?Sized> EchoGuard<'_, T> {
-    fn restore(mut self) -> Result<(), CliError> {
-        nix::sys::termios::tcsetattr(
-            self.terminal,
-            nix::sys::termios::SetArg::TCSANOW,
-            &self.original,
-        )
-        .map_err(|error| CliError::Io(error.to_string()))?;
+    fn restore(mut self, when: nix::sys::termios::SetArg) -> Result<(), CliError> {
+        nix::sys::termios::tcsetattr(self.terminal, when, &self.original)
+            .map_err(|error| CliError::Io(error.to_string()))?;
         self.restored = true;
         Ok(())
     }
@@ -1241,23 +1256,50 @@ impl<T: std::os::fd::AsFd + ?Sized> Drop for EchoGuard<'_, T> {
 }
 
 #[cfg(any(unix, windows))]
-fn read_pair_ticket_line(reader: &mut impl Read) -> Result<PairTicketText, CliError> {
+struct TicketEditing {
+    erase: u8,
+    kill: u8,
+    eof: u8,
+    word_erase: u8,
+}
+
+#[cfg(any(unix, windows))]
+fn read_pair_ticket_line(
+    reader: &mut impl Read,
+    editing: Option<TicketEditing>,
+) -> Result<PairTicketText, CliError> {
     let mut bytes = Zeroizing::new(Vec::with_capacity(256));
     loop {
-        let mut byte = [0_u8; 1];
+        let mut byte = [0; 1];
         match reader.read(&mut byte) {
             Ok(0) => break,
-            Ok(_) if byte[0] == b'\n' || byte[0] == b'\r' => break,
-            Ok(_) => {
-                if bytes.len() == MAX_TICKET_TEXT_BYTES {
-                    return Err(CliError::Usage(
-                        "pair ticket exceeds the 16 KiB input bound".to_owned(),
-                    ));
-                }
-                bytes.push(byte[0]);
-            }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(CliError::Io(error.to_string())),
+            Ok(_) => {}
+        }
+        let ch = byte[0];
+        if matches!(ch, b'\r' | b'\n') || editing.as_ref().is_some_and(|keys| ch == keys.eof) {
+            break;
+        }
+        match &editing {
+            Some(keys) if ch == keys.erase => {
+                bytes.pop();
+            }
+            Some(keys) if ch == keys.kill => bytes.clear(),
+            Some(keys) if ch == keys.word_erase => {
+                while bytes.last().is_some_and(u8::is_ascii_whitespace) {
+                    bytes.pop();
+                }
+                while bytes.last().is_some_and(|b| !b.is_ascii_whitespace()) {
+                    bytes.pop();
+                }
+            }
+            _ if bytes.len() == MAX_TICKET_TEXT_BYTES => {
+                return Err(CliError::Usage(
+                    "pair ticket exceeds the 16 KiB input bound".to_owned(),
+                ));
+            }
+            _ => bytes.push(ch),
         }
     }
     pair_ticket_from_bytes(&bytes)
@@ -2473,6 +2515,15 @@ mod tests {
         );
     }
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn interactive_ticket_limit_does_not_wait_for_a_newline() {
+        let mut oversized = io::repeat(b'a').take((MAX_TICKET_TEXT_BYTES + 2) as u64);
+        let error = read_pair_ticket_line(&mut oversized, None).expect_err("bounded ticket");
+        assert!(error.to_string().contains("16 KiB"));
+        assert_eq!(oversized.limit(), 1);
+    }
+
     #[cfg(unix)]
     #[test]
     fn no_echo_ticket_reader_restores_echo_after_error() {
@@ -2551,6 +2602,13 @@ mod tests {
         disabled_rx
             .recv()
             .expect("reader reached the no-echo boundary");
+        assert!(
+            !tcgetattr(slave_probe.as_fd())
+                .expect("ticket reader mode")
+                .local_flags
+                .contains(LocalFlags::ICANON)
+        );
+        assert!(ticket.expose().len() > 1024);
         master
             .write_all(ticket.expose().as_bytes())
             .and_then(|()| master.write_all(b"\n"))
@@ -2626,7 +2684,10 @@ mod tests {
                     EphemeralOperationId::from_array([0x52; 16]),
                     PairFingerprint::for_create(ttl_seconds),
                     DeviceDisplayName::new("cli-echo-test").expect("display name"),
-                    vec![RelayHint::new("https://relay.example.test").expect("relay hint")],
+                    vec![
+                        RelayHint::new(format!("https://relay.example.test/{}", "r".repeat(1000)))
+                            .expect("relay hint"),
+                    ],
                     ttl_seconds,
                 )
                 .expect("pair offer request"),

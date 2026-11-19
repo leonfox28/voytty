@@ -50,7 +50,10 @@ local-only pipe and verifies the exact spawned child process.
 
 The daemon runs detached with null standard handles. `daemon autostart enable`
 opts into the current user's `Run` registry value `VoyttyDaemon`; status/disable
-inspect or remove that value. It is not a system service. There is no autostart
+inspect or remove that value. Voytty records the exact previous and requested commands in
+`HKCU\Software\Voytty\LoginCommands`. After the executable moves, a matching
+record lets the new location update or remove the registration. Older installations
+use the executable path recorded by setup or update. It is not a system service. There is no autostart
 registration during installation or setup.
 
 ## Frontend and files

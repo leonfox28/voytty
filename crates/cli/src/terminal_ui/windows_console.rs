@@ -359,6 +359,8 @@ mod windows_console_tests {
     #[test]
     fn console_keys_preserve_unicode_modifiers_and_release_for_the_shared_codec() {
         for (code, modifiers, expected) in [
+            (KeyCode::Char('a'), KeyModifiers::NONE, b"a".as_slice()),
+            (KeyCode::Enter, KeyModifiers::NONE, b"\r".as_slice()),
             (KeyCode::Char('界'), KeyModifiers::NONE, "界".as_bytes()),
             (
                 KeyCode::Char('b'),
@@ -370,7 +372,10 @@ mod windows_console_tests {
         ] {
             let bytes = console_event_bytes(Event::Key(KeyEvent::new(code, modifiers)));
             let parsed = EnhancedKey::parse(bytes).expect("shared typed key");
-            assert_eq!(parsed.legacy_bytes(TerminalModes::default()), expected);
+            let KeyboardRoute::Forward { bytes, .. } = route_enhanced_input(
+                &parsed, TerminalModes::default(), HostKeyboard::WindowsConsole, false, &mut CopyKeyLease::default()
+            ) else { panic!("expected console input"); };
+            assert_eq!(bytes, expected);
         }
         let released = console_event_bytes(Event::Key(KeyEvent::new_with_kind(
             KeyCode::Char('x'),
@@ -379,7 +384,8 @@ mod windows_console_tests {
         )));
         let parsed = EnhancedKey::parse(released).expect("release key");
         assert_eq!(parsed.kind, KeyEventKind::Release);
-        assert!(parsed.legacy_bytes(TerminalModes::default()).is_empty());
+        assert!(matches!(route_enhanced_input(&parsed, TerminalModes::default(), HostKeyboard::WindowsConsole, false, &mut CopyKeyLease::default()),
+            KeyboardRoute::Forward { bytes, .. } if bytes.is_empty()));
     }
 
     #[test]
