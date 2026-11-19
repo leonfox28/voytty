@@ -144,20 +144,21 @@ impl KeyInput<'_> {
         let disambiguate = all || flags.contains(TerminalKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES);
         let modifiers = self.modifiers & !(MOD_CAPS_LOCK | MOD_NUM_LOCK);
         let text_key = matches!(self.code, KeyCode::Unicode(_)) && modifiers & !(MOD_SHIFT) == 0;
-        let recovery_key = matches!(
-            self.code,
-            KeyCode::Functional(
-                FunctionalKey::Enter | FunctionalKey::Tab | FunctionalKey::Backspace
-            )
-        );
+        let recovery_key = modifiers == 0
+            && matches!(
+                self.code,
+                KeyCode::Functional(
+                    FunctionalKey::Enter | FunctionalKey::Tab | FunctionalKey::Backspace
+                )
+            );
         if flags.is_empty() || (!all && (text_key || recovery_key)) {
-            return self.legacy_bytes(modes);
+            return KeyInput { raw: &[], ..*self }.legacy_bytes(modes);
         }
         if self.kind == KeyEventKind::Release && !events {
             return Vec::new();
         }
         if !disambiguate && !events {
-            return self.legacy_bytes(modes);
+            return KeyInput { raw: &[], ..*self }.legacy_bytes(modes);
         }
         // Functional keys keep their canonical CSI-letter/tilde identity.
         let (number, suffix) = match self.code {
@@ -173,7 +174,15 @@ impl KeyInput<'_> {
             key_field.push_str(&(shifted as u32).to_string());
         }
         let modifier = u16::from(if all { self.modifiers } else { modifiers }) + 1;
-        let mut report = format!("\x1b[{key_field};{modifier}");
+        let report_modifiers = modifier != 1 || (events && self.kind != KeyEventKind::Press);
+        let mut report = String::from("\x1b[");
+        if report_modifiers || matches!(suffix, 'u' | '~') {
+            report.push_str(&key_field);
+        }
+        if report_modifiers {
+            report.push(';');
+            report.push_str(&modifier.to_string());
+        }
         if events && self.kind != KeyEventKind::Press {
             report.push_str(if self.kind == KeyEventKind::Repeat {
                 ":2"
@@ -193,6 +202,9 @@ impl KeyInput<'_> {
                 .collect::<Vec<_>>()
                 .join(":");
             if !text.is_empty() {
+                if !report_modifiers {
+                    report.push(';');
+                }
                 report.push(';');
                 report.push_str(&text);
             }
@@ -233,11 +245,11 @@ impl KeyInput<'_> {
             self.text.iter().collect::<String>()
         };
 
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         if modifiers & MOD_SUPER != 0 {
             return Vec::new();
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         if modifiers & MOD_SUPER != 0 {
             return text.into_bytes();
         }
@@ -246,6 +258,7 @@ impl KeyInput<'_> {
             primary == ' ' && modifiers & MOD_CONTROL != 0 && modifiers & MOD_SHIFT != 0;
         let legacy_combo = modifiers & !(MOD_SHIFT | MOD_ALT | MOD_CONTROL) == 0
             && (control_shift_space
+                || self.raw.is_empty()
                 || !(modifiers & MOD_CONTROL != 0 && modifiers & MOD_SHIFT != 0));
         if !legacy_combo {
             return self.without_event_type();
@@ -377,6 +390,9 @@ impl KeyInput<'_> {
     }
 
     fn without_event_type(&self) -> Vec<u8> {
+        if self.raw.is_empty() {
+            return Vec::new();
+        }
         let code = match self.code {
             KeyCode::Unicode(code) => code,
             KeyCode::Functional(key) => functional_number(key),
@@ -552,8 +568,36 @@ mod tests {
         assert_eq!(c.encode(modes), b"\x1b[99;7:3u");
         assert!(c.encode(TerminalModes::default()).is_empty());
         c.code = KeyCode::Functional(FunctionalKey::Enter);
+        assert_eq!(c.encode(modes), b"\x1b[13;7:3u");
+        c.modifiers = 0;
         assert!(c.encode(modes).is_empty());
     }
+    #[test]
+    fn native_modified_recovery_keys_and_default_cursor_reports() {
+        let modes = TerminalModes {
+            keyboard_flags: TerminalKeyboardFlags::DISAMBIGUATE_ESCAPE_CODES,
+            ..Default::default()
+        };
+        for (code, expected) in [
+            (FunctionalKey::Tab, "\x1b[9;5u"),
+            (FunctionalKey::Enter, "\x1b[13;5u"),
+            (FunctionalKey::Backspace, "\x1b[127;5u"),
+        ] {
+            assert_eq!(
+                key(KeyCode::Functional(code), MOD_CONTROL).encode(modes),
+                expected.as_bytes()
+            );
+        }
+        assert_eq!(
+            key(KeyCode::Functional(FunctionalKey::Up), 0).encode(modes),
+            b"\x1b[A"
+        );
+        assert_eq!(
+            key(KeyCode::Unicode(65), MOD_SHIFT | MOD_CONTROL).encode(TerminalModes::default()),
+            [1]
+        );
+    }
+
     #[test]
     fn ime_text_keeps_unicode_and_reports_no_invented_physical_key() {
         let chars: Vec<_> = "中文e\u{301}".chars().collect();
@@ -569,6 +613,6 @@ mod tests {
             keyboard_flags: TerminalKeyboardFlags::ALL,
             ..Default::default()
         };
-        assert_eq!(input.encode(modes), b"\x1b[0;1;20013:25991:101:769u");
+        assert_eq!(input.encode(modes), b"\x1b[0;;20013:25991:101:769u");
     }
 }

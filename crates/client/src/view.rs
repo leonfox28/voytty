@@ -811,6 +811,7 @@ async fn run_terminal_driver(
         )));
     }
     let mut stop_after_pending = false;
+    let mut commands_open = true;
     let mut local_takeover_pending = takeover;
     let mut last_state = initial_state;
     let mut diagnostic_state = None;
@@ -881,7 +882,17 @@ async fn run_terminal_driver(
         }
 
         tokio::select! {
-            command = commands.recv() => {
+            command = commands.recv(), if commands_open => {
+                if stop_after_pending {
+                    // A writer may be waiting for its command before reading the
+                    // terminal event. Wake it without replacing the known outcome.
+                    if let Some(command) = command {
+                        let _ = command.response.send(Ok(()));
+                    } else {
+                        commands_open = false;
+                    }
+                    continue;
+                }
                 if apply_terminal_driver_command(
                     command,
                     &mut client,

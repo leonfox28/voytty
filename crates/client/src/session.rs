@@ -145,6 +145,8 @@ impl fmt::Debug for LocalTakeoverRetryToken {
 }
 
 struct ReconnectedAttachment {
+    requested_viewport: voytty_core::terminal::TerminalSize,
+    requested_colors: TerminalColorProfile,
     transport: AttachmentTransport,
     attachment_id: AttachmentId,
     initial: LocalAttachmentEvent,
@@ -172,6 +174,11 @@ pub struct SessionClient {
     applied_revision: Arc<AtomicU64>,
     latest_viewport: voytty_core::terminal::TerminalSize,
     reconnect_pending: bool,
+    reconnect_attempt: tokio::task::JoinSet<Result<ReconnectedAttachment, DaemonError>>,
+    reconnect_retry: u32,
+    retry_after: Option<tokio::time::Instant>,
+    resize_after_ack: bool,
+    colors_after_ack: bool,
     force_full_sync: bool,
     initial_snapshot: Option<TerminalSurfaceSnapshot>,
     terminal_rows: u32,
@@ -406,6 +413,11 @@ impl SessionClient {
                 applied_revision: Arc::new(AtomicU64::new(initial_snapshot.revision.get())),
                 latest_viewport: initial_snapshot.surface.size,
                 reconnect_pending: false,
+                reconnect_attempt: Default::default(),
+                reconnect_retry: 0,
+                retry_after: None,
+                resize_after_ack: false,
+                colors_after_ack: false,
                 force_full_sync: false,
                 latest_colors: base_colors,
                 color_sequence: 0,
@@ -470,8 +482,33 @@ impl SessionClient {
             malformed("only a remote terminal view may reconnect through a tunnel")
         })?;
         loop {
-            match self.reconnect_remote_once(resume_view_id).await {
+            if let Some(deadline) = self.retry_after {
+                tokio::time::sleep_until(deadline).await;
+                self.retry_after = None;
+            }
+            if self.reconnect_attempt.is_empty() {
+                self.start_reconnect_attempt(resume_view_id)?;
+            }
+            let result = self
+                .reconnect_attempt
+                .join_next()
+                .await
+                .expect("one remote reconnect attempt")
+                .map_err(|_| malformed("remote reconnect worker ended unexpectedly"))?;
+            match result {
                 Ok(reconnected) => {
+                    if let LocalAttachmentEvent::ResumeDelta(delta) = &reconnected.initial
+                        && (self.force_full_sync
+                            || delta.from_revision.get()
+                                != self.applied_revision.load(Ordering::Acquire))
+                    {
+                        self.force_full_sync = true;
+                        continue;
+                    }
+                    self.reconnect_retry = 0;
+                    self.color_sequence = 0;
+                    self.resize_after_ack = self.latest_viewport != reconnected.requested_viewport;
+                    self.colors_after_ack = self.latest_colors != reconnected.requested_colors;
                     if let Some(operation) = self.reconnect_diagnostic.take() {
                         voytty_diagnostics::record(
                             voytty_diagnostics::Event::new(
@@ -490,9 +527,10 @@ impl SessionClient {
                     self.takeover_deadline = None;
                     self.attachment_id = reconnected.attachment_id;
                     self.terminal_rows = u32::from(reconnected.terminal_size.rows);
-                    self.latest_viewport = reconnected.terminal_size;
+                    if !self.resize_after_ack {
+                        self.latest_viewport = reconnected.terminal_size;
+                    }
                     self.deferred.clear();
-                    self.pending_transport_events.clear();
                     self.operation_lease = None;
                     self.next_operation_sequence = 1;
                     self.pending_history_window = None;
@@ -522,7 +560,13 @@ impl SessionClient {
                     return Ok(());
                 }
                 Err(error) if is_retryable_remote_reconnect(error.kind()) => {
-                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    let base_ms = (250u64 << self.reconnect_retry.min(6)).min(8_000);
+                    let mut jitter = [0_u8; 1];
+                    let _ = SystemRandom::new().fill(&mut jitter);
+                    let delay =
+                        Duration::from_millis(base_ms + base_ms * u64::from(jitter[0]) / 1024);
+                    self.retry_after = Some(tokio::time::Instant::now() + delay);
+                    self.reconnect_retry = self.reconnect_retry.saturating_add(1);
                 }
                 Err(error) => {
                     if let Some(operation) = &self.reconnect_diagnostic {
@@ -542,27 +586,24 @@ impl SessionClient {
         }
     }
 
-    async fn reconnect_remote_once(
-        &mut self,
-        resume_view_id: ResumeViewId,
-    ) -> Result<ReconnectedAttachment, DaemonError> {
-        let deadline = crate::protocol::control_deadline();
+    fn start_reconnect_attempt(&mut self, resume_view_id: ResumeViewId) -> Result<(), DaemonError> {
         let request_id = self.next_request_id;
         self.next_request_id = self
             .next_request_id
             .checked_add(1)
             .ok_or_else(|| resource_error("terminal reconnect request ID exhausted"))?;
-        self.color_sequence = 0;
+        let requested_colors = self.latest_colors.clone();
+        let requested_viewport = self.latest_viewport;
         let request = v2::TerminalAttachRequest {
             accept_zlib_frames: true,
             acknowledge_surface_frames: true,
-            base_colors: Some(self.latest_colors.clone().into()),
+            base_colors: Some(requested_colors.clone().into()),
             target: Some(resolved_target_wire(self.target)),
             session_id: Some(self.session_id.into()),
             takeover: false,
             session_name: String::new(),
             create_main: false,
-            viewport: Some(self.latest_viewport.into()),
+            viewport: Some(requested_viewport.into()),
             resume_view_id: Some(resume_view_id.into()),
             known_revision: (!self.force_full_sync)
                 .then(|| self.applied_revision.load(Ordering::Acquire)),
@@ -574,93 +615,104 @@ impl SessionClient {
             &request,
         )
         .map_err(protocol_error)?;
-        let mut transport = tokio::time::timeout_at(deadline, self.connector.open(self.target))
+        let connector = Arc::clone(&self.connector);
+        let target = self.target;
+        let expected_session = self.session_id;
+        let known_revision = request.known_revision;
+        self.reconnect_attempt.spawn(async move {
+            let mut transport = tokio::time::timeout_at(
+                crate::protocol::startup_deadline(target),
+                connector.open(target),
+            )
             .await
             .map_err(|_| crate::protocol::control_timeout())??;
-        transport.write_until(&bytes, deadline).await?;
+            let deadline = crate::protocol::control_deadline();
+            transport.write_until(&bytes, deadline).await?;
 
-        tokio::time::timeout_at(deadline, async {
-            let mut paths = Vec::new();
-            loop {
-                let frame = match transport.read_item().await? {
-                    AttachmentTransportItem::Path(path) => {
-                        check_initial_capacity(paths.len())?;
-                        paths.push(path);
-                        continue;
-                    }
-                    AttachmentTransportItem::Session(frame) => frame,
-                };
-                if frame.request_id != request_id {
-                    return Err(malformed(
-                        "remote resume initial update correlation mismatch",
-                    ));
-                }
-                if frame.kind == WireKind::ServiceErrorResponse {
-                    return Err(service_error(&frame)?);
-                }
-                let (attachment_id, initial, terminal_size) = match frame.kind {
-                    WireKind::TerminalSemanticSnapshot => {
-                        let snapshot: v2::TerminalSemanticSnapshot = frame
-                            .decode_message(WireKind::TerminalSemanticSnapshot)
-                            .map_err(protocol_error)?;
-                        let (session_id, attachment_id, snapshot) =
-                            voytty_proto::terminal_surface_snapshot_from_message(snapshot)
-                                .map_err(protocol_error)?;
-                        if session_id != self.session_id {
-                            return Err(malformed(
-                                "remote resume snapshot changed the frozen session identity",
-                            ));
+            tokio::time::timeout_at(deadline, async {
+                let mut paths = Vec::new();
+                loop {
+                    let frame = match transport.read_item().await? {
+                        AttachmentTransportItem::Path(path) => {
+                            check_initial_capacity(paths.len())?;
+                            paths.push(path);
+                            continue;
                         }
-                        let size = snapshot.surface.size;
-                        (
-                            attachment_id,
-                            LocalAttachmentEvent::Snapshot(snapshot),
-                            size,
-                        )
-                    }
-                    WireKind::TerminalSemanticDelta => {
-                        let delta: v2::TerminalSemanticDelta = frame
-                            .decode_message(WireKind::TerminalSemanticDelta)
-                            .map_err(protocol_error)?;
-                        let (attachment_id, delta) =
-                            voytty_proto::terminal_surface_delta_from_message(delta)
-                                .map_err(protocol_error)?;
-                        if delta.from_revision
-                            != Revision::new(self.applied_revision.load(Ordering::Acquire))
-                        {
-                            return Err(malformed(
-                                "remote resume delta does not continue the applied revision",
-                            ));
-                        }
-                        let size = delta.size;
-                        (
-                            attachment_id,
-                            LocalAttachmentEvent::ResumeDelta(delta),
-                            size,
-                        )
-                    }
-                    _ => {
+                        AttachmentTransportItem::Session(frame) => frame,
+                    };
+                    if frame.request_id != request_id {
                         return Err(malformed(
-                            "remote resume began with an invalid Session update",
+                            "remote resume initial update correlation mismatch",
                         ));
                     }
-                };
-                return Ok(ReconnectedAttachment {
-                    transport,
-                    attachment_id,
-                    initial,
-                    paths,
-                    terminal_size,
-                });
-            }
-        })
-        .await
-        .map_err(|_| {
-            DaemonError::new(
-                DomainErrorKind::DeadlineExceeded,
-                "timed out waiting for remote resume state",
-            )
-        })?
+                    if frame.kind == WireKind::ServiceErrorResponse {
+                        return Err(service_error(&frame)?);
+                    }
+                    let (attachment_id, initial, terminal_size) = match frame.kind {
+                        WireKind::TerminalSemanticSnapshot => {
+                            let snapshot: v2::TerminalSemanticSnapshot = frame
+                                .decode_message(WireKind::TerminalSemanticSnapshot)
+                                .map_err(protocol_error)?;
+                            let (session_id, attachment_id, snapshot) =
+                                voytty_proto::terminal_surface_snapshot_from_message(snapshot)
+                                    .map_err(protocol_error)?;
+                            if session_id != expected_session {
+                                return Err(malformed(
+                                    "remote resume snapshot changed the frozen session identity",
+                                ));
+                            }
+                            let size = snapshot.surface.size;
+                            (
+                                attachment_id,
+                                LocalAttachmentEvent::Snapshot(snapshot),
+                                size,
+                            )
+                        }
+                        WireKind::TerminalSemanticDelta => {
+                            let delta: v2::TerminalSemanticDelta = frame
+                                .decode_message(WireKind::TerminalSemanticDelta)
+                                .map_err(protocol_error)?;
+                            let (attachment_id, delta) =
+                                voytty_proto::terminal_surface_delta_from_message(delta)
+                                    .map_err(protocol_error)?;
+                            if Some(delta.from_revision.get()) != known_revision {
+                                return Err(malformed(
+                                    "remote resume delta does not continue the applied revision",
+                                ));
+                            }
+                            let size = delta.size;
+                            (
+                                attachment_id,
+                                LocalAttachmentEvent::ResumeDelta(delta),
+                                size,
+                            )
+                        }
+                        _ => {
+                            return Err(malformed(
+                                "remote resume began with an invalid Session update",
+                            ));
+                        }
+                    };
+                    return Ok(ReconnectedAttachment {
+                        requested_colors,
+                        requested_viewport,
+                        transport,
+                        attachment_id,
+                        initial,
+                        paths,
+                        terminal_size,
+                    });
+                }
+            })
+            .await
+            .map_err(|_| {
+                DaemonError::new(
+                    DomainErrorKind::DeadlineExceeded,
+                    "timed out waiting for remote resume state",
+                )
+            })?
+        });
+        Ok(())
     }
 
     fn enter_reconnecting(&mut self) {
@@ -774,6 +826,11 @@ impl SessionClient {
                 applied_revision: Arc::new(AtomicU64::new(1)),
                 latest_viewport: voytty_core::terminal::TerminalSize::new(24, 80),
                 reconnect_pending: false,
+                reconnect_attempt: Default::default(),
+                reconnect_retry: 0,
+                retry_after: None,
+                resize_after_ack: false,
+                colors_after_ack: false,
                 force_full_sync: false,
                 initial_snapshot: Some(TerminalSurfaceSnapshot {
                     revision: Revision::new(1),
@@ -847,7 +904,16 @@ impl SessionClient {
                     .epoch(revision.get()),
             );
         }
-        result
+        result?;
+        if !self.reconnect_pending {
+            if std::mem::take(&mut self.colors_after_ack) {
+                self.update_colors(self.latest_colors.clone()).await?;
+            }
+            if std::mem::take(&mut self.resize_after_ack) {
+                self.resize(self.latest_viewport).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Sends controller input without waiting for a redundant success ACK.
@@ -869,6 +935,7 @@ impl SessionClient {
         &mut self,
         profile: TerminalColorProfile,
     ) -> Result<(), DaemonError> {
+        self.colors_after_ack = false;
         self.latest_colors = profile.clone();
         self.color_sequence = self
             .color_sequence
@@ -901,6 +968,7 @@ impl SessionClient {
             );
         }
         // Retain the frontend's latest desired viewport across a tunnel epoch.
+        self.resize_after_ack = false;
         self.latest_viewport = size;
         self.send(
             WireKind::TerminalResize,
@@ -2533,6 +2601,47 @@ mod tests {
         fn shutdown(&mut self) -> crate::transport::TransportFuture<'_, Result<(), DaemonError>> {
             Box::pin(async { Ok(()) })
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn remote_resume_survives_cancelled_reads_during_slow_setup_and_attach() {
+        let (mut client, _peer) = SessionClient::terminal_driver_test_pair(
+            ResolvedSessionTarget::device(DeviceId::from_array([7; 32])),
+            SessionId::from_array([1; 16]),
+            AttachmentId::from_array([3; 16]),
+        );
+        let writes = Arc::new(AtomicU64::new(0));
+        client.connector = Arc::new(DelayedStartup {
+            setup: Duration::from_secs(7),
+            response: Duration::from_secs(4),
+            writes: Arc::clone(&writes),
+        });
+        client.resume_view_id = Some(ResumeViewId::from_array([4; 16]));
+        client.next_request_id = 1;
+        client.enter_reconnecting();
+        let started = tokio::time::Instant::now();
+        for _ in 0..9 {
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), client.reconnect_remote())
+                    .await
+                    .is_err()
+            );
+            client
+                .resize(voytty_core::terminal::TerminalSize::new(40, 100))
+                .await
+                .expect("retain resize");
+        }
+        tokio::time::timeout(Duration::from_secs(3), client.reconnect_remote())
+            .await
+            .expect("original resume progresses")
+            .expect("resumed");
+        assert_eq!(started.elapsed(), Duration::from_secs(11));
+        assert_eq!(writes.load(Ordering::Acquire), 1);
+        assert!(client.resize_after_ack);
+        assert_eq!(
+            client.latest_viewport,
+            voytty_core::terminal::TerminalSize::new(40, 100)
+        );
     }
 
     #[tokio::test(start_paused = true)]
