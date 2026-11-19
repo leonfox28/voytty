@@ -193,9 +193,9 @@ impl TerminalUiSession {
                     }
                 }
                 () = wait_for_prefix_deadline(color_deadline), if color_deadline.is_some() => { self.host_colors.expire(Instant::now()); }
-                input = self.stdin_pump.recv() => {
+                input = self.input_codec.read(self.stdin_pump.recv(), self.current_input_epoch, self.input_epoch.geometry()) => {
                     match input {
-                        Some(StdinEvent::Bytes { epoch, geometry, bytes }) =>
+                        Ok(Some(decoded)) =>
                         {
                             // A paced history frame may have committed a new
                             // source since the preceding pointer event. Retire
@@ -207,10 +207,7 @@ impl TerminalUiSession {
                                 &self.surface,
                                 &mut self.presenter,
                             );
-                            let mut host_events = match self.input_codec.feed_for_lifetimes(&bytes, epoch, self.current_input_epoch, geometry, self.input_epoch.geometry()) {
-                                Ok(events) => VecDeque::from(events),
-                                Err(error) => break 'terminal Err(error),
-                            };
+                            let mut host_events = VecDeque::from(decoded);
                             let mut force_viewport_presentation = false;
                             while let Some(host_event) = host_events.pop_front() {
                                 if let HostInputEvent::TerminalReply { reply, bytes } = host_event { self.host_colors.observe(reply, bytes, Instant::now()); continue; }
@@ -491,13 +488,13 @@ impl TerminalUiSession {
                                 break 'terminal Err(error);
                             }
                         }
-                        Some(StdinEvent::Eof) | None => {
+                        Ok(None) => {
                             self.viewport_pacer.cancel();
                             self.prefix.clear_pending();
                             break Ok(TerminalCompletion::Detached);
                         }
-                        Some(StdinEvent::Error(detail)) => {
-                            break Err(CliError::Io(format!("read terminal stdin: {detail}")));
+                        Err(error) => {
+                            break Err(error);
                         }
                     }
                 }

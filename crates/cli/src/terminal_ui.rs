@@ -399,9 +399,9 @@ mod unix {
                     startup.present(&mut stdout.lock(), &mut presenter, physical_size)?;
                 }
                 () = wait_for_prefix_deadline(deadline) => {},
-                input = stdin_pump.recv() => match input {
-                    Some(StdinEvent::Bytes { epoch, bytes, .. }) => {
-                        for event in input_codec.feed_for_epoch(&bytes, epoch, current_input_epoch)? {
+                input = input_codec.read(stdin_pump.recv(), current_input_epoch, input_epoch.geometry()) => match input? {
+                    Some(events) => {
+                        for event in events {
                             if let HostInputEvent::TerminalReply { reply, bytes } = event {
                                 host_colors.observe(reply, bytes, Instant::now());
                             } else {
@@ -411,8 +411,7 @@ mod unix {
                             }
                         }
                     },
-                    Some(StdinEvent::Error(error)) => return Err(CliError::Io(error)),
-                    Some(StdinEvent::Eof) | None => return Ok(TerminalCompletion::Detached),
+                    None => return Ok(TerminalCompletion::Detached),
                 }
             }
             host_colors.flush_commands(&mut presenter, &mut stdout.lock())?;
@@ -661,15 +660,10 @@ mod unix {
                     host_colors.expire(Instant::now());
                     None
                 }
-                input = stdin_pump.recv(), if input_open => {
+                input = input_codec.read(stdin_pump.recv(), current_input_epoch, 0), if input_open => {
                     match input {
-                        Some(StdinEvent::Bytes { epoch, bytes, .. }) => {
+                        Ok(Some(decoded)) => {
                             let mut cancellation = None;
-                            let decoded = match input_codec.feed_for_epoch(&bytes, epoch, current_input_epoch) {
-                                Ok(decoded) => decoded,
-                                Err(_) if pending_cancellation.is_some() => { input_open = false; continue; }
-                                Err(error) => return Err(error),
-                            };
                             for event in decoded {
                                 if let HostInputEvent::TerminalReply { reply, bytes } = event {
                                     host_colors.observe(reply, bytes, Instant::now());
@@ -683,13 +677,13 @@ mod unix {
                             }
                             cancellation
                         }
-                        Some(StdinEvent::Eof) | None => {
+                        Ok(None) => {
                             input_open = false;
                             prefix.clear_pending();
                             pending_cancellation.is_none().then_some(InactiveCancellation::LocalDetach)
                         }
-                        Some(StdinEvent::Error(_)) if pending_cancellation.is_some() => { input_open = false; None }
-                        Some(StdinEvent::Error(detail)) => return Err(CliError::Io(format!("read terminal stdin: {detail}"))),
+                        Err(_) if pending_cancellation.is_some() => { input_open = false; None }
+                        Err(error) => return Err(error),
                     }
                 }
             };
@@ -2633,6 +2627,7 @@ mod unix {
         utf8_tail: u8,
         pending_epoch: Option<u64>,
         pending_geometry: Option<u64>,
+        escape_deadline: Option<Instant>,
     }
 
     impl HostInputCodec {
@@ -2646,9 +2641,57 @@ mod unix {
                 utf8_tail: 0,
                 pending_epoch: None,
                 pending_geometry: None,
+                escape_deadline: None,
             }
         }
 
+        async fn read(
+            &mut self,
+            input: impl Future<Output = Option<StdinEvent>>,
+            current: u64,
+            current_geometry: u64,
+        ) -> Result<Option<Vec<HostInputEvent>>, CliError> {
+            let input = if let Some(deadline) = self.escape_deadline {
+                tokio::select! {
+                    biased;
+                    () = tokio::time::sleep_until(deadline.into()) => {
+                        return Ok(Some(self.take_escape(current)));
+                    }
+                    input = input => input,
+                }
+            } else {
+                input.await
+            };
+            match input {
+                Some(StdinEvent::Bytes {
+                    epoch,
+                    geometry,
+                    bytes,
+                }) => self
+                    .feed_for_lifetimes(&bytes, epoch, current, geometry, current_geometry)
+                    .map(Some),
+                Some(StdinEvent::Error(detail)) => {
+                    Err(CliError::Io(format!("read terminal stdin: {detail}")))
+                }
+                Some(StdinEvent::Eof) | None if self.escape_deadline.is_some() => {
+                    Ok(Some(self.take_escape(current)))
+                }
+                Some(StdinEvent::Eof) | None => Ok(None),
+            }
+        }
+
+        fn take_escape(&mut self, current: u64) -> Vec<HostInputEvent> {
+            self.escape_deadline = None;
+            self.pending_geometry = None;
+            let bytes = std::mem::take(&mut self.pending);
+            if self.pending_epoch.take() == Some(current) {
+                vec![HostInputEvent::Bytes(bytes)]
+            } else {
+                Vec::new()
+            }
+        }
+
+        #[cfg(test)]
         fn feed_for_epoch(
             &mut self,
             bytes: &[u8],
@@ -2666,26 +2709,40 @@ mod unix {
             geometry: u64,
             current_geometry: u64,
         ) -> Result<Vec<HostInputEvent>, CliError> {
+            // A fresh key cannot inherit a stale Escape. Keep an OSC/CSI
+            // continuation framed so terminal replies still cross epoch fences.
+            let stale_key =
+                self.pending_epoch != Some(epoch) && !matches!(bytes.first(), Some(b']' | b'['));
+            let mut events =
+                if self.escape_deadline.is_some() && (stale_key || bytes.starts_with(b"\x1b")) {
+                    self.take_escape(current)
+                } else {
+                    Vec::new()
+                };
             let source_geometry = self.pending_geometry.unwrap_or(geometry);
             let source_epoch = self.pending_epoch.unwrap_or(epoch);
-            let events = self.feed(bytes)?;
+            let decoded = self.feed(bytes)?;
             self.pending_epoch = (!self.pending.is_empty()
                 || self.utf8_tail != 0
                 || self.discarding_osc
                 || self.discarding_csi)
                 .then_some(source_epoch);
             self.pending_geometry = self.pending_epoch.map(|_| source_geometry);
-            Ok(events
-                .into_iter()
-                .filter(|event| {
-                    !matches!(event, HostInputEvent::Mouse(_))
-                        || (geometry == current_geometry && source_geometry == current_geometry)
-                })
-                .filter(|event| {
-                    matches!(event, HostInputEvent::TerminalReply { .. })
-                        || (epoch == current && source_epoch == current)
-                })
-                .collect())
+            self.escape_deadline = (self.pending == b"\x1b" && !self.discarding_osc)
+                .then(|| Instant::now() + Duration::from_millis(40));
+            events.extend(
+                decoded
+                    .into_iter()
+                    .filter(|event| {
+                        !matches!(event, HostInputEvent::Mouse(_))
+                            || (geometry == current_geometry && source_geometry == current_geometry)
+                    })
+                    .filter(|event| {
+                        matches!(event, HostInputEvent::TerminalReply { .. })
+                            || (epoch == current && source_epoch == current)
+                    }),
+            );
+            Ok(events)
         }
 
         fn feed(&mut self, bytes: &[u8]) -> Result<Vec<HostInputEvent>, CliError> {
@@ -2883,6 +2940,10 @@ mod unix {
                         });
                         break;
                     }
+                }
+                if self.pending.starts_with(b"\x1b\x1b") {
+                    events.push(HostInputEvent::Bytes(vec![self.pending.remove(0)]));
+                    continue;
                 }
                 if known_host_prefix(&self.pending) {
                     break;
@@ -6692,6 +6753,93 @@ mod unix {
                 "unknown baseline writes final cells without an intermediate screen erase"
             );
             assert!(presenter.baseline.is_some());
+        }
+
+        #[tokio::test]
+        async fn lone_escape_is_delivered_without_another_read() {
+            let mut codec = HostInputCodec::new();
+            assert!(
+                codec
+                    .feed_for_epoch(b"\x1b", 1, 1)
+                    .expect("escape")
+                    .is_empty()
+            );
+            let events = tokio::time::timeout(
+                Duration::from_secs(1),
+                codec.read(std::future::pending(), 1, 0),
+            )
+            .await
+            .expect("idle escape deadline")
+            .expect("read")
+            .expect("input");
+            assert_eq!(events, [HostInputEvent::Bytes(vec![0x1b])]);
+            assert_eq!(
+                codec
+                    .feed_for_epoch(b"]text", 1, 1)
+                    .expect("ordinary input"),
+                [HostInputEvent::Bytes(b"]text".to_vec())]
+            );
+        }
+
+        #[test]
+        fn escape_preserves_the_next_sequence_and_its_input_epoch() {
+            let mouse = b"\x1b[<35;2;3M";
+            let mut codec = HostInputCodec::new();
+            let mut combined = vec![0x1b];
+            combined.extend_from_slice(mouse);
+            let escape = HostInputEvent::Bytes(vec![0x1b]);
+            assert_eq!(
+                codec.feed_for_epoch(&combined, 1, 1).expect("same chunk"),
+                [escape.clone(), HostInputEvent::Mouse(sgr_mouse(mouse))]
+            );
+            assert!(
+                codec
+                    .feed_for_epoch(b"\x1b", 1, 1)
+                    .expect("escape")
+                    .is_empty()
+            );
+            assert_eq!(
+                codec.feed_for_epoch(PAGE_UP, 1, 1).expect("separate reads"),
+                [escape, HostInputEvent::PageUp]
+            );
+            assert!(
+                codec
+                    .feed_for_epoch(b"\x1b", 1, 1)
+                    .expect("escape")
+                    .is_empty()
+            );
+            assert_eq!(
+                codec.feed_for_epoch(b"fresh", 2, 2).expect("new epoch"),
+                [HostInputEvent::Bytes(b"fresh".to_vec())]
+            );
+            assert!(
+                codec
+                    .feed_for_epoch(b"\x1b", 2, 2)
+                    .expect("escape")
+                    .is_empty()
+            );
+            assert_eq!(
+                codec
+                    .feed_for_epoch(b"[5~", 2, 2)
+                    .expect("fragmented page up"),
+                [HostInputEvent::PageUp]
+            );
+            assert!(
+                codec
+                    .feed_for_epoch(b"\x1b", 2, 2)
+                    .expect("reply prefix")
+                    .is_empty()
+            );
+            assert!(matches!(
+                codec
+                    .feed_for_epoch(b"]11;rgb:f/f/f\x07", 3, 3)
+                    .expect("host reply")
+                    .as_slice(),
+                [HostInputEvent::TerminalReply {
+                    reply: HostReply::Color(..),
+                    ..
+                }]
+            ));
         }
 
         #[test]
