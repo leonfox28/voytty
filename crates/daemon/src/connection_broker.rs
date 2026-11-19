@@ -1850,6 +1850,7 @@ impl ConnectionBroker {
         'restart: loop {
             let mut retry = 0_u32;
             loop {
+                let changed = slot.changed.notified();
                 if self.inner.lifecycle.is_quiescing() || slot.demand.count() == 0 {
                     break;
                 }
@@ -1868,7 +1869,7 @@ impl ConnectionBroker {
                 };
 
                 if !action {
-                    if wait_for_notify_optional(&slot.changed, Duration::from_secs(30))
+                    if tokio::time::timeout(Duration::from_secs(30), changed)
                         .await
                         .is_err()
                     {
@@ -2376,6 +2377,7 @@ impl ConnectionBroker {
         deadline: Instant,
     ) -> Result<(), DaemonError> {
         loop {
+            let changed = slot.changed.notified();
             let outcome = {
                 let mut state = slot.state.lock().await;
                 state.candidates.mark_ready_and_decide(candidate.key)
@@ -2389,7 +2391,7 @@ impl ConnectionBroker {
                         loser.cancel(ConnectionCloseReason::Duplicate);
                     }
                     slot.changed.notify_waiters();
-                    self.start_connection_actor(slot, candidate);
+                    self.start_connection_actor(Arc::clone(&slot), candidate);
                     return Ok(());
                 }
                 CandidateDecision::Lost(loser) => {
@@ -2400,7 +2402,7 @@ impl ConnectionBroker {
                     ));
                 }
                 CandidateDecision::Wait => {
-                    if let Err(error) = wait_for_notify(&slot.changed, deadline).await {
+                    if let Err(error) = timeout_until(deadline, changed).await {
                         // A lower provisional candidate must never leave this
                         // ready connection retained forever if arbitration
                         // cannot finish before its bounded deadline.
@@ -3432,14 +3434,6 @@ async fn acquire_until(
     timeout_until(deadline, semaphore.acquire_owned())
         .await?
         .map_err(|_| transport_unavailable(detail))
-}
-
-async fn wait_for_notify(notify: &Notify, deadline: Instant) -> Result<(), DaemonError> {
-    timeout_until(deadline, notify.notified()).await
-}
-
-async fn wait_for_notify_optional(notify: &Notify, duration: Duration) -> Result<(), DaemonError> {
-    timeout_until(Instant::now() + duration, notify.notified()).await
 }
 
 async fn timeout_until<F>(deadline: Instant, future: F) -> Result<F::Output, DaemonError>

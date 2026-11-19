@@ -661,7 +661,13 @@ impl NetworkStartup {
                     "Iroh Endpoint rotated identity while binding",
                 ));
             }
-            self.broker.attach_endpoint(endpoint.clone()).await?;
+            if let Err(error) = self.broker.attach_endpoint(endpoint.clone()).await {
+                if *self.shutdown.borrow() {
+                    self.finish_without_endpoint().await;
+                    return Ok(());
+                }
+                return Err(error);
+            }
             let lookups_configured = endpoint
                 .address_lookup()
                 .is_ok_and(|services| !services.is_empty());
@@ -732,6 +738,7 @@ impl NetworkStartup {
         let limits = self.pre_auth.clone();
         let pair_handler = self.pair_handler.clone();
         let mut relay_status = endpoint.home_relay_status();
+        let mut relay_status_open = true;
         apply_relay_status(&self.reporter, relay_status.get());
         let mut handlers = JoinSet::new();
 
@@ -743,9 +750,10 @@ impl NetworkStartup {
                     break BoundExit::Shutdown;
                 }
                 _ = endpoint.closed() => break BoundExit::Closed,
-                status = relay_status.updated() => {
-                    if let Ok(status) = status {
-                        apply_relay_status(&self.reporter, status);
+                status = relay_status.updated(), if relay_status_open => {
+                    match status {
+                        Ok(status) => apply_relay_status(&self.reporter, status),
+                        Err(_) => relay_status_open = false,
                     }
                 }
                 joined = handlers.join_next(), if !handlers.is_empty() => {
@@ -798,25 +806,25 @@ impl NetworkSupervisor {
         // handler under the caller's lifecycle deadline before Endpoint close.
         let closing = voytty_diagnostics::Operation::default();
         record_shutdown_stage(&closing, voytty_diagnostics::Stage::QuiescingStreams);
-        self.handle.broker.quiesce_until(deadline).await?;
-        record_shutdown_stage(&closing, voytty_diagnostics::Stage::Stopping);
-        let Some(mut task) = self.task.take() else {
-            return Err(DaemonError::new(
-                DomainErrorKind::TransportUnavailable,
-                "network shutdown did not complete",
-            ));
-        };
-        self.handle.shutdown.send_replace(true);
         self.reporter.update(|observation| {
             observation.state = NetworkState::Stopping;
         });
+        self.handle.shutdown.send_replace(true);
+        let quiesced = self.handle.broker.quiesce_until(deadline).await;
+        record_shutdown_stage(&closing, voytty_diagnostics::Stage::Stopping);
+        let Some(mut task) = self.task.take() else {
+            return quiesced.and(Err(DaemonError::new(
+                DomainErrorKind::TransportUnavailable,
+                "network shutdown did not complete",
+            )));
+        };
         if Instant::now() >= deadline {
             task.abort();
             let _ = task.await;
-            return Err(DaemonError::new(
+            return quiesced.and(Err(DaemonError::new(
                 DomainErrorKind::DeadlineExceeded,
                 "network shutdown deadline elapsed before Endpoint close",
-            ));
+            )));
         }
         let result = match tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline),
@@ -841,7 +849,7 @@ impl NetworkSupervisor {
         if result.is_ok() {
             self.shutdown_complete = true;
         }
-        result
+        quiesced.and(result)
     }
 }
 
