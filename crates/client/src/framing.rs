@@ -76,7 +76,20 @@ pub async fn read_first<Reader>(reader: &mut Reader) -> Result<FirstFrame, Clien
 where
     Reader: AsyncRead + Unpin,
 {
-    let mut decoder = FrameDecoder::new();
+    read_first_with_decoder(reader, FrameDecoder::new()).await
+}
+
+/// Reads controller requests without inflating host-to-controller surface frames.
+pub async fn read_first_request<Reader: AsyncRead + Unpin>(
+    reader: &mut Reader,
+) -> Result<FirstFrame, ClientError> {
+    read_first_with_decoder(reader, FrameDecoder::for_requests()).await
+}
+
+async fn read_first_with_decoder<Reader: AsyncRead + Unpin>(
+    reader: &mut Reader,
+    mut decoder: FrameDecoder,
+) -> Result<FirstFrame, ClientError> {
     let mut buffer = Zeroizing::new([0_u8; 16 * 1024]);
     loop {
         let read = reader

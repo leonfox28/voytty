@@ -63,7 +63,7 @@ const ATTACHMENT_OUTBOUND_CAPACITY: usize = 8;
 const DEFAULT_SESSION_WIRE_DEADLINE: Duration = Duration::from_secs(5);
 
 #[cfg(any(unix, windows))]
-pub(crate) use voytty_client::framing::{FirstFrame, read_first};
+pub(crate) use voytty_client::framing::{FirstFrame, read_first_request as read_first};
 
 /// Deadlines consumed by the shared Session stream owner.
 #[cfg(any(unix, windows))]
@@ -336,6 +336,7 @@ struct AttachmentOutbound {
     flushed: Option<oneshot::Sender<()>>,
     deadline: Instant,
     synchronize_before_reply: bool,
+    has_surface: bool,
 }
 
 #[cfg(any(unix, windows))]
@@ -346,6 +347,14 @@ impl AttachmentOutbound {
             flushed: None,
             deadline,
             synchronize_before_reply: false,
+            has_surface: false,
+        }
+    }
+
+    fn surface(bytes: Vec<u8>, deadline: Instant) -> Self {
+        Self {
+            has_surface: true,
+            ..Self::queued(bytes, deadline)
         }
     }
 
@@ -633,7 +642,7 @@ impl SessionWireServer {
                 0,
             )?
         };
-        let initial = encoding.encode(initial)?;
+        let initial = encoding.encode(initial, deadline).await?;
         write_attachment_bytes_until(
             &mut stream,
             &initial,
@@ -1065,9 +1074,13 @@ struct SurfaceOutput {
 
 #[cfg(any(unix, windows))]
 impl AttachmentEncoding {
-    fn encode(self, bytes: Vec<u8>) -> Result<Vec<u8>, DaemonError> {
-        if self.0 {
-            voytty_proto::compress_terminal_frames(bytes).map_err(protocol_error)
+    async fn encode(self, bytes: Vec<u8>, deadline: Instant) -> Result<Vec<u8>, DaemonError> {
+        // Payloads below the wire compression threshold always stay plain.
+        if self.0 && bytes.len() >= 1024 {
+            run_blocking_until(deadline, move || {
+                voytty_proto::compress_terminal_frames(bytes).map_err(protocol_error)
+            })
+            .await
         } else {
             Ok(bytes)
         }
@@ -1384,6 +1397,7 @@ async fn flush_attachment_error(
                 flushed: Some(flushed),
                 deadline,
                 synchronize_before_reply: false,
+                has_surface: false,
             },
             deadline,
         )
@@ -1488,7 +1502,7 @@ async fn process_attachment_frame(
                     .map_err(protocol_error)?;
                     send_attachment_outbound_until(
                         &outbound,
-                        AttachmentOutbound::queued(bytes, deadline),
+                        AttachmentOutbound::surface(bytes, deadline),
                         deadline,
                     )
                     .await
@@ -1713,10 +1727,12 @@ where
                     // the biased response queue must not overtake lifecycle.
                     write_terminal_update(&mut writer, &attachment, update, message.deadline, &mut output).await?;
                 }
-                let bytes = Zeroizing::new(output.encoding.encode(std::mem::take(&mut *message.bytes))?);
+                if message.has_surface {
+                    *message.bytes = output.encoding.encode(std::mem::take(&mut *message.bytes), message.deadline).await?;
+                }
                 write_attachment_bytes_until(
                     &mut writer,
-                    &bytes,
+                    &message.bytes,
                     message.deadline,
                     "terminal response exceeded its absolute deadline",
                     "write terminal response",
@@ -1987,7 +2003,7 @@ where
             (bytes, "write terminal resync update")
         }
     };
-    let bytes = output.encoding.encode(bytes)?;
+    let bytes = output.encoding.encode(bytes, deadline).await?;
     output.frames.record(frame_sequence, bytes.len());
     write_attachment_bytes_until(
         writer,
@@ -2027,7 +2043,7 @@ async fn send_resync(
     )?);
     send_attachment_outbound_until(
         outbound,
-        AttachmentOutbound::queued(bytes, deadline),
+        AttachmentOutbound::surface(bytes, deadline),
         deadline,
     )
     .await

@@ -469,10 +469,18 @@ fn run_owned_daemon_listener(
             limits,
         ));
         let cleanup_deadline = Instant::now() + cleanup_timeout;
-        let session_cleanup = service
-            .sessions()
-            .shutdown_until(cleanup_deadline)
-            .map(|_| ());
+        let sessions = service.sessions().clone();
+        let session_cleanup = runtime.block_on(async move {
+            tokio::task::spawn_blocking(move || sessions.shutdown_until(cleanup_deadline))
+                .await
+                .map_err(|error| {
+                    DaemonError::new(
+                        DomainErrorKind::Cancelled,
+                        format!("session cleanup worker ended: {error}"),
+                    )
+                })?
+                .map(|_| ())
+        });
         match (server_result, session_cleanup) {
             (Ok(()), Ok(())) => {
                 tracing::info!(
@@ -565,7 +573,9 @@ fn run_owned_daemon_listener(
                                 error_kind = platform_error_kind(&error).code(),
                                 "unable to rebind owned daemon socket; retrying"
                             );
-                            std::thread::sleep(RECOVERY_REBIND_BACKOFF);
+                            runtime.block_on(async {
+                                tokio::time::sleep(RECOVERY_REBIND_BACKOFF).await
+                            });
                         }
                     }
                 };

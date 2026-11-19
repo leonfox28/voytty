@@ -866,6 +866,7 @@ impl std::error::Error for ProtocolError {}
 
 /// Incremental decoder for `varint length + WireFrame` streams.
 pub struct FrameDecoder {
+    allow_compression: bool,
     prefix: [u8; MAX_VARINT_BYTES],
     prefix_len: usize,
     body: Vec<u8>,
@@ -909,10 +910,19 @@ impl FrameDecoder {
         self.prefix_len + self.body.len()
     }
 
+    /// Creates a decoder for controller-to-host requests, which never carry compressed surfaces.
+    #[must_use]
+    pub fn for_requests() -> Self {
+        let mut decoder = Self::new();
+        decoder.allow_compression = false;
+        decoder
+    }
+
     /// Creates an empty incremental decoder.
     #[must_use]
     pub const fn new() -> Self {
         Self {
+            allow_compression: true,
             prefix: [0; MAX_VARINT_BYTES],
             prefix_len: 0,
             body: Vec::new(),
@@ -929,6 +939,7 @@ impl FrameDecoder {
     #[must_use]
     pub const fn with_maximum_body_bytes(maximum_body_bytes: usize) -> Self {
         Self {
+            allow_compression: true,
             prefix: [0; MAX_VARINT_BYTES],
             prefix_len: 0,
             body: Vec::new(),
@@ -976,7 +987,11 @@ impl FrameDecoder {
                     let body = Zeroizing::new(std::mem::take(&mut self.body));
                     self.expected_body = None;
                     self.prefix_len = 0;
-                    frames.push(decode_wire_frame(body.as_slice(), self.maximum_body_bytes)?);
+                    frames.push(decode_wire_frame(
+                        body.as_slice(),
+                        self.maximum_body_bytes,
+                        self.allow_compression,
+                    )?);
                 }
             }
         }
@@ -1032,6 +1047,7 @@ pub fn encode_payload(
 fn decode_wire_frame(
     body: &[u8],
     maximum_body_bytes: usize,
+    allow_compression: bool,
 ) -> Result<DecodedFrame, ProtocolError> {
     let mut wire = v2::WireFrame::decode(body).map_err(ProtocolError::MalformedProtobuf)?;
     if wire.wire_major != WIRE_MAJOR {
@@ -1041,6 +1057,10 @@ fn decode_wire_frame(
         });
     }
     let kind = WireKind::try_from(wire.kind)?;
+    if !allow_compression && wire.payload_encoding != 0 {
+        wire.payload.zeroize();
+        return Err(ProtocolError::InvalidPayloadEncoding);
+    }
     compression::decode_payload(&mut wire, kind, maximum_body_bytes)?;
     validate_payload_limit(kind, wire.payload.len())?;
     Ok(DecodedFrame {

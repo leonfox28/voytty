@@ -7,6 +7,37 @@ use voytty_diagnostics::{Event, Kind, Level, Operation, Outcome};
 use voytty_platform::upload::StagedUpload;
 use voytty_proto::upload::UploadMessage;
 
+// A cancelled stream may drop this owner at any await point on the reactor.
+#[derive(Default)]
+struct PendingUpload(Option<StagedUpload>);
+
+impl PendingUpload {
+    fn take(&mut self) -> StagedUpload {
+        self.0.take().expect("active upload has staged storage")
+    }
+
+    fn accepted_bytes(&self) -> u64 {
+        self.0
+            .as_ref()
+            .expect("active upload has staged storage")
+            .accepted_bytes()
+    }
+
+    async fn cleanup(&mut self) {
+        if let Some(staged) = self.0.take() {
+            let _ = tokio::task::spawn_blocking(move || drop(staged)).await;
+        }
+    }
+}
+
+impl Drop for PendingUpload {
+    fn drop(&mut self) {
+        if let Some(staged) = self.0.take() {
+            tokio::task::spawn_blocking(move || drop(staged));
+        }
+    }
+}
+
 #[derive(Default)]
 struct Observation {
     operation: Operation,
@@ -26,6 +57,7 @@ impl SessionWireServer {
         let (reader, mut writer) = tokio::io::split(stream);
         let mut reader = FrameReader::after_first(reader, first);
         let mut observation = Observation::default();
+        let mut staged = PendingUpload::default();
         let result = self
             .upload_stream(
                 &mut reader,
@@ -34,8 +66,10 @@ impl SessionWireServer {
                 request_id,
                 &context,
                 &mut observation,
+                &mut staged,
             )
             .await;
+        staged.cleanup().await;
         if let Err(error) = &result {
             let mut event = Event::new(
                 if error.kind() == DomainErrorKind::Cancelled && !observation.committed {
@@ -76,6 +110,7 @@ impl SessionWireServer {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn upload_stream<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         &self,
         reader: &mut FrameReader<R>,
@@ -84,6 +119,7 @@ impl SessionWireServer {
         request_id: u64,
         context: &SessionRequestContext,
         observation: &mut Observation,
+        staged: &mut PendingUpload,
     ) -> Result<(), DaemonError> {
         let UploadMessage::Begin { binding, metadata } = begin? else {
             return Err(malformed("upload stream must start with Begin"));
@@ -110,8 +146,10 @@ impl SessionWireServer {
                 .attachment(binding.attachment_id)
                 .bytes(size),
         );
-        let mut staged = run_blocking_until(control_deadline(), move || {
-            StagedUpload::create(binding.session_id, id, metadata).map_err(storage_error)
+        *staged = run_blocking_until(control_deadline(), move || {
+            StagedUpload::create(binding.session_id, id, metadata)
+                .map(|file| PendingUpload(Some(file)))
+                .map_err(storage_error)
         })
         .await?;
         if !admission.is_current() {
@@ -152,9 +190,14 @@ impl SessionWireServer {
                     if offset != staged.accepted_bytes() || offset + data.len() as u64 > size {
                         return Err(malformed("upload chunk offset or size mismatch"));
                     }
-                    staged = run_blocking_until(Instant::now() + UPLOAD_IDLE_TIMEOUT, move || {
-                        staged.write_chunk(offset, &data).map_err(storage_error)?;
-                        Ok(staged)
+                    let mut file = std::mem::take(staged);
+                    *staged = run_blocking_until(Instant::now() + UPLOAD_IDLE_TIMEOUT, move || {
+                        file.0
+                            .as_mut()
+                            .expect("active staging")
+                            .write_chunk(offset, &data)
+                            .map_err(storage_error)?;
+                        Ok(file)
                     })
                     .await?;
                     idle = tokio::time::Instant::now() + UPLOAD_IDLE_TIMEOUT;
@@ -180,13 +223,14 @@ impl SessionWireServer {
                             .session(binding.session_id)
                             .outcome(Outcome::Cancelled),
                     );
-                    drop(staged);
+                    staged.cleanup().await;
                     return write_upload(writer, request_id, UploadMessage::Cancelled { id }).await;
                 }
                 UploadMessage::Finish {
                     id: received,
                     size: finished,
                 } if received == id && finished == size && staged.accepted_bytes() == size => {
+                    let mut pending = std::mem::take(staged);
                     let generation = admission.generation;
                     let file = context
                         .run_effect(
@@ -201,7 +245,7 @@ impl SessionWireServer {
                                 if current.generation != generation || !current.is_current() {
                                     return Err(upload_lease_lost());
                                 }
-                                staged.publish().map_err(|_| DaemonError::new(
+                                pending.take().publish().map_err(|_| DaemonError::new(
                                     DomainErrorKind::UploadOutcomeUnknown,
                                     "host could not confirm publication; a remote file may exist",
                                 ))
