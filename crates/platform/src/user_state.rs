@@ -1263,20 +1263,22 @@ mod tests {
     #[test]
     fn executable_parents_check_ancestors_and_allow_private_or_shared_group_bins() {
         use std::os::unix::fs::{PermissionsExt, symlink};
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let tmp = tempfile::tempdir().expect("executable path fixture");
+        let root = tmp.path().canonicalize().expect("executable path fixture");
         let parent = root.join("install");
         let bin = parent.join("bin");
-        fs::create_dir_all(&bin).unwrap();
+        fs::create_dir_all(&bin).expect("executable path fixture");
         let uid = nix::unistd::geteuid().as_raw();
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o775)).unwrap();
-        validate_executable_parent(&bin, uid).unwrap();
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o777)).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o775))
+            .expect("executable path fixture");
+        validate_executable_parent(&bin, uid).expect("executable path fixture");
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o777))
+            .expect("executable path fixture");
         assert!(matches!(
             validate_executable_parent(&bin, uid),
             Err(PathError::WrongMode { .. })
         ));
-        symlink(&parent, root.join("alias")).unwrap();
+        symlink(&parent, root.join("alias")).expect("executable path fixture");
         assert!(matches!(
             validate_executable_parent(&root.join("alias/bin"), uid),
             Err(PathError::Symlink(_))
@@ -1400,7 +1402,7 @@ mod tests {
             .expect("old executable mode");
         let uid = Uid::effective().as_raw();
 
-        let original = fs::read(&target).unwrap();
+        let original = fs::read(&target).expect("executable path fixture");
         let failed = activate_verified_executable(
             &target,
             uid,
@@ -1412,7 +1414,10 @@ mod tests {
             },
         );
         assert!(failed.is_err());
-        assert_eq!(fs::read(&target).unwrap(), original);
+        assert_eq!(
+            fs::read(&target).expect("executable path fixture"),
+            original
+        );
         let activation = activate_executable(&target, uid, |file| file.write_all(b"new"))
             .expect("activate candidate");
         assert_eq!(fs::read(&target).expect("active candidate"), b"new");

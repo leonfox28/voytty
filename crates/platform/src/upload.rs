@@ -266,84 +266,68 @@ mod tests {
     }
 
     #[test]
-    fn active_reservations_release_capacity_and_expired_files_are_collected() {
+    fn active_reservations_release_capacity_and_expired_files_are_collected() -> io::Result<()> {
         use std::time::{Duration, SystemTime};
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir()?;
         let root = tmp.path().join("uploads");
-        let mut active: Vec<_> = (0..4)
-            .map(|id| create(root.clone(), id, 1).unwrap())
-            .collect();
+        let mut active = (0..4)
+            .map(|id| create(root.clone(), id, 1))
+            .collect::<io::Result<Vec<_>>>()?;
         assert_eq!(
-            create(root.clone(), 6, 1).err().unwrap().kind(),
+            create(root.clone(), 6, 1)
+                .err()
+                .expect("session concurrency limit")
+                .kind(),
             io::ErrorKind::QuotaExceeded
         );
         active.pop();
-        let finished = create(root.clone(), 6, 0).unwrap();
+        let finished = create(root.clone(), 6, 0)?;
         let path = finished.directory.join("file.pdf");
-        finished.publish().unwrap();
-        let file = File::open(&path).unwrap();
-        file.set_modified(SystemTime::now() - Duration::from_secs(25 * 3600))
-            .unwrap();
-        drop(file);
-        let next = create(root.clone(), 7, 0).unwrap();
+        finished.publish()?;
+        File::open(&path)?.set_modified(SystemTime::now() - Duration::from_secs(25 * 3600))?;
+        let _next = create(root, 7, 0)?;
         assert!(!path.exists());
         assert!(active[0].directory.join(".part").exists());
-        drop(next);
+        Ok(())
     }
 
     #[test]
-    fn published_files_count_against_session_and_account_byte_limits_after_reopen() {
-        let tmp = tempfile::tempdir().unwrap();
+    fn published_files_count_against_session_and_account_byte_limits_after_reopen() -> io::Result<()>
+    {
+        let tmp = tempfile::tempdir()?;
         let root = tmp.path().join("uploads");
-        let uid = nix::unistd::geteuid().as_raw();
-        // Sparse fixtures exercise actual on-disk accounting without writing 1 GB.
-        for session in 0..5 {
-            let staged = StagedUpload::create_at(
+        let reserve = |session, transfer, size| {
+            StagedUpload::create_at(
                 root.clone(),
                 "/tmp/voytty-1".into(),
-                uid,
+                nix::unistd::geteuid().as_raw(),
                 SessionId::from_array([session; 16]),
-                TransferId::from_array([0; 16]),
-                UploadMetadata::new(0, "").unwrap(),
+                TransferId::from_array([transfer; 16]),
+                UploadMetadata::new(size, "").expect("valid fixture size"),
             )
-            .unwrap();
+        };
+        // Sparse fixtures exercise on-disk accounting without writing 1 GB.
+        for session in 0..5 {
+            let staged = reserve(session, 0, 0)?;
             let path = staged.directory.join("file");
-            staged.publish().unwrap();
+            staged.publish()?;
             File::options()
                 .write(true)
-                .open(path)
-                .unwrap()
-                .set_len(200_000_000)
-                .unwrap();
+                .open(path)?
+                .set_len(200_000_000)?;
             assert_eq!(
-                StagedUpload::create_at(
-                    root.clone(),
-                    "/tmp/voytty-1".into(),
-                    uid,
-                    SessionId::from_array([session; 16]),
-                    TransferId::from_array([1; 16]),
-                    UploadMetadata::new(1, "").unwrap()
-                )
-                .err()
-                .unwrap()
-                .kind(),
+                reserve(session, 1, 1)
+                    .err()
+                    .expect("session byte limit")
+                    .kind(),
                 io::ErrorKind::QuotaExceeded
             );
         }
         assert_eq!(
-            StagedUpload::create_at(
-                root,
-                "/tmp/voytty-1".into(),
-                uid,
-                SessionId::from_array([9; 16]),
-                TransferId::from_array([1; 16]),
-                UploadMetadata::new(1, "").unwrap()
-            )
-            .err()
-            .unwrap()
-            .kind(),
+            reserve(9, 1, 1).err().expect("account byte limit").kind(),
             io::ErrorKind::QuotaExceeded
         );
+        Ok(())
     }
 
     #[test]

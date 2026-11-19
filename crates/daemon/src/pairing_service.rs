@@ -1796,7 +1796,7 @@ mod tests {
             Ok(MemoryPairIo::new(frames, local, host)),
             Ok(ConfirmedAuthorization {
                 remote: host,
-                generation: AuthGeneration::new(7).unwrap(),
+                generation: AuthGeneration::new(7).expect("valid fixture generation"),
                 verified_relay: None,
             }),
         ));
@@ -1813,7 +1813,7 @@ mod tests {
             harness
                 .store
                 .known_device(host, deadline)
-                .unwrap()
+                .expect("read known device")
                 .is_none()
         );
     }
