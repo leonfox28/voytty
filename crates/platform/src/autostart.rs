@@ -260,9 +260,8 @@ impl Autostart {
                 xml(home)
             ),
             Manager::Systemd => format!(
-                "# {MARKER}\n[Unit]\nDescription=voytty per-user daemon\n\n[Service]\nType=exec\nExecStart={} {FOREGROUND_ARGUMENT}\nWorkingDirectory={}\nRestart=no\nKillMode=process\nUMask=0077\n\n[Install]\nWantedBy=default.target\n",
-                unit_quote(executable),
-                unit_quote(home).replace("$$", "$")
+                "# {MARKER}\n[Unit]\nDescription=voytty per-user daemon\n\n[Service]\nType=exec\nExecStart={} {FOREGROUND_ARGUMENT}\nWorkingDirectory=%h\nRestart=no\nKillMode=process\nUMask=0077\n\n[Install]\nWantedBy=default.target\n",
+                unit_quote(executable)
             ),
         })
     }
@@ -289,16 +288,35 @@ impl Autostart {
             .strip_prefix(&self.home)
             .map_err(detail)?
             .to_path_buf();
+        // Resolve group membership only for a group-writable systemd path,
+        // and refresh the answer on each status/enable/disable operation.
+        let private_group = std::cell::LazyCell::new(|| private_primary_group(self.uid));
+        let check = |path: &Path| {
+            let meta = fs::symlink_metadata(path).map_err(detail)?;
+            let private = || {
+                self.manager == Manager::Systemd
+                    && *private_group == Some(meta.gid())
+                    && no_extended_access_acl(path)
+            };
+            if !meta.is_dir()
+                || meta.uid() != self.uid
+                || meta.mode() & 0o002 != 0
+                || (meta.mode() & 0o020 != 0 && !private())
+            {
+                return Err("unsafe autostart directory (type, owner or permissions)".into());
+            }
+            Ok(())
+        };
         let mut path = self.home.clone();
-        check_directory(&path, self.uid)?;
+        check(&path)?;
         for component in relative.components() {
             path.push(component);
-            if !ensure_directory(&path, self.uid, create)? {
+            if !ensure_directory(&path, create, &check)? {
                 return Ok(());
             }
         }
         if self.manager == Manager::Systemd {
-            ensure_directory(&path.join("default.target.wants"), self.uid, create)?;
+            ensure_directory(&path.join("default.target.wants"), create, &check)?;
         }
         Ok(())
     }
@@ -361,14 +379,133 @@ fn metadata(path: &Path) -> Result<Option<fs::Metadata>, String> {
         Err(error) => Err(detail(error)),
     }
 }
-fn check_directory(path: &Path, uid: u32) -> Result<(), String> {
-    let meta = fs::symlink_metadata(path).map_err(detail)?;
-    if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o022 != 0 {
-        return Err("unsafe autostart directory (type, owner or permissions)".into());
-    }
-    Ok(())
+// With an extended POSIX ACL, group mode bits describe the ACL mask and
+// can grant write access to named users outside the directory's owning group.
+#[cfg(target_os = "linux")]
+fn no_extended_access_acl(path: &Path) -> bool {
+    matches!(
+        rustix::fs::lgetxattr_query(path, "system.posix_acl_access"),
+        Err(rustix::io::Errno::NODATA)
+    )
 }
-fn ensure_directory(path: &Path, uid: u32, create: bool) -> Result<bool, String> {
+
+#[cfg(not(target_os = "linux"))]
+fn no_extended_access_acl(_: &Path) -> bool {
+    false
+}
+
+// NSS can serve network accounts without enumerating them. Only accept an
+// enumerable local account database as evidence that a writable group is private.
+#[cfg(target_os = "linux")]
+fn private_primary_group(uid: u32) -> Option<u32> {
+    use nix::unistd::{Uid, User};
+    let nsswitch = fs::read_to_string("/etc/nsswitch.conf").ok()?;
+    if !local_group_sources(&nsswitch) {
+        return None;
+    }
+    let user = User::from_uid(Uid::from_raw(uid)).ok()??;
+    let gid = user.gid.as_raw();
+    // Account for group aliases sharing the same numeric ID, as well as
+    // accounts whose primary GID is omitted from the group's member list.
+    let groups = account_records("group")?;
+    let passwd = account_records("passwd")?;
+    (private_group_records(&groups, &user.name, gid) && sole_primary_member(&passwd, uid, gid))
+        .then_some(gid)
+}
+
+#[cfg(target_os = "linux")]
+fn account_records(database: &str) -> Option<String> {
+    let records = std::process::Command::new("/usr/bin/getent")
+        .arg(database)
+        .output()
+        .ok()?;
+    if !records.status.success() {
+        return None;
+    }
+    String::from_utf8(records.stdout).ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn private_primary_group(_: u32) -> Option<u32> {
+    None
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn local_group_sources(nsswitch: &str) -> bool {
+    let mut passwd = false;
+    let mut group = false;
+    for line in nsswitch.lines() {
+        let line = line.split('#').next().unwrap_or_default();
+        let Some((database, sources)) = line.split_once(':') else {
+            continue;
+        };
+        match database.trim() {
+            "passwd" => passwd = true,
+            "group" => group = true,
+            "initgroups" => {}
+            _ => continue,
+        }
+        let mut sources = sources.split_whitespace().peekable();
+        if sources.peek().is_none() || !sources.all(|source| matches!(source, "files" | "systemd"))
+        {
+            return false;
+        }
+    }
+    passwd && group
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn private_group_records(groups: &str, owner: &str, gid: u32) -> bool {
+    let mut found = false;
+    for record in groups.lines() {
+        let mut fields = record.splitn(4, ':');
+        let name = fields.next();
+        let Some(id) = fields.nth(1).and_then(|id| id.parse::<u32>().ok()) else {
+            return false;
+        };
+        let Some(members) = fields.next() else {
+            return false;
+        };
+        if id == gid {
+            if name != Some(owner)
+                || members
+                    .split(',')
+                    .any(|member| !member.is_empty() && member != owner)
+            {
+                return false;
+            }
+            found = true;
+        }
+    }
+    found
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn sole_primary_member(passwd: &str, uid: u32, gid: u32) -> bool {
+    let mut found = false;
+    for record in passwd.lines() {
+        let mut fields = record.split(':').skip(2);
+        let (Some(user), Some(primary)) = (
+            fields.next().and_then(|v| v.parse::<u32>().ok()),
+            fields.next().and_then(|v| v.parse::<u32>().ok()),
+        ) else {
+            return false;
+        };
+        if primary == gid {
+            if user != uid {
+                return false;
+            }
+            found = true;
+        }
+    }
+    found
+}
+
+fn ensure_directory(
+    path: &Path,
+    create: bool,
+    check: &impl Fn(&Path) -> Result<(), String>,
+) -> Result<bool, String> {
     if metadata(path)?.is_none() {
         if !create {
             return Ok(false);
@@ -379,7 +516,7 @@ fn ensure_directory(path: &Path, uid: u32, create: bool) -> Result<bool, String>
             Err(error) => return Err(detail(error)),
         }
     }
-    check_directory(path, uid)?;
+    check(path)?;
     Ok(true)
 }
 fn path_text(path: &Path) -> Result<&str, String> {
@@ -455,6 +592,7 @@ mod tests {
             assert!(content.contains(FOREGROUND_ARGUMENT));
             assert!(!content.contains("--internal-daemon\""));
             if manager == Manager::Systemd {
+                assert!(content.lines().any(|line| line == "WorkingDirectory=%h"));
                 assert!(content.contains("Restart=no"));
                 assert!(content.contains("%%$$"));
                 fs::remove_file(owner.link()).expect("simulate incomplete registration");
@@ -483,6 +621,32 @@ mod tests {
                 "foreign data"
             );
         }
+    }
+
+    #[test]
+    fn private_group_requires_enumerable_accounts_and_one_primary_member() {
+        assert!(local_group_sources(
+            "passwd: files systemd\ngroup: files # local"
+        ));
+        assert!(!local_group_sources("passwd: files sss\ngroup: files"));
+        assert!(!local_group_sources(
+            "passwd: files\ngroup: files\ninitgroups: ldap"
+        ));
+        assert!(private_group_records("alice:x:1001:", "alice", 1001));
+        assert!(!private_group_records("alice:x:1001:bob", "alice", 1001));
+        assert!(!private_group_records(
+            "alice:x:1001:\nshared:x:1001:bob",
+            "alice",
+            1001
+        ));
+        let owner = "alice:x:1000:1001::/home/alice:/bin/sh";
+        assert!(sole_primary_member(owner, 1000, 1001));
+        assert!(!sole_primary_member(
+            &format!("{owner}\nbob:x:1002:1001::/:/bin/sh"),
+            1000,
+            1001
+        ));
+        assert!(!sole_primary_member(owner, 1000, 1000));
     }
 
     #[test]

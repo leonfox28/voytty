@@ -25,6 +25,11 @@ explicit daemon stop stopped. `KillMode=process` lets the existing detached
 updater finish after daemon shutdown; the daemon itself owns Session cleanup.
 No linger setting is changed. The user manager normally starts at login and ends
 after the last logout; existing administrator linger policy is not overridden.
+The unit uses `WorkingDirectory=%h`. Running `enable` again replaces an older
+managed unit that quoted the home directory. Group-writable registration
+directories are accepted when the account is the sole member of its private
+primary group and the directory has no extended access ACL. Account
+databases that cannot be checked require directories without group write.
 Linux without systemd and a custom `XDG_CONFIG_HOME` are explicitly unsupported.
 
 Both managers execute the absolute voytty path with the hidden foreground entry.
