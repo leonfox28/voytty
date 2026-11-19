@@ -157,6 +157,7 @@ jobs:
           rustup toolchain install 1.98.0 --profile minimal
           --component clippy --component rust-src
       - name: Restore dependency downloads
+        id: downloads
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
@@ -251,6 +252,14 @@ jobs:
             target/iroh-tests/debug/build
             target/iroh-tests/debug/.fingerprint
           key: ${{ steps.compiled-iroh.outputs.cache-primary-key }}
+      - name: Save main dependency downloads for this platform
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.downloads.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+          key: ${{ steps.downloads.outputs.cache-primary-key }}
       - name: Explain reproduction on failure
         if: failure()
         run: echo 'Reproduce on the matching Unix host with just ci-unix ${{ matrix.docs }} ${{ needs.changes.outputs.transport }}.' >> "$GITHUB_STEP_SUMMARY"
