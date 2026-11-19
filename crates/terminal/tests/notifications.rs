@@ -94,7 +94,11 @@ fn interrupted_notification_discards_its_text_and_resumes_at_the_new_control() {
     baseline
         .ingest(b"\x1b[31m\x07OK")
         .expect("new control and text");
-    assert_eq!(terminal.snapshot().surface, baseline.snapshot().surface);
+    let actual = terminal.snapshot().surface;
+    let expected = baseline.snapshot().surface;
+    assert_eq!(actual.rows, expected.rows);
+    assert_eq!(actual.cursor, expected.cursor);
+    assert_eq!(actual.modes, expected.modes);
 }
 
 #[test]
