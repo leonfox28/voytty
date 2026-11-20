@@ -24,7 +24,7 @@ impl RemoteServiceHandler for NoopRemoteServiceHandler {
     }
 }
 
-fn device(byte: u8) -> DeviceId {
+pub(super) fn device(byte: u8) -> DeviceId {
     DeviceId::from_array([byte; 32])
 }
 
@@ -35,7 +35,7 @@ fn key(initiator: u8, attempt: u8) -> ConnectionCandidateKey {
     )
 }
 
-fn relay(url: &str) -> RelayHint {
+pub(super) fn relay(url: &str) -> RelayHint {
     RelayHint::new(url).expect("test relay is valid")
 }
 
@@ -667,4 +667,80 @@ fn path_projection_never_turns_direct_ip_into_persistable_route() {
         persistable.as_ref().map(RelayHint::as_str),
         Some("https://relay.example/")
     );
+}
+
+#[cfg(any(unix, windows))]
+/// A retired idle connection's retry adopts the transport that an
+/// unacknowledged request already dialed, instead of dialing again.
+#[tokio::test]
+async fn retired_connection_retry_adopts_the_replacement_transport() {
+    let fixture = crate::remote_session::cache_tests::Fixture::with_limits(TransportLimits {
+        max_pending_dials: 1,
+        ..TransportLimits::default()
+    })
+    .await;
+    fixture.query(1).await.expect("warm query");
+    let old = fixture
+        .broker
+        .peer_observation(fixture.remote)
+        .await
+        .primary
+        .expect("primary");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let demand = fixture
+        .broker
+        .demand(fixture.remote, deadline)
+        .await
+        .expect("demand");
+    let replacement = demand.dial_replacement(deadline).expect("admitted");
+    while !replacement.is_finished() {
+        assert!(Instant::now() < deadline, "replacement dial did not end");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        fixture.connections.load(Ordering::SeqCst),
+        2,
+        "the replacement reached the host"
+    );
+    // Another operation takes the only free dial permit once the speculative
+    // TLS dial finishes. Adoption still works even with no capacity for fresh.
+    let occupied = fixture
+        .broker
+        .dial_permit()
+        .expect("sole pending dial permit");
+    let (release, wait) = oneshot::channel();
+    let replacement = ReplacementTransport::dial(deadline, async move {
+        wait.await.expect("release pending replacement");
+        replacement.race(pending()).await
+    });
+    let held = demand.slot.state.lock().await;
+    demand.retire_failed_candidate(old, Some(replacement), false);
+    assert_eq!(held.candidates.primary(), Some(old));
+    drop(held);
+    assert_ne!(
+        demand.slot.state.lock().await.candidates.primary(),
+        Some(old)
+    );
+    timeout_until(deadline, async {
+        while demand.slot.state.lock().await.replacement.is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("worker adopts pending replacement at capacity");
+    release
+        .send(())
+        .expect("adopted replacement still in flight");
+    fixture
+        .query(3)
+        .await
+        .expect("the retry uses the replacement");
+    assert_eq!(
+        fixture.connections.load(Ordering::SeqCst),
+        2,
+        "no further connection was dialed"
+    );
+    drop(occupied);
+    drop(demand);
+    fixture.close().await;
 }

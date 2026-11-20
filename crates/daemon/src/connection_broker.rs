@@ -2,6 +2,7 @@
 
 mod demand;
 mod dial;
+mod maintenance;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -26,6 +27,10 @@ use ring::rand::{SecureRandom, SystemRandom};
 
 use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedSemaphorePermit, Semaphore, watch};
 use tokio::task::{JoinHandle, JoinSet};
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::{TaskTracker, task_tracker::TaskTrackerToken};
+
+use maintenance::PendingObservations;
 use voytty_core::{
     AuthGeneration, AuthorizationSnapshot, AuthorizationStatus, ConnectionAttemptId,
     ConnectionCandidateKey, ConnectionHello, ConnectionIncarnation, ConnectionWelcome, DeviceId,
@@ -292,6 +297,7 @@ struct BrokerInner {
     metrics: Arc<BrokerMetrics>,
     observer: NetworkObserver,
     lifecycle: BrokerLifecycle,
+    observations: Mutex<PendingObservations>,
     pairing: PairHandshakeAdmission,
     #[cfg(any(unix, windows))]
     service_handler: RemoteServiceHandlerSlot,
@@ -421,7 +427,8 @@ struct ServiceHandlerPermits {
 
 #[derive(Default)]
 struct BrokerLifecycle {
-    shutting_down: AtomicBool,
+    tasks: TaskTracker,
+    stopping: CancellationToken,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -589,6 +596,7 @@ impl PairConnection {
         verified_relay: Option<RelayHint>,
         admission: PairHandshakePermit,
         shutdown: watch::Receiver<bool>,
+        lifecycle: &BrokerLifecycle,
     ) -> Result<Self, DaemonError> {
         if *shutdown.borrow() {
             close_connection(&connection, CLOSE_SHUTTING_DOWN, b"transport stopping");
@@ -598,7 +606,9 @@ impl PairConnection {
         connection.set_max_concurrent_uni_streams(VarInt::from_u32(0));
         let mut cancellation = shutdown.clone();
         let closing = connection.clone();
+        let task = lifecycle.admit_task()?;
         let cancellation_task = tokio::spawn(async move {
+            let _task = task;
             if !*cancellation.borrow() {
                 let _ = cancellation.changed().await;
             }
@@ -1035,11 +1045,22 @@ async fn wait_for_service_handlers_until(
 
 impl BrokerLifecycle {
     fn is_quiescing(&self) -> bool {
-        self.shutting_down.load(Ordering::Acquire)
+        self.tasks.is_closed()
     }
 
     fn begin_quiesce(&self) {
-        self.shutting_down.store(true, Ordering::Release);
+        self.tasks.close();
+        self.stopping.cancel();
+    }
+
+    fn admit_task(&self) -> Result<TaskTrackerToken, DaemonError> {
+        // Count the owner before checking closure. Shutdown either waits for
+        // this token, or the new owner observes closure and never starts work.
+        let token = self.tasks.token();
+        if self.is_quiescing() {
+            return Err(transport_unavailable("network transport is stopping"));
+        }
+        Ok(token)
     }
 }
 
@@ -1100,6 +1121,7 @@ impl ConnectionBroker {
                 metrics,
                 observer,
                 lifecycle: BrokerLifecycle::default(),
+                observations: Mutex::default(),
                 pairing,
                 #[cfg(any(unix, windows))]
                 service_handler: RemoteServiceHandlerSlot::default(),
@@ -1341,6 +1363,7 @@ impl ConnectionBroker {
                 verified_relay,
                 admission,
                 self.inner.pairing.subscribe(),
+                &self.inner.lifecycle,
             );
         }
 
@@ -1379,6 +1402,7 @@ impl ConnectionBroker {
             verified_relay,
             admission,
             self.inner.pairing.subscribe(),
+            &self.inner.lifecycle,
         )
     }
 
@@ -1393,7 +1417,7 @@ impl ConnectionBroker {
                 "the local device cannot be reached through its own broker",
             ));
         }
-        let slot = self.peer_slot(remote);
+        let slot = self.peer_slot(remote)?;
         let (previous_demands, transient_routes) = slot
             .demand
             .acquire(transient_routes, self.inner.limits.max_relay_hints)?;
@@ -1411,9 +1435,14 @@ impl ConnectionBroker {
         Ok(demand)
     }
 
-    fn peer_slot(&self, remote: DeviceId) -> Arc<PeerSlot> {
+    fn peer_slot(&self, remote: DeviceId) -> Result<Arc<PeerSlot>, DaemonError> {
         let mut peers = mutex_lock(&self.inner.peers);
-        peers
+        if peers.is_empty() {
+            self.start_peer_cleanup()?;
+        } else if self.inner.lifecycle.is_quiescing() {
+            return Err(transport_unavailable("network transport is stopping"));
+        }
+        Ok(peers
             .entry(remote)
             .or_insert_with(|| {
                 Arc::new(PeerSlot {
@@ -1425,7 +1454,7 @@ impl ConnectionBroker {
                     active_streams: Arc::new(AtomicUsize::new(0)),
                 })
             })
-            .clone()
+            .clone())
     }
 
     async fn ensure_dial_worker(&self, slot: Arc<PeerSlot>) -> Result<(), DaemonError> {
@@ -1433,10 +1462,12 @@ impl ConnectionBroker {
             return Err(transport_unavailable("network transport is stopping"));
         }
         let mut state = slot.state.lock().await;
+        let task = self.inner.lifecycle.admit_task()?;
         if state.claim_dial_worker() {
             let broker = self.clone();
             drop(state);
             tokio::spawn(async move {
+                let _task = task;
                 broker.run_dial_worker(slot).await;
             });
         }
@@ -1474,8 +1505,12 @@ impl ConnectionBroker {
                 close_connection(&connection, CLOSE_OVERLOADED, b"transport overloaded");
                 resource_exhausted("authenticated connection limit reached")
             })?;
-        self.run_inbound_handshake(connection, remote, admission, connection_permit)
-            .await
+        let _task = self.inner.lifecycle.admit_task()?;
+        tokio::select! {
+            biased;
+            () = self.inner.lifecycle.stopping.cancelled() => Err(cancelled("network transport is stopping")),
+            result = self.run_inbound_handshake(connection, remote, admission, connection_permit) => result,
+        }
     }
 
     /// Replaces the current Endpoint after a supervisor bind succeeds.
@@ -1516,14 +1551,21 @@ impl ConnectionBroker {
         self.inner.lifecycle.begin_quiesce();
         self.inner.pairing.begin_quiesce();
         self.inner.endpoint.send_replace(None);
-        self.close_all(ConnectionCloseReason::ShuttingDown).await;
+        timeout_until(
+            deadline,
+            self.close_all(ConnectionCloseReason::ShuttingDown),
+        )
+        .await?;
         self.wake_all_peers();
         wait_for_service_handlers_until(
             Arc::clone(&self.inner.admission.global_stream_handlers),
             self.inner.limits.max_stream_handlers_global,
             deadline,
         )
-        .await
+        .await?;
+        timeout_until(deadline, self.inner.lifecycle.tasks.wait()).await?;
+        mutex_lock(&self.inner.peers).clear();
+        Ok(())
     }
 
     /// Closes all current candidates for one endpoint without touching Session state.
@@ -1642,11 +1684,11 @@ impl ConnectionBroker {
         slot: &Arc<PeerSlot>,
         candidate: Arc<Candidate>,
     ) -> Result<(), DaemonError> {
+        let mut state = slot.state.lock().await;
         if self.inner.lifecycle.is_quiescing() {
             candidate.cancel(ConnectionCloseReason::ShuttingDown);
             return Err(transport_unavailable("network transport is stopping"));
         }
-        let mut state = slot.state.lock().await;
         if state.candidates.is_empty() {
             // Reconnect can also follow a one-sided QUIC timeout without a
             // process restart. The remote must not retain a primary that this
@@ -1688,7 +1730,7 @@ impl ConnectionBroker {
                         loser.cancel(ConnectionCloseReason::Duplicate);
                     }
                     slot.changed.notify_waiters();
-                    self.start_connection_actor(Arc::clone(&slot), candidate);
+                    self.start_connection_actor(Arc::clone(&slot), candidate)?;
                     return Ok(());
                 }
                 CandidateDecision::Lost(loser) => {
@@ -1721,14 +1763,21 @@ impl ConnectionBroker {
         }
     }
 
-    fn start_connection_actor(&self, slot: Arc<PeerSlot>, candidate: Arc<Candidate>) {
+    fn start_connection_actor(
+        &self,
+        slot: Arc<PeerSlot>,
+        candidate: Arc<Candidate>,
+    ) -> Result<(), DaemonError> {
+        let task = self.inner.lifecycle.admit_task()?;
         if candidate.actor_started.swap(true, Ordering::AcqRel) {
-            return;
+            return Ok(());
         }
         let broker = self.clone();
         tokio::spawn(async move {
+            let _task = task;
             broker.run_connection_actor(slot, candidate).await;
         });
+        Ok(())
     }
 
     async fn run_connection_actor(&self, slot: Arc<PeerSlot>, candidate: Arc<Candidate>) {
@@ -1958,27 +2007,6 @@ impl ConnectionBroker {
         slot.changed.notify_waiters();
     }
 
-    fn persist_verified_handshake(&self, candidate: &Candidate) {
-        let store = self.inner.store.clone();
-        let authorization = self.inner.authorization.clone();
-        let remote = candidate.remote;
-        let route = candidate.verified_relay.clone();
-        tokio::spawn(async move {
-            let now = now_unix_i64();
-            if authorization.admit(remote).is_ok() {
-                let deadline = Instant::now() + Duration::from_secs(5);
-                let _ = store
-                    .run_blocking_until(deadline, move |store, deadline| {
-                        store.set_last_seen(remote, now, deadline)
-                    })
-                    .await;
-            }
-            if let Some(relay) = route {
-                persist_verified_route(store, remote, relay, now).await;
-            }
-        });
-    }
-
     fn observe_current_path(&self, candidate: &Candidate) {
         if !candidate.primary.load(Ordering::Acquire) {
             return;
@@ -1991,13 +2019,13 @@ impl ConnectionBroker {
             .map_or((PathKind::Unknown, None), |path| {
                 classify_transport_addr(path.remote_addr())
             });
+        self.record_path(candidate, kind, relay);
+    }
+
+    fn record_path(&self, candidate: &Candidate, kind: PathKind, relay: Option<RelayHint>) {
         self.inner.metrics.set_path(candidate.remote, kind);
-        if let Some(relay) = relay {
-            let store = self.inner.store.clone();
-            let remote = candidate.remote;
-            tokio::spawn(async move {
-                persist_verified_route(store, remote, relay, now_unix_i64()).await;
-            });
+        if relay.is_some() {
+            self.queue_observation(candidate.remote, false, relay);
         }
     }
 
@@ -2008,14 +2036,7 @@ impl ConnectionBroker {
         match event {
             PathEvent::Selected { remote_addr, .. } => {
                 let (kind, relay) = classify_transport_addr(&remote_addr);
-                self.inner.metrics.set_path(candidate.remote, kind);
-                if let Some(relay) = relay {
-                    let store = self.inner.store.clone();
-                    let remote = candidate.remote;
-                    tokio::spawn(async move {
-                        persist_verified_route(store, remote, relay, now_unix_i64()).await;
-                    });
-                }
+                self.record_path(candidate, kind, relay);
             }
             PathEvent::Closed { .. } | PathEvent::Opened { .. } | PathEvent::Lagged { .. } => {
                 self.observe_current_path(candidate);
@@ -2578,27 +2599,6 @@ fn classify_transport_addr(address: &TransportAddr) -> (PathKind, Option<RelayHi
         TransportAddr::Ip(_) => (PathKind::Direct, None),
         _ => (PathKind::Unknown, None),
     }
-}
-
-async fn persist_verified_route(
-    store: StoreHandle,
-    remote: DeviceId,
-    relay: RelayHint,
-    now_unix: i64,
-) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let _ = store
-        .run_blocking_until(deadline, move |store, deadline| {
-            store.set_known_route(
-                remote,
-                RelayRouteCache {
-                    relay_hints: vec![relay],
-                    verified_at_unix: now_unix,
-                },
-                deadline,
-            )
-        })
-        .await;
 }
 
 fn now_unix_i64() -> i64 {

@@ -66,6 +66,17 @@ retired, the retry uses whichever is connected first: the background
 connection or a fresh one started after the window. Otherwise the background
 connection is closed unused. The request is still sent at most twice.
 
+The daemon queues retirement against the exact failed candidate before returning
+to the caller. A subsequent request observes the retirement even when another
+task held the peer lock. At the outbound dial limit, a pending replacement can
+still win the race while a fresh dial waits for capacity.
+
+The broker batches verified path changes for 250 ms and keeps the latest relay
+per peer for its database writer. Shutdown stops new admissions, wakes pending
+dials, and waits for connection tasks and previously admitted writes within its
+deadline. Idle peer records are reclaimed after active owners release them and
+the protection against delayed handshakes from retired incarnations expires.
+
 If the daemon cannot prove whether a mutation committed, it reports
 `operation_outcome_unknown`. The client does not allocate a fresh lease and
 silently rerun that logical operation. Inspect current state before deciding on

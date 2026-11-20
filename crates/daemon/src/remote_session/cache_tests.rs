@@ -86,14 +86,14 @@ impl RemoteServiceHandler for EchoHandler {
     }
 }
 
-struct Fixture {
-    broker: ConnectionBroker,
+pub(crate) struct Fixture {
+    pub(crate) broker: ConnectionBroker,
     endpoint: Endpoint,
     host: Endpoint,
-    remote: DeviceId,
+    pub(crate) remote: DeviceId,
     relay: iroh_relay::server::Server,
     serving: tokio::task::JoinHandle<()>,
-    connections: Arc<AtomicUsize>,
+    pub(crate) connections: Arc<AtomicUsize>,
     attachments: Arc<AtomicUsize>,
     accepted: tokio::sync::mpsc::UnboundedReceiver<Connection>,
     store: StoreActor,
@@ -102,7 +102,11 @@ struct Fixture {
 }
 
 impl Fixture {
-    async fn new() -> Self {
+    pub(crate) async fn new() -> Self {
+        Self::with_limits(TransportLimits::default()).await
+    }
+
+    pub(crate) async fn with_limits(limits: TransportLimits) -> Self {
         let fixture_slot = FIXTURE_SLOT.acquire().await.expect("fixture slot");
         let mut config = iroh_relay::server::ServerConfig::default();
         config.relay = Some(iroh_relay::server::testing::relay_config());
@@ -180,7 +184,7 @@ impl Fixture {
             identity,
             store.handle(),
             authorization,
-            TransportLimits::default(),
+            limits,
         )
         .expect("broker");
         broker.set_test_route(remote, host.addr()).expect("route");
@@ -307,7 +311,7 @@ impl Fixture {
         }
     }
 
-    async fn query(&self, id: u64) -> Result<DecodedFrame, DaemonError> {
+    pub(crate) async fn query(&self, id: u64) -> Result<DecodedFrame, DaemonError> {
         RemoteUnaryClient::new(Arc::new(BrokerRemoteUnaryTransport {
             broker: self.broker.clone(),
         }))
@@ -383,7 +387,7 @@ impl Fixture {
         );
     }
 
-    async fn close(self) {
+    pub(crate) async fn close(self) {
         self.serving.abort();
         let _ = self.serving.await;
         self.broker.quiesce().await;
@@ -401,48 +405,6 @@ async fn echo(send: &mut SendStream, recv: &mut RecvStream, remote: DeviceId) {
         .await
         .expect("live stream must still exchange data");
     assert_eq!(frame.request_id, ECHO_REQUEST);
-}
-
-/// A retired idle connection's retry adopts the transport that an
-/// unacknowledged request already dialed, instead of dialing again.
-#[tokio::test]
-async fn retired_connection_retry_adopts_the_replacement_transport() {
-    let fixture = Fixture::new().await;
-    fixture.query(1).await.expect("warm query");
-    let old = fixture
-        .broker
-        .peer_observation(fixture.remote)
-        .await
-        .primary
-        .expect("primary");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let demand = fixture
-        .broker
-        .demand(fixture.remote, deadline)
-        .await
-        .expect("demand");
-    let replacement = demand.dial_replacement(deadline);
-    while !replacement.is_finished() {
-        assert!(Instant::now() < deadline, "replacement dial did not end");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert_eq!(
-        fixture.connections.load(Ordering::SeqCst),
-        2,
-        "the replacement reached the host"
-    );
-    demand.retire_failed_candidate(old, Some(replacement), false);
-    fixture
-        .query(3)
-        .await
-        .expect("the retry uses the replacement");
-    assert_eq!(
-        fixture.connections.load(Ordering::SeqCst),
-        2,
-        "no further connection was dialed"
-    );
-    drop(demand);
-    fixture.close().await;
 }
 
 #[tokio::test]

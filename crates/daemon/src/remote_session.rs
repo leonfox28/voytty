@@ -29,7 +29,7 @@ use crate::session_wire::{FirstFrame, SessionWireLimits};
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 #[cfg(test)]
-mod cache_tests;
+pub(crate) mod cache_tests;
 
 /// Daemon composition for exact resolution and outbound Session unary calls.
 #[derive(Clone)]
@@ -271,7 +271,7 @@ impl RemoteUnaryDemand for BrokerRemoteUnaryDemand {
                     deadline,
                     acknowledgement.as_ref(),
                     || {
-                        replacement = Some(self.demand.dial_replacement(deadline));
+                        replacement = self.demand.dial_replacement(deadline);
                     },
                 )
                 .await

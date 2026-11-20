@@ -26,17 +26,19 @@ impl ConnectionBroker {
                 };
 
                 if !action {
-                    if tokio::time::timeout(Duration::from_secs(30), changed)
-                        .await
-                        .is_err()
-                    {
-                        continue;
+                    tokio::select! {
+                        () = self.inner.lifecycle.stopping.cancelled() => break,
+                        () = tokio::time::sleep(Duration::from_secs(30)) => {}
+                        () = changed => retry = 0,
                     }
-                    retry = 0;
                     continue;
                 }
 
-                let result = self.dial_once(Arc::clone(&slot)).await;
+                let result = tokio::select! {
+                    biased;
+                    () = self.inner.lifecycle.stopping.cancelled() => break,
+                    result = self.dial_once(Arc::clone(&slot)) => result,
+                };
                 match result {
                     Ok(()) => retry = 0,
                     Err(error) if is_retryable(error.kind()) => {
@@ -49,6 +51,7 @@ impl ConnectionBroker {
                         let delay = retry_delay(retry, slot.remote);
                         retry = retry.saturating_add(1);
                         tokio::select! {
+                            () = self.inner.lifecycle.stopping.cancelled() => break,
                             () = tokio::time::sleep(delay) => {}
                             () = slot.changed.notified() => {}
                         }
@@ -111,7 +114,6 @@ impl ConnectionBroker {
     }
 
     async fn dial_once(&self, slot: Arc<PeerSlot>) -> Result<(), DaemonError> {
-        let _dial_permit = self.dial_permit()?;
         let endpoint = self.bound_endpoint()?;
 
         let transient_routes = slot.demand.routes();
@@ -120,7 +122,21 @@ impl ConnectionBroker {
         // its own absolute request deadline and can stop waiting earlier.
         let deadline = Instant::now() + voytty_client::protocol::REMOTE_STARTUP_DEADLINE;
         let replacement = slot.state.lock().await.replacement.take();
+        let has_replacement = replacement.is_some();
+        let mut _fresh_permit = None;
         let fresh = async {
+            // Only a physical fresh dial needs another slot. At capacity the
+            // already-admitted replacement can still connect and win the race.
+            _fresh_permit = Some(if has_replacement {
+                acquire_until(
+                    Arc::clone(&self.inner.admission.pending_dials),
+                    deadline,
+                    "global outbound dial limit reached",
+                )
+                .await?
+            } else {
+                self.dial_permit()?
+            });
             slot.report_progress(ConnectionStage::LookingUpAddress)
                 .await;
             let routes = self
@@ -278,7 +294,7 @@ impl ConnectionBroker {
 
         slot.report_progress(ConnectionStage::ProtocolAndAccessReady)
             .await;
-        self.persist_verified_handshake(&candidate);
+        self.queue_observation(candidate.remote, true, candidate.verified_relay.clone());
         slot.report_progress(ConnectionStage::SelectingConnection)
             .await;
         self.promote_candidate(slot, candidate, deadline).await
@@ -291,6 +307,9 @@ impl ConnectionBroker {
         admission: crate::authorization::Admission,
         connection_permit: OwnedSemaphorePermit,
     ) -> Result<(), DaemonError> {
+        // An authorized but delayed Hello must keep its peer's incarnation
+        // history through the read, including while the last actor exits.
+        let slot = self.peer_slot(remote)?;
         let deadline = Instant::now() + self.inner.limits.first_frame_deadline;
         let (mut send, mut recv) = timeout_until(deadline, connection.accept_bi())
             .await?
@@ -338,7 +357,6 @@ impl ConnectionBroker {
             Arc::clone(&self.inner.metrics),
             self.inner.limits,
         )?;
-        let slot = self.peer_slot(remote);
         let _ = candidate.remote_capabilities.set(hello.capabilities());
         self.register_candidate(&slot, Arc::clone(&candidate))
             .await?;
@@ -426,7 +444,7 @@ impl ConnectionBroker {
                 .await;
             return Err(error);
         }
-        self.persist_verified_handshake(&candidate);
+        self.queue_observation(candidate.remote, true, candidate.verified_relay.clone());
         self.promote_candidate(
             slot,
             candidate,

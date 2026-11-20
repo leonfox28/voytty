@@ -1,29 +1,39 @@
 //! Connection lifetime and stream admission for an active peer demand.
 
 use super::*;
+use futures_util::FutureExt;
 
 impl ConnectionDemand {
     /// Dials this demand's peer without Hello for the request that `until`
     /// bounds. Progress is left to the dial that adopts it.
     #[cfg(any(unix, windows))]
-    pub(crate) fn dial_replacement(&self, until: Instant) -> ReplacementTransport {
+    pub(crate) fn dial_replacement(&self, until: Instant) -> Option<ReplacementTransport> {
+        let task = self.broker.inner.lifecycle.admit_task().ok()?;
         let broker = self.broker.clone();
         let slot = Arc::clone(&self.slot);
-        ReplacementTransport::dial(until, async move {
-            let _dial_permit = broker.dial_permit()?;
-            let endpoint = broker.bound_endpoint()?;
-            let routes = broker
-                .dial_routes(&endpoint, slot.remote, &slot.demand.routes(), until)
-                .await?;
-            let mut last_error = None;
-            for route in routes {
-                match connect_transport(&endpoint, route.address, VOYTTY_ALPN, until).await {
-                    Ok(connection) => return Ok(connection),
-                    Err(error) => last_error = Some(error),
-                }
-            }
-            Err(last_error.unwrap_or_else(no_route_connected))
-        })
+        let stopping = broker.inner.lifecycle.stopping.clone();
+        Some(ReplacementTransport::dial(until, async move {
+            let _task = task;
+            stopping
+                .run_until_cancelled(async {
+                    let _dial_permit = broker.dial_permit()?;
+                    let endpoint = broker.bound_endpoint()?;
+                    let routes = broker
+                        .dial_routes(&endpoint, slot.remote, &slot.demand.routes(), until)
+                        .await?;
+                    let mut last_error = None;
+                    for route in routes {
+                        match connect_transport(&endpoint, route.address, VOYTTY_ALPN, until).await
+                        {
+                            Ok(connection) => return Ok(connection),
+                            Err(error) => last_error = Some(error),
+                        }
+                    }
+                    Err(last_error.unwrap_or_else(no_route_connected))
+                })
+                .await
+                .unwrap_or_else(|| Err(cancelled("network transport is stopping")))
+        }))
     }
 
     /// Retires only this failed, still-selected transport when neither outbound
@@ -37,39 +47,21 @@ impl ConnectionDemand {
         replacement: Option<ReplacementTransport>,
         silent: bool,
     ) {
-        let Ok(mut state) = self.slot.state.try_lock() else {
+        let Ok(task) = self.broker.inner.lifecycle.admit_task() else {
             return;
         };
-        if state.candidates.primary() != Some(failed) {
-            return;
-        }
-        let Some(candidate) = state.candidates.get(&failed).cloned() else {
-            return;
-        };
+        let slot = Arc::clone(&self.slot);
         let limits = self.broker.inner.limits;
-        let (Ok(streams), Ok(handlers)) = (
-            u32::try_from(limits.max_bi_streams_per_connection),
-            u32::try_from(limits.max_stream_handlers_per_connection),
-        ) else {
-            return;
-        };
-        // Acquiring all permits makes the idle check atomic with admission in
-        // both directions. A busy terminal/upload keeps a connection that the
-        // peer still acknowledges.
-        let streams = Arc::clone(&candidate.admission.streams).try_acquire_many_owned(streams);
-        let handlers = Arc::clone(&candidate.admission.handlers).try_acquire_many_owned(handlers);
-        if (streams.is_err() || handlers.is_err()) && !silent {
-            return;
+        let mut retire = Box::pin(async move {
+            let _task = task;
+            slot.retire_selected(limits, failed, replacement, silent)
+                .await;
+        });
+        // Poll once before returning: a contended retirement is already in
+        // the mutex FIFO ahead of the next request. Keep that same waiter.
+        if retire.as_mut().now_or_never().is_none() {
+            tokio::spawn(retire);
         }
-        state.candidates.remove(failed);
-        if state.candidates.is_empty() {
-            state.remote_acceptance = None;
-        }
-        state.replacement = replacement;
-        drop(state);
-        candidate.set_primary(false, "retry");
-        candidate.cancel(ConnectionCloseReason::EndpointReset);
-        self.slot.changed.notify_waiters();
     }
 
     fn ensure_active(&self) -> Result<(), DaemonError> {
@@ -271,5 +263,46 @@ impl Drop for ConnectionDemand {
         self.released = true;
         self.slot.demand.release(&self.transient_routes);
         self.slot.changed.notify_waiters();
+    }
+}
+
+impl PeerSlot {
+    async fn retire_selected(
+        &self,
+        limits: TransportLimits,
+        failed: ConnectionCandidateKey,
+        replacement: Option<ReplacementTransport>,
+        silent: bool,
+    ) {
+        let mut state = self.state.lock().await;
+        if state.candidates.primary() != Some(failed) {
+            return;
+        }
+        let Some(candidate) = state.candidates.get(&failed).cloned() else {
+            return;
+        };
+        let (Ok(streams), Ok(handlers)) = (
+            u32::try_from(limits.max_bi_streams_per_connection),
+            u32::try_from(limits.max_stream_handlers_per_connection),
+        ) else {
+            return;
+        };
+        // Acquiring all permits makes the idle check atomic with admission in
+        // both directions. A busy terminal/upload keeps a connection that the
+        // peer still acknowledges.
+        let streams = Arc::clone(&candidate.admission.streams).try_acquire_many_owned(streams);
+        let handlers = Arc::clone(&candidate.admission.handlers).try_acquire_many_owned(handlers);
+        if (streams.is_err() || handlers.is_err()) && !silent {
+            return;
+        }
+        state.candidates.remove(failed);
+        if state.candidates.is_empty() {
+            state.remote_acceptance = None;
+        }
+        state.replacement = replacement;
+        drop(state);
+        candidate.set_primary(false, "retry");
+        candidate.cancel(ConnectionCloseReason::EndpointReset);
+        self.changed.notify_waiters();
     }
 }
