@@ -1588,7 +1588,7 @@ impl Drop for OperationCompletionGuard {
 
 struct SessionActor {
     id: SessionId,
-    commands: crossbeam_channel::Sender<SessionCommand>,
+    commands: Mutex<Option<crossbeam_channel::Sender<SessionCommand>>>,
     cached: Mutex<ActorRuntimeSummary>,
     revision: watch::Receiver<Revision>,
     registry: Weak<RegistryInner>,
@@ -1864,7 +1864,7 @@ impl SessionActor {
         let (commands, receiver) = crossbeam_channel::bounded(SESSION_COMMAND_CAPACITY);
         let actor = Arc::new(Self {
             id,
-            commands,
+            commands: Mutex::new(Some(commands)),
             cached: Mutex::new(ActorRuntimeSummary {
                 has_controller: false,
                 viewport,
@@ -1897,6 +1897,7 @@ impl SessionActor {
                     .ok()
                     .and_then(|mut driver| driver.take());
                 let Some(driver) = driver else {
+                    drop(receiver);
                     finalizer.complete(Err(synchronization_error("session actor startup")));
                     return;
                 };
@@ -1914,6 +1915,7 @@ impl SessionActor {
                     run_session_actor(&thread_actor, &mut runtime, &receiver)
                 }))
                 .unwrap_or_else(|_| Err(outcome_unknown()));
+                drop(receiver);
                 // If execution unwound before the ordinary explicit finalizer,
                 // dropping the retained runtime hands its driver to the
                 // nonblocking reaper. The actor finalizer below waits on the
@@ -1940,6 +1942,18 @@ impl SessionActor {
         }
     }
 
+    fn command_sender(&self) -> Result<crossbeam_channel::Sender<SessionCommand>, DaemonError> {
+        cleanup_lock(&self.commands)
+            .clone()
+            .ok_or_else(session_not_found)
+    }
+
+    fn wake(&self) {
+        if let Ok(commands) = self.command_sender() {
+            let _ = commands.try_send(SessionCommand::Wake);
+        }
+    }
+
     fn request<R>(
         &self,
         deadline: Instant,
@@ -1963,7 +1977,10 @@ impl SessionActor {
             gate: Arc::clone(&gate),
         };
         let (reply, response) = mpsc::sync_channel(1);
-        match self.commands.send_deadline(build(meta, reply), deadline) {
+        match self
+            .command_sender()?
+            .send_deadline(build(meta, reply), deadline)
+        {
             Ok(()) => {}
             Err(crossbeam_channel::SendTimeoutError::Disconnected(_)) => {
                 return Err(session_not_found());
@@ -2008,7 +2025,7 @@ impl SessionActor {
 
     #[cfg(all(test, unix))]
     fn panic_worker_for_test(&self, deadline: Instant) -> Result<(), DaemonError> {
-        self.commands
+        self.command_sender()?
             .try_send(SessionCommand::PanicWorker)
             .map_err(|_| resource_error("unable to inject actor worker panic"))?;
         while !self.worker_done() {
@@ -2092,7 +2109,7 @@ impl SessionActor {
                 ))));
             }
         }
-        let _ = self.commands.try_send(SessionCommand::Wake);
+        self.wake();
     }
 
     fn finish_interrupt(&self, result: Result<(), DaemonError>) {
@@ -2100,7 +2117,7 @@ impl SessionActor {
             end.interrupt = InterruptState::Ready(result);
         }
         self.end_changed.notify_all();
-        let _ = self.commands.try_send(SessionCommand::Wake);
+        self.wake();
     }
 
     fn ready_end_reason(&self) -> Option<SessionEndReason> {
@@ -2230,6 +2247,10 @@ impl ActorWorkerFinalizer {
     }
 
     fn complete(&mut self, result: Result<(), DaemonError>) {
+        // A bounded crossbeam queue retains unprocessed commands (and their
+        // reply senders) until both ends are gone. Live attachments can keep
+        // this actor alive long after the worker has stopped receiving.
+        cleanup_lock(&self.actor.commands).take();
         self.actor.driver_ownership.wait_released();
         self.actor.worker_done.store(true, Ordering::Release);
         self.actor.finish_end(result);

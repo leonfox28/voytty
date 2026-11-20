@@ -1275,6 +1275,60 @@ fn operation_completion_recovers_poison_and_wakes_with_a_terminal_result() {
 
 #[cfg(unix)]
 #[test]
+fn worker_exit_disconnects_queued_replies_while_an_attachment_is_alive() {
+    let temporary = tempfile::tempdir().expect("session fixture");
+    let service = unix_fixture_service(
+        DeviceId::from_array([37; 32]),
+        temporary.path().into(),
+        "exec cat",
+    );
+    let principal = service.local_principal(AttachmentId::from_array([38; 16]));
+    let prepared = service
+        .prepare_attach(principal, None, true, false, None)
+        .expect("controller");
+    let actor = &prepared.attachment.actor;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let (entered, ready) = mpsc::sync_channel(1);
+    let (resume, release) = mpsc::sync_channel(1);
+    let blocker = actor
+        .enqueue_command(deadline, |meta, reply| SessionCommand::BlockPtyEffect {
+            meta,
+            reply,
+            entered,
+            release,
+            executions: Arc::new(AtomicUsize::new(0)),
+        })
+        .expect("admit barrier");
+    ready
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .expect("actor at barrier");
+    actor
+        .command_sender()
+        .expect("live mailbox")
+        .try_send(SessionCommand::PanicWorker)
+        .expect("arrange worker exit");
+    let pending = actor
+        .enqueue_command(deadline, |meta, reply| SessionCommand::NextUpdate {
+            meta,
+            reply,
+            attachment_id: prepared.attachment.attachment_id(),
+        })
+        .expect("queue surface request behind exit");
+    resume.send(()).expect("release worker");
+    blocker.wait(deadline).expect("barrier completed");
+    let _ = actor.wait_finished_until(deadline);
+    actor.join_finished().expect("worker joined");
+    assert!(
+        matches!(
+            pending.response.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ),
+        "worker exit must wake a queued caller even while the attachment retains its actor"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn actor_mailbox_is_exactly_bounded_and_recovers_after_the_worker_drains() {
     let temporary = tempfile::tempdir().expect("temporary actor-mailbox fixture");
     let working_directory = temporary.path().to_path_buf();
@@ -1347,7 +1401,11 @@ fn actor_mailbox_is_exactly_bounded_and_recovers_after_the_worker_drains() {
         .expect("the first production mailbox slot admits a deterministic barrier");
     for _ in 1..SESSION_COMMAND_CAPACITY {
         assert!(
-            actor.commands.try_send(SessionCommand::Wake).is_ok(),
+            actor
+                .command_sender()
+                .expect("live mailbox")
+                .try_send(SessionCommand::Wake)
+                .is_ok(),
             "every production mailbox slot is admitted while the worker is blocked",
         );
     }

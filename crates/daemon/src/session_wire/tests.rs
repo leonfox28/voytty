@@ -2530,6 +2530,66 @@ async fn trailing_malformed_and_stalled_remote_streams_are_isolated() {
     assert_eq!(decode_one(&response).kind, WireKind::SessionListResponse);
 }
 #[tokio::test]
+async fn stale_active_notification_leaves_the_final_session_event_deliverable() {
+    let temporary = tempfile::tempdir().expect("session fixture");
+    let sessions = unix_wire_service(device(0xe3), temporary.path().into());
+    let view = AttachmentId::from_array([0xe4; 16]);
+    let prepared = sessions
+        .prepare_attach(sessions.local_principal(view), None, true, false, None)
+        .expect("controller");
+    let attachment = Arc::new(prepared.attachment);
+    attachment
+        .snapshot_applied(prepared.snapshot.revision)
+        .expect("snapshot ACK");
+    let lifecycle = attachment.lifecycle_watch().expect("lifecycle");
+    let active = lifecycle.borrow().clone();
+    assert!(matches!(active, AttachmentLifecycle::Active { .. }));
+    sessions.shutdown().expect("session has ended");
+    let ended = lifecycle.borrow().clone();
+    assert!(matches!(ended, AttachmentLifecycle::SessionEnded(_)));
+    let server = SessionWireServer::new(sessions);
+    let context = SessionRequestContext::local(view);
+    let mut bytes = Vec::new();
+    let mut output = SurfaceOutput::default();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    assert!(
+        !write_lifecycle_event(
+            &mut bytes,
+            &server,
+            &attachment,
+            &context,
+            active,
+            deadline,
+            &mut output
+        )
+        .await
+        .expect("stale update yields to final notification")
+    );
+    assert!(
+        write_lifecycle_event(
+            &mut bytes,
+            &server,
+            &attachment,
+            &context,
+            ended,
+            deadline,
+            &mut output
+        )
+        .await
+        .expect("deliver terminal event")
+    );
+    assert_eq!(
+        FrameDecoder::new()
+            .feed(&bytes)
+            .expect("terminal frames")
+            .last()
+            .expect("final frame")
+            .kind,
+        WireKind::TerminalSessionEnded
+    );
+}
+
+#[tokio::test]
 async fn stale_color_sync_notification_cannot_hide_takeover_lease_loss() {
     let temporary = tempfile::tempdir().expect("takeover notification fixture");
     let sessions = unix_wire_service(device(0xe1), temporary.path().to_path_buf());

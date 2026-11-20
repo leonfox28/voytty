@@ -578,11 +578,16 @@ where
         AttachmentLifecycle::AwaitingSnapshot { .. }
         | AttachmentLifecycle::Active { .. }
         | AttachmentLifecycle::PreparedTakeover => {
-            if let Some(update) =
-                attachment_next_update(server, Arc::clone(attachment), request_context, deadline)
-                    .await?
+            match attachment_next_update(server, Arc::clone(attachment), request_context, deadline)
+                .await
             {
-                write_terminal_update(writer, attachment, update, deadline, output).await?;
+                Ok(Some(update)) => {
+                    write_terminal_update(writer, attachment, update, deadline, output).await?
+                }
+                Ok(None) => {}
+                // This notification may already have been superseded by SessionEnded.
+                Err(error) if error.kind() == DomainErrorKind::SessionNotFound => {}
+                Err(error) => return Err(error),
             }
             Ok(false)
         }
