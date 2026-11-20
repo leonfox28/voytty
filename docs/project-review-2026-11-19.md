@@ -132,7 +132,22 @@ Windows x64 在 `5956410` 通过全工作区及测试目标的 `cargo xwin check
 
 提交 `7940911` 通过守护进程 Clippy、21 项连接管理测试和 11 项远端会话缓存测试。macOS 通过 `just check-changes origin/main`，其中工作区 875 项、noq-proto 441 项、Iroh 165 项测试通过，合计 1,481 项通过，17 项按已有标记忽略。Windows x64 和 ARM64 通过守护进程及测试目标的交叉编译。ARM64 使用 Clang 配套的 NEON 头文件，Windows 原生运行仍待托管 CI 验证。
 
-上轮列出的中危问题中，M13、M17、M18、M19、M20 仍待修复。M21 的 Linux 目录权限已修复，Windows 自动启动程序校验和交互终端的崩溃日志仍待处理。
+截至 `7940911`，上轮列出的中危问题中还有五项待修，M21 部分完成。
+
+## 终端配色与日志读写后续修复
+
+分支 `fix/project-review-colors-logs` 接续连接管理修复。
+
+| 编号 | 修复与回归验证 |
+| --- | --- |
+| M17 · `ff5c6a0` | 配色栈同时保存颜色值和来源。恢复时先显示保存的颜色，下次控制端更新主题时，继承色跟随原来源，应用显式设置的颜色继续保留。默认光标保持原生显示。测试覆盖同色显式覆盖、反色、嵌套保存，以及未修改配色时压栈再出栈保持颜色修订号。[配色协议测试](../crates/terminal/tests/color_protocol.rs) |
+| M18 · `8bdfe65` | 读取日志只申请读权限，刷盘和文件锁分别申请所需权限。普通追加复用当前文件句柄。首次安全写入、旧写入器退出后或当前文件已超限时才整理四个文件。不同进程通过原有写锁文件共享待整理标记，失败后可重试。测试覆盖 Unix 属主只读文件、跨写入器切换、只写当前日志，以及读者持有快照期间连续轮转并替换归档。[日志存储与测试](../crates/platform/src/diagnostics.rs) · [实现约定](logging.md) |
+
+Windows 单独编译平台模块时还发现，命名管道随机标记的错误转换依赖其他模块间接启用 `ring/std`。提交 `251a062` 修复了这一编译问题。[命名管道](../crates/platform/src/local_windows.rs)
+
+macOS 上，平台和终端模块的 Clippy 通过，模块测试 119 项通过，1 项按已有标记忽略。整分支通过 `just check-changes origin/main`，工作区 879 项、noq-proto 441 项、Iroh 165 项测试通过，合计 1,485 项通过，17 项按已有标记忽略。Windows x64 和 ARM64 在 `251a062` 均通过这两个模块及测试目标的独立交叉编译，持有快照期间轮转的 Windows 原生运行仍待托管 CI 验证。
+
+上轮清单中，M13、M19、M20 仍待修复。M21 的 Linux 目录权限已修复，Windows 自动启动程序校验和交互终端的崩溃日志仍待处理。
 
 ---
 
@@ -402,12 +417,14 @@ Windows x64 在 `5956410` 通过全工作区及测试目标的 `cargo xwin check
 - **说明**：满容后即便零行滚动（如提示符打字、原地刷新进度条），`retained == self.scrollback_rows` 恒成立，每次输入都失效桌面/移动端所有未钉住的历史页，引发持续远端拉取。
 
 #### M17. `VoyttyColorState::stack`（XTPOPCOLORS）出栈将全部 262 个色槽钉死为显式覆盖并强制软件闪烁光标
-- **位置**：[`crates/terminal/src/colors.rs`](../crates/terminal/src/colors.rs#L72-L73) / [`colors.rs#L123-L135`](../crates/terminal/src/colors.rs#L123-L135)
+- **当前状态**　已修复。[终端配色与日志读写后续修复](#终端配色与日志读写后续修复)
+- **位置**：[`crates/terminal/src/colors.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/terminal/src/colors.rs#L72-L73) / [`colors.rs#L123-L135`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/terminal/src/colors.rs#L123-L135)
 - **说明**：压栈保存了展平后的快照而非 `overrides`，出栈后永久阻断系统深浅色切换并迫使桌面端退化为 500 ms 定时器软件光标。
 
 #### M18. `user_state::open_read` 读取时申请写权限，每写一条日志均重复整理 4 个文件
-- **复核修订**　读取文件时仍申请写权限，写日志时也仍会重复整理四个文件。原文关于缺少 `FILE_SHARE_DELETE` 的归因已撤回。Rust 1.98 在 Windows 上默认设置该共享标志，项目使用的 `configure_secure_open` 只设置自定义打开标志。Windows 上并发读取和轮转的实际行为仍待原生验证。[文件打开逻辑](../crates/platform/src/user_state.rs)
-- **位置**：[`crates/platform/src/user_state.rs`](../crates/platform/src/user_state.rs#L432-L434) / [`user_state.rs#L932-L943`](../crates/platform/src/user_state.rs#L932-L943)、[`crates/platform/src/diagnostics.rs`](../crates/platform/src/diagnostics.rs#L227-L251) / [`diagnostics.rs#L313-L328`](../crates/platform/src/diagnostics.rs#L313-L328)
+- **当前状态**　已修复读权限和重复整理问题。Windows 原生快照轮转测试仍待托管 CI 运行。[终端配色与日志读写后续修复](#终端配色与日志读写后续修复)
+- **复核修订**　原文关于缺少 `FILE_SHARE_DELETE` 的归因已撤回。Rust 1.98 在 Windows 上默认设置该共享标志，项目使用的 `configure_secure_open` 只设置自定义打开标志。[文件打开逻辑](../crates/platform/src/user_state.rs)
+- **位置**：[`crates/platform/src/user_state.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/platform/src/user_state.rs#L432-L434) / [`user_state.rs#L932-L943`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/platform/src/user_state.rs#L932-L943)、[`crates/platform/src/diagnostics.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/platform/src/diagnostics.rs#L227-L251) / [`diagnostics.rs#L313-L328`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/platform/src/diagnostics.rs#L313-L328)
 - **说明**　`open_read` 可能因此无法读取属主只读（`0o400`）的文件。`Store::append` 每写一条日志就对 4 个文件执行 `normalize()`，增加了每次写入的系统调用次数。
 
 #### M19. 移动端 `IrohController` 存在 `open_bi` 零退避忙旋与 1 秒周期唤醒/分配及 1 ms RTT 抖动重绘
