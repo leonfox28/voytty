@@ -69,6 +69,45 @@ async fn controller_colors_are_staged_for_takeover_and_require_a_new_ack() {
     let lease = service
         .issue_operation_lease(principal)
         .expect("color fixture operation succeeds");
+    let old_lifecycle = first
+        .attachment
+        .lifecycle_watch()
+        .expect("controller state");
+    let prepared_lifecycle = pending
+        .attachment
+        .lifecycle_watch()
+        .expect("prepared state");
+    let old_state = old_lifecycle.borrow().clone();
+    let prepared_state = prepared_lifecycle.borrow().clone();
+    let failed = first
+        .attachment
+        .effect_broker
+        .with_poisoned_target_for_test(|| {
+            service.takeover(
+                principal,
+                OperationId { lease, sequence: 2 },
+                &pending.attachment,
+            )
+        })
+        .expect_err("cannot switch to an unavailable effect recipient");
+    assert_eq!(failed.kind(), DomainErrorKind::StoreUnavailable);
+    assert_eq!(*old_lifecycle.borrow(), old_state);
+    assert_eq!(*prepared_lifecycle.borrow(), prepared_state);
+    first
+        .attachment
+        .write_input(b"still-controller\n")
+        .expect("incumbent retains input");
+    assert!(pending.attachment.write_input(b"premature\n").is_err());
+    assert_eq!(
+        first
+            .attachment
+            .sync_latest_until(Revision::ZERO, default_deadline())
+            .expect("incumbent surface")
+            .surface
+            .colors
+            .profile,
+        profile(200)
+    );
     service
         .takeover(
             principal,

@@ -728,25 +728,22 @@ fn takeover(
         }
         return Ok(());
     }
-    let prepared = runtime
+    let attachment = runtime
         .attachments
-        .get(&attachment_id)
-        .is_some_and(|attachment| {
-            matches!(attachment.sync, AttachmentSync::PreparedTakeover)
-                || attachment.prepared_snapshot_applied
-                    && matches!(
-                        attachment.sync,
-                        AttachmentSync::Awaiting {
-                            target: SyncTarget::PreparedTakeover,
-                            ..
-                        }
-                    )
-        });
-    if !prepared {
-        return Err(not_synchronized(
-            "takeover attachment has not applied its prepared snapshot",
-        ));
-    }
+        .get_mut(&attachment_id)
+        .ok_or_else(lease_lost)?;
+    let ready = match attachment.sync {
+        AttachmentSync::PreparedTakeover => true,
+        AttachmentSync::Awaiting {
+            target: SyncTarget::PreparedTakeover,
+            ..
+        } if attachment.prepared_snapshot_applied => false,
+        _ => {
+            return Err(not_synchronized(
+                "takeover attachment has not applied its prepared snapshot",
+            ));
+        }
+    };
     if continuation {
         match runtime.controller {
             None => {}
@@ -754,85 +751,60 @@ fn takeover(
             Some(_) => return Err(outcome_unknown()),
         }
     }
-    runtime.next_generation = runtime
+    let generation = runtime
         .next_generation
         .checked_add(1)
         .ok_or_else(|| resource_error("controller generation exhausted"))?;
-    let generation = runtime.next_generation;
-    let base = runtime
-        .attachments
-        .get(&attachment_id)
-        .ok_or_else(lease_lost)?
-        .base_colors
-        .clone();
     let driver = runtime.driver.as_ref().ok_or_else(session_not_found)?;
-    let colors_changed = driver
-        .update_base_colors(base)
-        .map_err(map_driver_error)?
-        .is_some();
-    let old_lifecycle = if let Some(old) = runtime.controller
-        && old.attachment_id != attachment_id
-        && let Some(mut attachment) = runtime.attachments.remove(&old.attachment_id)
-    {
-        attachment.terminal.discard_checkpoint();
-        Some(attachment.lifecycle)
-    } else {
+    let snapshot = driver
+        .commit_takeover(
+            attachment.base_colors.clone(),
+            &mut attachment.terminal,
+            |colors_changed| {
+                (attachment.ever_active || ready && !colors_changed).then_some(attachment_id)
+            },
+        )
+        .map_err(map_driver_error)?;
+
+    // All fallible work is complete. The session actor owns both leases.
+    let notification = if let Some(snapshot) = snapshot {
+        let revision = snapshot.revision;
+        attachment.pending_color_snapshot = Some(snapshot);
+        attachment.sync = AttachmentSync::Awaiting {
+            revision,
+            target: SyncTarget::Active { generation },
+        };
+        Some(AttachmentLifecycle::AwaitingSnapshot { revision })
+    } else if let AttachmentSync::Awaiting { revision, .. } = attachment.sync {
+        attachment.sync = AttachmentSync::Awaiting {
+            revision,
+            target: SyncTarget::Active { generation },
+        };
         None
+    } else {
+        attachment.sync = AttachmentSync::Active { generation };
+        attachment.ever_active = true;
+        Some(AttachmentLifecycle::Active { generation })
     };
-    runtime.controller = Some(ControllerLease {
+    let lifecycle = attachment.lifecycle.clone();
+    let effect_target = attachment.ever_active.then_some(attachment_id);
+    let old = runtime.controller.replace(ControllerLease {
         attachment_id,
         generation,
     });
+    runtime.next_generation = generation;
     runtime.controller_operation = Some(operation_key);
-    let attachment = runtime
-        .attachments
-        .get_mut(&attachment_id)
-        .ok_or_else(lease_lost)?;
-    let previously_active = attachment.ever_active;
-    let active_lifecycle = match attachment.sync {
-        AttachmentSync::PreparedTakeover => {
-            attachment.sync = AttachmentSync::Active { generation };
-            attachment.ever_active = true;
-            Some(attachment.lifecycle.clone())
-        }
-        AttachmentSync::Awaiting {
-            revision,
-            target: SyncTarget::PreparedTakeover,
-        } if attachment.prepared_snapshot_applied => {
-            attachment.sync = AttachmentSync::Awaiting {
-                revision,
-                target: SyncTarget::Active { generation },
-            };
-            None
-        }
-        _ => unreachable!("takeover readiness was validated above"),
-    };
-    let active_lifecycle = if colors_changed {
-        attachment.ever_active = previously_active;
-        attachment.terminal.discard_checkpoint();
-        let snapshot = full_sync(&mut attachment.terminal)?;
-        attachment.sync = AttachmentSync::Awaiting {
-            revision: snapshot.revision,
-            target: SyncTarget::Active { generation },
-        };
-        attachment
-            .lifecycle
-            .send_replace(AttachmentLifecycle::AwaitingSnapshot {
-                revision: snapshot.revision,
-            });
-        attachment.pending_color_snapshot = Some(snapshot);
-        None
-    } else {
-        active_lifecycle
-    };
-    reconcile_effect_target(runtime)?;
-    if let Some(lifecycle) = old_lifecycle {
-        lifecycle.send_replace(AttachmentLifecycle::LeaseLost { generation });
+    if let Some(old) = old
+        && let Some(old) = runtime.attachments.remove(&old.attachment_id)
+    {
+        old.lifecycle
+            .send_replace(AttachmentLifecycle::LeaseLost { generation });
     }
-    if let Some(lifecycle) = active_lifecycle {
-        lifecycle.send_replace(AttachmentLifecycle::Active { generation });
-    }
+    cancel_inactive_history(runtime, effect_target);
     actor.update_cached(runtime, false);
+    if let Some(notification) = notification {
+        lifecycle.send_replace(notification);
+    }
     tracing::info!(component = "session", operation = "controller_taken_over", session_id = %actor.id, attachment_id = %attachment_id, "Controller taken over");
     Ok(())
 }
@@ -946,17 +918,21 @@ fn reconcile_effect_target(runtime: &SessionRuntime) -> Result<(), DaemonError> 
             })
             .map(|_| controller.attachment_id)
     });
-    for (id, attachment) in &runtime.attachments {
-        if Some(*id) != target {
-            attachment.terminal.cancel_pending_history();
-        }
-    }
+    cancel_inactive_history(runtime, target);
     runtime
         .driver
         .as_ref()
         .ok_or_else(session_not_found)?
         .set_effect_target(target)
         .map_err(map_driver_error)
+}
+
+fn cancel_inactive_history(runtime: &SessionRuntime, target: Option<AttachmentId>) {
+    for (id, attachment) in &runtime.attachments {
+        if Some(*id) != target {
+            attachment.terminal.cancel_pending_history();
+        }
+    }
 }
 
 #[cfg(any(unix, windows))]

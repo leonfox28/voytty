@@ -10,13 +10,13 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use tokio::sync::watch;
-use voytty_core::Revision;
 use voytty_core::terminal::{
-    TerminalHistoryWindowQuery, TerminalSize, TerminalSurfaceDeltaResult,
+    TerminalColorProfile, TerminalHistoryWindowQuery, TerminalSize, TerminalSurfaceDeltaResult,
     TerminalSurfaceHistoryWindowResult, TerminalSurfaceSnapshot,
 };
 #[cfg(any(unix, windows))]
 use voytty_core::terminal::{TerminalHostEffect, TerminalHostEffects};
+use voytty_core::{AttachmentId, Revision};
 use voytty_platform::pty::{
     PtyChild, PtyChildInterrupt, PtyChildState, PtyError, PtyExitStatus, PtyInput, PtyResize,
     PtySession, PtySize,
@@ -155,6 +155,16 @@ struct TerminalEffectBrokerState {
 }
 
 #[cfg(any(unix, windows))]
+impl TerminalEffectBrokerState {
+    fn set_target(&mut self, target: Option<AttachmentId>) {
+        if self.target != target {
+            self.target = target;
+            self.pending.clear();
+        }
+    }
+}
+
+#[cfg(any(unix, windows))]
 impl TerminalEffectBroker {
     fn new() -> Self {
         let (wake, _) = watch::channel(());
@@ -173,10 +183,7 @@ impl TerminalEffectBroker {
         target: Option<voytty_core::AttachmentId>,
     ) -> Result<(), TerminalDriverError> {
         let mut state = lock(&self.inner.state, "terminal effect broker")?;
-        if state.target != target {
-            state.target = target;
-            state.pending.clear();
-        }
+        state.set_target(target);
         Ok(())
     }
 
@@ -195,6 +202,17 @@ impl TerminalEffectBroker {
         }
         self.inner.wake.send_replace(());
         Ok(())
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn with_poisoned_target_for_test<T>(&self, check: impl FnOnce() -> T) -> T {
+        let _ = std::panic::catch_unwind(|| {
+            let _held = self.inner.state.lock().expect("healthy effect broker");
+            panic!("inject failed effect target lock");
+        });
+        let result = check();
+        self.inner.state.clear_poison();
+        result
     }
 
     #[cfg(all(test, unix))]
@@ -544,25 +562,67 @@ impl TerminalDriver {
     /// unrelated PTY output that arrived before acquiring the commit mutex.
     pub fn update_base_colors(
         &self,
-        base: voytty_core::terminal::TerminalColorProfile,
+        base: TerminalColorProfile,
     ) -> Result<Option<Revision>, TerminalDriverError> {
         let _commit = lock(&self.shared.commit, "terminal commit")?;
-        let (update, changed, published) = {
-            let mut model = lock(&self.shared.model, "terminal model")?;
-            let before = model.revision();
-            let update = model.update_base_colors(base)?;
-            let changed = update.revision != before;
-            (update, changed, model.published_revision())
-        };
+        self.apply_base_colors(base, |model, changed| changed.then(|| model.revision()))
+    }
+
+    /// Changes the controller's colors, baseline and transient effect recipient
+    /// at the same PTY output boundary. No caller-visible state changes on error.
+    pub(crate) fn commit_takeover(
+        &self,
+        base: TerminalColorProfile,
+        incoming: &mut TerminalAttachment,
+        effect_target: impl FnOnce(bool) -> Option<AttachmentId>,
+    ) -> Result<Option<TerminalSurfaceSnapshot>, TerminalDriverError> {
+        let _commit = lock(&self.shared.commit, "terminal commit")?;
+        #[cfg(any(unix, windows))]
+        let mut effects = lock(&self.effects.inner.state, "terminal effect broker")?;
+        self.apply_base_colors(base, |model, changed| {
+            let target = effect_target(changed);
+            #[cfg(any(unix, windows))]
+            effects.set_target(target);
+            #[cfg(not(any(unix, windows)))]
+            let _ = target;
+            changed.then(|| {
+                let (update, checkpoint) = model.capture(None);
+                let TerminalSurfaceDeltaResult::Resync(snapshot) = update else {
+                    unreachable!("capture without a baseline always returns a full snapshot")
+                };
+                incoming.checkpoint = Some(checkpoint);
+                snapshot
+            })
+        })
+    }
+
+    // The caller holds the commit lock. Acquire all fallible state before
+    // installing colors or publishing the new controller's checkpoint.
+    fn apply_base_colors<T>(
+        &self,
+        base: TerminalColorProfile,
+        commit: impl FnOnce(&TerminalModel, bool) -> T,
+    ) -> Result<T, TerminalDriverError> {
+        let mut model = lock(&self.shared.model, "terminal model")?;
+        let mut state = lock(&self.shared.revision_wait, "revision waterline")?;
+        if let Some(error) = &state.failure {
+            return Err(error.clone());
+        }
+        let before = model.revision();
+        let update = model.update_base_colors(base)?;
+        let changed = update.revision != before;
+        let result = commit(&model, changed);
+        let published = model.published_revision();
+        drop(model);
         if !update.replies.is_empty()
             && let Some(replies) = &self.replies
         {
             let _ = replies.try_send(update.replies);
         }
         if changed {
-            self.shared.publish_revision(published)?;
+            self.shared.publish_locked(&mut state, published);
         }
-        Ok(changed.then_some(update.revision))
+        Ok(result)
     }
 
     /// Subscribes to the latest revision without retaining per-revision events.
@@ -1043,14 +1103,17 @@ impl SharedTerminal {
 
     fn publish_revision(&self, revision: Revision) -> Result<(), TerminalDriverError> {
         let mut state = lock(&self.revision_wait, "revision waterline")?;
-        if state.latest == revision {
-            return Ok(());
-        }
-        self.revision.store(revision.get(), Ordering::Release);
-        state.latest = revision;
-        self.revision_sender.send_replace(revision);
-        self.revision_changed.notify_all();
+        self.publish_locked(&mut state, revision);
         Ok(())
+    }
+
+    fn publish_locked(&self, state: &mut RevisionState, revision: Revision) {
+        if state.latest != revision {
+            self.revision.store(revision.get(), Ordering::Release);
+            state.latest = revision;
+            self.revision_sender.send_replace(revision);
+            self.revision_changed.notify_all();
+        }
     }
 
     fn wait_for_revision_after(

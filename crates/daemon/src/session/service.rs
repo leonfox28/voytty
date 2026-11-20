@@ -185,7 +185,7 @@ impl SessionService {
             working_directory: working_directory.clone(),
             viewport,
         };
-        self.execute_replayed(principal, operation_id, fingerprint, || {
+        self.execute_replayed(principal, operation_id, fingerprint, deadline, || {
             ensure_before_deadline(deadline)?;
             if name.is_main() {
                 return Err(reserved_main());
@@ -230,7 +230,7 @@ impl SessionService {
             session_id,
             new_name: new_name.clone(),
         };
-        self.execute_replayed(principal, operation_id, fingerprint, || {
+        self.execute_replayed(principal, operation_id, fingerprint, deadline, || {
             ensure_before_deadline(deadline)?;
             self.rename_inner(session_id, new_name)
         })
@@ -253,15 +253,26 @@ impl SessionService {
         session_id: SessionId,
         deadline: Instant,
     ) -> Result<SessionSummary, DaemonError> {
-        self.execute_replayed(
+        let registration = self.register_operation(
             principal,
             operation_id,
             OperationFingerprint::Close { session_id },
-            || {
-                ensure_before_deadline(deadline)?;
-                self.close_inner(session_id, SessionEndReason::ExplicitClose)
-            },
-        )
+        )?;
+        let cell = match registration {
+            ReplayRegistration::Join(cell) => cell,
+            ReplayRegistration::Execute(cell) => {
+                let mut completion = OperationCompletionGuard::new(Arc::clone(&cell));
+                match self.prepare_close(session_id, deadline) {
+                    Ok((actor, summary)) => actor.begin_end_with_close(
+                        SessionEndReason::ExplicitClose,
+                        Some((completion, summary)),
+                    ),
+                    Err(error) => completion.complete(Err(error)),
+                }
+                cell
+            }
+        };
+        cell.wait_until(deadline)
     }
 
     /// Resolves a session and prepares its first full snapshot.
@@ -894,17 +905,16 @@ impl SessionService {
         entry.summary()
     }
 
-    fn close_inner(
+    fn prepare_close(
         &self,
         session_id: SessionId,
-        reason: SessionEndReason,
-    ) -> Result<SessionSummary, DaemonError> {
+        deadline: Instant,
+    ) -> Result<(Arc<SessionActor>, SessionSummary), DaemonError> {
+        ensure_before_deadline(deadline)?;
         let entry = self.inner.entry(session_id)?;
         let summary = entry.summary()?;
-        entry.actor.begin_end(reason);
-        entry.actor.wait_finished()?;
-        entry.actor.join_finished()?;
-        Ok(summary)
+        ensure_before_deadline(deadline)?;
+        Ok((entry.actor, summary))
     }
 
     pub(super) fn resolve(
@@ -918,20 +928,26 @@ impl SessionService {
         self.inner.entry(session_id)?.summary()
     }
 
+    fn register_operation(
+        &self,
+        principal: AttachmentPrincipal,
+        operation_id: OperationId,
+        fingerprint: OperationFingerprint,
+    ) -> Result<ReplayRegistration, DaemonError> {
+        let key = ReplayKey::new(principal, operation_id.lease.ordinal);
+        lock(&self.replay, "operation replay")?.register(key, operation_id, fingerprint)
+    }
+
     pub(super) fn execute_replayed(
         &self,
         principal: AttachmentPrincipal,
         operation_id: OperationId,
         fingerprint: OperationFingerprint,
+        deadline: Instant,
         operation: impl FnOnce() -> MutationResult,
     ) -> MutationResult {
-        let key = ReplayKey::new(principal, operation_id.lease.ordinal);
-        let registration = {
-            let mut replay = lock(&self.replay, "operation replay")?;
-            replay.register(key, operation_id, fingerprint)?
-        };
-        match registration {
-            ReplayRegistration::Join(cell) => cell.wait(),
+        match self.register_operation(principal, operation_id, fingerprint)? {
+            ReplayRegistration::Join(cell) => cell.wait_until(deadline),
             ReplayRegistration::Execute(cell) => {
                 let mut completion = OperationCompletionGuard::new(Arc::clone(&cell));
                 let result = catch_unwind(AssertUnwindSafe(operation))
@@ -955,15 +971,11 @@ impl SessionService {
             replay_key,
             operation_id,
         };
-        let registration = {
-            let mut replay = lock(&self.replay, "operation replay")?;
-            replay.register(
-                replay_key,
-                operation_id,
-                OperationFingerprint::Takeover { session_id },
-            )?
-        };
-        match registration {
+        match self.register_operation(
+            principal,
+            operation_id,
+            OperationFingerprint::Takeover { session_id },
+        )? {
             ReplayRegistration::Execute(cell) => {
                 let mut completion = OperationCompletionGuard::new(Arc::clone(&cell));
                 let result = catch_unwind(AssertUnwindSafe(|| {
@@ -983,7 +995,7 @@ impl SessionService {
                 result
             }
             ReplayRegistration::Join(cell) => {
-                let retained = cell.wait()?;
+                let retained = cell.wait_until(deadline)?;
                 let actor = self.resolve(&SessionSelector::Id(session_id))?;
                 actor.request(deadline, |meta, reply| SessionCommand::Takeover {
                     meta,

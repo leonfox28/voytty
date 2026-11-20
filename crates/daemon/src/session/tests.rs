@@ -148,7 +148,7 @@ fn replay_result_window_is_exact_and_recovers_after_oldest_completion() {
 }
 
 #[test]
-fn replay_principal_limit_is_exact_and_a_new_incarnation_recovers_capacity() {
+fn replay_principals_recover_capacity_without_reusing_an_evicted_lease() {
     let principal = |byte| AttachmentPrincipal::RemoteEndpoint {
         device_id: DeviceId::from_array([byte; DeviceId::LENGTH]),
         auth_generation: 1,
@@ -156,23 +156,68 @@ fn replay_principal_limit_is_exact_and_a_new_incarnation_recovers_capacity() {
     let mut replay = ReplayRegistry::new();
     let first_principal = principal(1);
     let mut first_lease = None;
-    for index in 0..MAX_REPLAY_PRINCIPALS {
+    let mut pending = Vec::new();
+    let fingerprint = OperationFingerprint::Close {
+        session_id: SessionId::from_array([0x32; SessionId::LENGTH]),
+    };
+    for index in 0..MAX_ACTIVE_OPERATION_EPOCHS {
         let byte = u8::try_from(index + 1).expect("principal fixture fits one byte");
         let lease = replay
             .issue(principal(byte))
             .expect("every production replay-principal slot is admitted");
+        let ReplayRegistration::Execute(cell) = replay
+            .register(
+                ReplayKey::new(principal(byte), lease.ordinal),
+                OperationId { lease, sequence: 1 },
+                fingerprint.clone(),
+            )
+            .expect("principal begins a mutation")
+        else {
+            panic!("fresh mutation must execute");
+        };
+        pending.push(cell);
         if index == 0 {
             first_lease = Some(lease);
         }
     }
-    assert_eq!(replay.issued_through.len(), MAX_REPLAY_PRINCIPALS);
+    assert_eq!(replay.epochs.len(), MAX_ACTIVE_OPERATION_EPOCHS);
 
     let overflow = principal(0xfe);
     let error = replay
         .issue(overflow)
-        .expect_err("the next replay principal exceeds the daemon-lifetime bound");
+        .expect_err("all principal slots have unfinished work");
     assert_eq!(error.kind(), DomainErrorKind::ResourceExhausted);
     let first_lease = first_lease.expect("first daemon lease retained");
+    pending[0].complete(Err(outcome_unknown()));
+    let replacement = replay
+        .issue(overflow)
+        .expect("completed principal releases a slot");
+    assert_eq!(replay.epochs.len(), MAX_ACTIVE_OPERATION_EPOCHS);
+    assert!(replacement.ordinal > first_lease.ordinal);
+    for generation in 2..=130 {
+        let rotated = AttachmentPrincipal::RemoteEndpoint {
+            device_id: DeviceId::from_array([1; DeviceId::LENGTH]),
+            auth_generation: generation,
+        };
+        let fresh = replay
+            .issue(rotated)
+            .expect("rotation reuses the idle slot");
+        assert!(fresh.ordinal > replacement.ordinal);
+        assert_eq!(replay.epochs.len(), MAX_ACTIVE_OPERATION_EPOCHS);
+        for stale in [first_principal, rotated] {
+            let Err(error) = replay.register(
+                ReplayKey::new(stale, first_lease.ordinal),
+                OperationId {
+                    lease: first_lease,
+                    sequence: 1,
+                },
+                fingerprint.clone(),
+            ) else {
+                panic!("retired lease cannot execute against either generation");
+            };
+            assert_eq!(error.kind(), DomainErrorKind::OperationOutcomeUnknown);
+        }
+    }
     drop(replay);
 
     let mut restarted = ReplayRegistry::new();
@@ -182,15 +227,12 @@ fn replay_principal_limit_is_exact_and_a_new_incarnation_recovers_capacity() {
     let restarted_lease = restarted
         .issue(first_principal)
         .expect("a new daemon incarnation starts with recovered principal capacity");
-    assert_eq!(restarted.issued_through.len(), 1);
+    assert_eq!(restarted.epochs.len(), 1);
     assert_eq!(restarted_lease.ordinal, first_lease.ordinal);
     assert_ne!(
         restarted_lease.daemon_incarnation,
         first_lease.daemon_incarnation,
     );
-    let fingerprint = OperationFingerprint::Close {
-        session_id: SessionId::from_array([0x32; SessionId::LENGTH]),
-    };
     let Err(old_daemon) = restarted.register(
         ReplayKey::new(first_principal, first_lease.ordinal),
         OperationId {
@@ -350,11 +392,7 @@ fn replay_rejects_unissued_and_old_daemon_leases_without_mutating_state() {
     let mut first_daemon = ReplayRegistry::new();
     let lease = first_daemon.issue(principal).expect("issued lease");
     let mut restarted = ReplayRegistry::new();
-    let before = (
-        restarted.epochs.len(),
-        restarted.retired_through.len(),
-        restarted.issued_through.len(),
-    );
+    let before = (restarted.epochs.len(), restarted.last_ordinal);
     let operation = OperationId { lease, sequence: 1 };
     let fingerprint = OperationFingerprint::Close {
         session_id: SessionId::from_array([3; 16]),
@@ -368,14 +406,7 @@ fn replay_rejects_unissued_and_old_daemon_leases_without_mutating_state() {
         panic!("restart rejects old lease");
     };
     assert_eq!(old.kind(), DomainErrorKind::OperationOutcomeUnknown);
-    assert_eq!(
-        before,
-        (
-            restarted.epochs.len(),
-            restarted.retired_through.len(),
-            restarted.issued_through.len(),
-        )
-    );
+    assert_eq!(before, (restarted.epochs.len(), restarted.last_ordinal,));
 
     let issued = restarted.issue(principal).expect("new daemon lease");
     let invented = OperationId {
@@ -393,10 +424,7 @@ fn replay_rejects_unissued_and_old_daemon_leases_without_mutating_state() {
         panic!("invented high lease is rejected");
     };
     assert_eq!(error.kind(), DomainErrorKind::OperationOutcomeUnknown);
-    assert_eq!(
-        restarted.issued_through[&ReplayPrincipal::from_attachment(principal)],
-        1
-    );
+    assert_eq!(restarted.last_ordinal, 1);
 }
 
 #[test]
@@ -447,8 +475,7 @@ fn lost_empty_leases_retire_boundedly_and_ordinal_exhaustion_is_explicit() {
         "fixture result",
     )));
 
-    let replay_principal = ReplayPrincipal::from_attachment(principal);
-    replay.issued_through.insert(replay_principal, u64::MAX);
+    replay.last_ordinal = u64::MAX;
     let exhausted = replay.issue(principal).expect_err("ordinal never wraps");
     assert_eq!(exhausted.kind(), DomainErrorKind::ResourceExhausted);
 }
@@ -463,8 +490,7 @@ fn read_only_session_queries_allocate_no_operation_lease_state() {
     assert!(service.list().expect("empty list").is_empty());
     let replay = service.replay.lock().expect("replay state");
     assert!(replay.epochs.is_empty());
-    assert!(replay.issued_through.is_empty());
-    assert!(replay.retired_through.is_empty());
+    assert_eq!(replay.last_ordinal, 0);
 }
 
 #[cfg(unix)]
@@ -1204,6 +1230,64 @@ fn remote_attachment_count_is_directional_and_read_only() {
     service.shutdown().expect("fixture sessions shut down");
 }
 
+#[cfg(unix)]
+#[test]
+fn close_and_duplicate_waiters_have_independent_deadlines_and_replay_the_final_result() {
+    let temporary = tempfile::tempdir().expect("close fixture");
+    let service = unix_fixture_service(
+        DeviceId::from_array([81; 32]),
+        temporary.path().into(),
+        "exec /bin/cat",
+    );
+    let principal = service.local_principal(AttachmentId::from_array([82; 16]));
+    let attachment = service
+        .prepare_attach(principal, None, true, false, None)
+        .expect("running session");
+    let id = attachment.attachment.session_id();
+    let lease = service
+        .issue_operation_lease(principal)
+        .expect("close lease");
+    let operation = OperationId { lease, sequence: 1 };
+    let (send, receive) = mpsc::channel();
+    service
+        .with_child_cleanup_blocked_for_test(id, || {
+            let caller = service.clone();
+            thread::spawn(move || {
+                for _ in 0..2 {
+                    let deadline = Instant::now() + Duration::from_millis(50);
+                    let result = caller.close_until(principal, operation, id, deadline);
+                    if send.send(result).is_err() {
+                        return;
+                    }
+                }
+            });
+            for _ in 0..2 {
+                let error = receive
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("caller finishes while cleanup is blocked")
+                    .expect_err("close is still pending");
+                assert_eq!(error.kind(), DomainErrorKind::DeadlineExceeded);
+            }
+            assert_eq!(
+                cleanup_lock(&attachment.attachment.actor.end).closes.len(),
+                1,
+                "both callers joined one admitted close"
+            );
+        })
+        .expect("hold child cleanup");
+    let completed = service
+        .close(principal, operation, id)
+        .expect("recover final result");
+    assert_eq!(completed.session_id, id);
+    assert!(service.list().expect("sessions after close").is_empty());
+    assert_eq!(
+        service
+            .close(principal, operation, id)
+            .expect("completed replay"),
+        completed
+    );
+}
+
 #[test]
 fn panicking_execution_completes_duplicate_waiters_with_outcome_unknown() {
     let service = SessionService::with_spawner(
@@ -1224,18 +1308,40 @@ fn panicking_execution_completes_duplicate_waiters_with_outcome_unknown() {
     let executor_service = service.clone();
     let executor_fingerprint = fingerprint.clone();
     let executor = thread::spawn(move || {
-        executor_service.execute_replayed(principal, operation_id, executor_fingerprint, || {
-            entered.send(()).expect("panic observer");
-            released.recv().expect("panic release");
-            panic!("deterministic mutation panic");
-        })
+        executor_service.execute_replayed(
+            principal,
+            operation_id,
+            executor_fingerprint,
+            default_deadline(),
+            || {
+                entered.send(()).expect("panic observer");
+                released
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("panic release");
+                panic!("deterministic mutation panic");
+            },
+        )
     });
     observed.recv().expect("executor entered");
+    let timed_out = service
+        .execute_replayed(
+            principal,
+            operation_id,
+            fingerprint.clone(),
+            Instant::now(),
+            || panic!("expired duplicate executed"),
+        )
+        .expect_err("duplicate uses its own deadline");
+    assert_eq!(timed_out.kind(), DomainErrorKind::DeadlineExceeded);
     let waiter_service = service.clone();
     let waiter = thread::spawn(move || {
-        waiter_service.execute_replayed(principal, operation_id, fingerprint, || {
-            panic!("duplicate closure must never run")
-        })
+        waiter_service.execute_replayed(
+            principal,
+            operation_id,
+            fingerprint,
+            default_deadline(),
+            || panic!("duplicate closure must never run"),
+        )
     });
     release.send(()).expect("release panic");
     for result in [
@@ -1266,7 +1372,7 @@ fn operation_completion_recovers_poison_and_wakes_with_a_terminal_result() {
 
     cell.complete(Err(outcome_unknown()));
     assert_eq!(
-        cell.wait()
+        cell.wait_until(default_deadline())
             .expect_err("poison recovery retains terminal unknown result")
             .kind(),
         DomainErrorKind::OperationOutcomeUnknown

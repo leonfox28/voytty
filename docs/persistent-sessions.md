@@ -175,10 +175,17 @@ Create, rename, close, and takeover replay coordination is per operation key.
 Unrelated keys execute concurrently; the same ID and semantic payload joins or
 returns its exact success/typed error after response loss, while reusing an ID
 for another payload is rejected. Before its first mutation, a logical local
-client lazily requests a lease containing the daemon's random incarnation and a
-daemon-monotonic ordinal for the same-UID principal. Readiness, status, and list
-allocate none. A restart, invented/high ordinal, retired lease, or evicted
-sequence returns `OperationOutcomeUnknown` without executing.
+client lazily requests a lease containing the daemon's random incarnation and an
+ordinal unique within that incarnation. Each retained lease is bound to its
+principal, including the authorization generation for remote devices. At most
+64 leases are retained across principals. When full, the registry retires
+completed or unused leases in per-principal order, protecting in-flight work.
+Readiness, status, and list allocate none. A restart, invented ordinal, retired
+lease, or evicted sequence returns `OperationOutcomeUnknown` without executing.
+
+Each caller waits for a replay result only until its own deadline. Once a close
+starts, session cleanup owns its completion. A caller that times out can use the
+same operation ID to recover the eventual success or failure.
 
 One ambiguous transport retry reuses the byte-identical encoded request and
 operation ID. A typed `OperationOutcomeUnknown` response is definitive: that

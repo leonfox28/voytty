@@ -54,7 +54,6 @@ use crate::terminal_driver::{TerminalEffectBroker, TerminalHistoryRead};
 
 const OPERATION_RESULTS_PER_EPOCH: usize = 128;
 const MAX_ACTIVE_OPERATION_EPOCHS: usize = 64;
-const MAX_REPLAY_PRINCIPALS: usize = 64;
 const SESSION_COMMAND_CAPACITY: usize = 16;
 const SESSION_MONITOR_INTERVAL: Duration = Duration::from_millis(10);
 const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1306,8 +1305,7 @@ impl ReplayPrincipal {
 struct ReplayRegistry {
     incarnation: DaemonIncarnation,
     epochs: BTreeMap<ReplayKey, ReplayEpochEntry>,
-    retired_through: BTreeMap<ReplayPrincipal, u64>,
-    issued_through: BTreeMap<ReplayPrincipal, u64>,
+    last_ordinal: u64,
     access_clock: u64,
 }
 
@@ -1321,8 +1319,7 @@ impl ReplayRegistry {
         Self {
             incarnation: DaemonIncarnation::from_array(random_16()),
             epochs: BTreeMap::new(),
-            retired_through: BTreeMap::new(),
-            issued_through: BTreeMap::new(),
+            last_ordinal: 0,
             access_clock: 0,
         }
     }
@@ -1332,16 +1329,10 @@ impl ReplayRegistry {
         attachment_principal: AttachmentPrincipal,
     ) -> Result<OperationLease, DaemonError> {
         let principal = ReplayPrincipal::from_attachment(attachment_principal);
-        if !self.issued_through.contains_key(&principal)
-            && self.issued_through.len() >= MAX_REPLAY_PRINCIPALS
-        {
-            return Err(resource_error("too many operation replay principals"));
-        }
+        // Never reuse an ordinal during this daemon incarnation, even after a
+        // device or authorization generation loses its last retained epoch.
         let ordinal = self
-            .issued_through
-            .get(&principal)
-            .copied()
-            .unwrap_or(0)
+            .last_ordinal
             .checked_add(1)
             .ok_or_else(|| resource_error("operation lease ordinal exhausted"))?;
         while self.epochs.len() >= MAX_ACTIVE_OPERATION_EPOCHS {
@@ -1358,7 +1349,7 @@ impl ReplayRegistry {
                 last_access,
             },
         );
-        self.issued_through.insert(principal, ordinal);
+        self.last_ordinal = ordinal;
         Ok(OperationLease {
             daemon_incarnation: self.incarnation,
             ordinal,
@@ -1372,25 +1363,11 @@ impl ReplayRegistry {
         fingerprint: OperationFingerprint,
     ) -> Result<ReplayRegistration, DaemonError> {
         // Incarnation is deliberately first: an old-daemon token must not
-        // influence this daemon's ordinal floor or allocation state.
+        // influence this daemon's allocation state.
         if operation_id.lease.daemon_incarnation != self.incarnation {
             return Err(outcome_unknown());
         }
         if operation_id.sequence == 0 || operation_id.lease.ordinal != key.lease_ordinal {
-            return Err(outcome_unknown());
-        }
-        if self
-            .retired_through
-            .get(&key.principal)
-            .is_some_and(|floor| key.lease_ordinal <= *floor)
-        {
-            return Err(outcome_unknown());
-        }
-        if self
-            .issued_through
-            .get(&key.principal)
-            .is_none_or(|issued| key.lease_ordinal > *issued)
-        {
             return Err(outcome_unknown());
         }
         let access = self.next_access();
@@ -1444,15 +1421,8 @@ impl ReplayRegistry {
         let key = candidate.map(|(key, _)| key).ok_or_else(|| {
             resource_error("operation replay registry is full of in-flight epochs")
         })?;
-        let retirement_floor = self
-            .retired_through
-            .get(&key.principal)
-            .copied()
-            .unwrap_or(0)
-            .max(key.lease_ordinal);
-        self.retired_through.insert(key.principal, retirement_floor);
         self.epochs.retain(|candidate, _| {
-            candidate.principal != key.principal || candidate.lease_ordinal > retirement_floor
+            candidate.principal != key.principal || candidate.lease_ordinal > key.lease_ordinal
         });
         Ok(())
     }
@@ -1541,16 +1511,23 @@ impl OperationCell {
         }
     }
 
-    fn wait(&self) -> MutationResult {
+    fn wait_until(&self, deadline: Instant) -> MutationResult {
         let mut result = lock(&self.result, "operation result")?;
         loop {
             if let Some(result) = result.clone() {
                 return result;
             }
-            result = self
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(deadline_error(
+                    "submitted session operation is still pending",
+                ));
+            }
+            let (next, _) = self
                 .changed
-                .wait(result)
+                .wait_timeout(result, remaining)
                 .map_err(|_| synchronization_error("operation result"))?;
+            result = next;
         }
     }
 
@@ -1616,6 +1593,15 @@ struct EndState {
     requested: Option<SessionEndReason>,
     interrupt: InterruptState,
     result: Option<Result<(), DaemonError>>,
+    closes: Vec<(OperationCompletionGuard, SessionSummary)>,
+}
+
+impl EndState {
+    fn complete_closes(&mut self, result: &Result<(), DaemonError>) {
+        for (mut completion, summary) in self.closes.drain(..) {
+            completion.complete(result.clone().map(|()| summary));
+        }
+    }
 }
 
 #[derive(Default)]
@@ -2066,12 +2052,26 @@ impl SessionActor {
     }
 
     fn begin_end(self: &Arc<Self>, reason: SessionEndReason) {
+        self.begin_end_with_close(reason, None);
+    }
+
+    fn begin_end_with_close(
+        self: &Arc<Self>,
+        reason: SessionEndReason,
+        close: Option<(OperationCompletionGuard, SessionSummary)>,
+    ) {
         let spawn_interrupt = {
             let Ok(mut end) = self.end.lock() else {
                 return;
             };
-            if end.result.is_some() {
+            if let Some(result) = &end.result {
+                if let Some((mut completion, summary)) = close {
+                    completion.complete(result.clone().map(|()| summary));
+                }
                 return;
+            }
+            if let Some(close) = close {
+                end.closes.push(close);
             }
             if end.requested.is_none() {
                 end.requested = Some(reason);
@@ -2114,6 +2114,9 @@ impl SessionActor {
 
     fn finish_interrupt(&self, result: Result<(), DaemonError>) {
         if let Ok(mut end) = self.end.lock() {
+            if result.is_err() {
+                end.complete_closes(&result);
+            }
             end.interrupt = InterruptState::Ready(result);
         }
         self.end_changed.notify_all();
@@ -2148,13 +2151,10 @@ impl SessionActor {
 
     fn finish_end(&self, result: Result<(), DaemonError>) {
         if let Ok(mut end) = self.end.lock() {
+            end.complete_closes(&result);
             end.result = Some(result);
         }
         self.end_changed.notify_all();
-    }
-
-    fn wait_finished(&self) -> Result<(), DaemonError> {
-        self.wait_finished_until(Instant::now() + DEFAULT_SHUTDOWN_TIMEOUT)
     }
 
     fn wait_finished_until(&self, deadline: Instant) -> Result<(), DaemonError> {
@@ -2253,12 +2253,12 @@ impl ActorWorkerFinalizer {
         cleanup_lock(&self.actor.commands).take();
         self.actor.driver_ownership.wait_released();
         self.actor.worker_done.store(true, Ordering::Release);
-        self.actor.finish_end(result);
         if self.actor.registry_owned.load(Ordering::Acquire)
             && let Some(registry) = self.actor.registry.upgrade()
         {
             registry.complete(self.actor.id, &self.actor);
         }
+        self.actor.finish_end(result);
         self.completed = true;
     }
 }
