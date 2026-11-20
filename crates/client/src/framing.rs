@@ -44,28 +44,47 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
 
     /// Reads one frame, retaining partial and coalesced bytes across cancellation.
     pub async fn read(&mut self) -> Result<DecodedFrame, ClientError> {
-        loop {
-            if let Some(frame) = self.queued.pop_front() {
-                return Ok(frame);
-            }
-            let mut bytes = [0_u8; 16 * 1024];
-            let length = self.reader.read(&mut bytes).await.map_err(|_| {
+        read_queued_frame(
+            &mut self.reader,
+            &mut self.decoder,
+            &mut self.queued,
+            |_| {
                 ClientError::new(
                     DomainErrorKind::TransportUnavailable,
                     "service stream read failed",
                 )
-            })?;
-            if length == 0 {
-                return Err(ClientError::new(
-                    DomainErrorKind::TransportUnavailable,
-                    "service stream closed",
-                ));
-            }
-            self.queued.extend(
-                self.decoder
-                    .feed(&bytes[..length])
-                    .map_err(protocol_error)?,
-            );
+            },
+        )
+        .await?
+        .ok_or_else(|| {
+            ClientError::new(
+                DomainErrorKind::TransportUnavailable,
+                "service stream closed",
+            )
+        })
+    }
+}
+
+/// Reads the next frame, retaining partial bytes and coalesced frames if cancelled.
+/// EOF leaves the decoder intact so the caller can validate a half-close or discard a lost transport.
+pub async fn read_queued_frame<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    decoder: &mut FrameDecoder,
+    queued: &mut VecDeque<DecodedFrame>,
+    map_io: impl Fn(std::io::Error) -> ClientError,
+) -> Result<Option<DecodedFrame>, ClientError> {
+    if let Some(frame) = queued.pop_front() {
+        return Ok(Some(frame));
+    }
+    let mut buffer = Zeroizing::new([0_u8; 16 * 1024]);
+    loop {
+        let read = reader.read(&mut *buffer).await.map_err(&map_io)?;
+        if read == 0 {
+            return Ok(None);
+        }
+        queued.extend(decoder.feed(&buffer[..read]).map_err(protocol_error)?);
+        if let Some(frame) = queued.pop_front() {
+            return Ok(Some(frame));
         }
     }
 }
@@ -90,26 +109,23 @@ async fn read_first_with_decoder<Reader: AsyncRead + Unpin>(
     reader: &mut Reader,
     mut decoder: FrameDecoder,
 ) -> Result<FirstFrame, ClientError> {
-    let mut buffer = Zeroizing::new([0_u8; 16 * 1024]);
-    loop {
-        let read = reader
-            .read(&mut *buffer)
-            .await
-            .map_err(|error| daemon_io("read Session request", error))?;
-        if read == 0 {
+    let mut queued = VecDeque::new();
+    match read_queued_frame(reader, &mut decoder, &mut queued, |e| {
+        daemon_io("read Session request", e)
+    })
+    .await?
+    {
+        Some(frame) => Ok(FirstFrame {
+            frame,
+            decoder,
+            queued,
+        }),
+        None => {
             decoder.finish().map_err(protocol_error)?;
-            return Err(ClientError::new(
+            Err(ClientError::new(
                 DomainErrorKind::Cancelled,
                 "client closed before sending a Session request",
-            ));
-        }
-        let mut frames = VecDeque::from(decoder.feed(&buffer[..read]).map_err(protocol_error)?);
-        if let Some(frame) = frames.pop_front() {
-            return Ok(FirstFrame {
-                frame,
-                decoder,
-                queued: frames,
-            });
+            ))
         }
     }
 }
