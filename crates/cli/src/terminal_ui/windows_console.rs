@@ -1,9 +1,10 @@
 // Windows console IO around the shared semantic compositor and input epochs.
+use super::*;
 use crossterm::event::{
     self, Event, KeyCode, KeyEventKind as ConsoleKeyKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 
-fn terminal_size(_: &impl AsFd) -> Result<TerminalSize, CliError> {
+pub(super) fn terminal_size(_: &impl AsFd) -> Result<TerminalSize, CliError> {
     let (columns, rows) =
         crossterm::terminal::size().map_err(|e| terminal_io("read console viewport", e))?;
     if rows == 0 || columns == 0 {
@@ -11,19 +12,19 @@ fn terminal_size(_: &impl AsFd) -> Result<TerminalSize, CliError> {
     }
     Ok(TerminalSize::new(rows, columns))
 }
-fn write_all_fd(fd: &impl AsFd, bytes: &[u8]) -> io::Result<()> {
+pub(super) fn write_all_fd(fd: &impl AsFd, bytes: &[u8]) -> io::Result<()> {
     let mut file = std::fs::File::from(fd.as_handle().try_clone_to_owned()?);
     file.write_all(bytes)
 }
 
-struct TerminalGuard {
+pub(super) struct TerminalGuard {
     output: winsafe::HSTD,
     original_output: winsafe::co::CONSOLE,
     restored: bool,
-    appearance_owned: Arc<std::sync::atomic::AtomicBool>,
+    pub(super) appearance_owned: Arc<std::sync::atomic::AtomicBool>,
 }
 impl TerminalGuard {
-    fn enter(_: &impl AsFd, _: &impl AsFd) -> Result<Self, CliError> {
+    pub(super) fn enter(_: &impl AsFd, _: &impl AsFd) -> Result<Self, CliError> {
         use winsafe::{HSTD, co};
         // GetStdHandle borrows the process's standard handle; do not close it.
         let output = HSTD::GetStdHandle(co::STD_HANDLE::OUTPUT)
@@ -52,7 +53,7 @@ impl TerminalGuard {
         }
         Ok(guard)
     }
-    fn restore(&mut self) -> Result<(), CliError> {
+    pub(super) fn restore(&mut self) -> Result<(), CliError> {
         if self.restored {
             return Ok(());
         }
@@ -82,14 +83,14 @@ impl Drop for TerminalGuard {
     }
 }
 
-enum Signal {
+pub(super) enum Signal {
     Resize(tokio::time::Interval),
     Interrupt(tokio::signal::windows::CtrlC),
     Break(tokio::signal::windows::CtrlBreak),
     Close(tokio::signal::windows::CtrlClose),
 }
 impl Signal {
-    async fn recv(&mut self) -> Option<()> {
+    pub(super) async fn recv(&mut self) -> Option<()> {
         match self {
             Self::Resize(timer) => {
                 timer.tick().await;
@@ -102,7 +103,7 @@ impl Signal {
     }
 }
 impl TerminalSignals {
-    fn install() -> Result<Self, CliError> {
+    pub(super) fn install() -> Result<Self, CliError> {
         Ok(Self {
             resize: Signal::Resize(tokio::time::interval(Duration::from_millis(100))),
             interrupt: Signal::Interrupt(
@@ -121,14 +122,14 @@ impl TerminalSignals {
     }
 }
 
-struct StdinPump {
+pub(super) struct StdinPump {
     receiver: Option<mpsc::Receiver<StdinEvent>>,
     retained: VecDeque<StdinEvent>,
     stopped: Arc<std::sync::atomic::AtomicBool>,
     handle: Option<JoinHandle<Result<Option<StdinEvent>, String>>>,
 }
 impl StdinPump {
-    fn start(_: &impl AsFd, epoch: InputEpoch) -> Result<Self, CliError> {
+    pub(super) fn start(_: &impl AsFd, epoch: InputEpoch) -> Result<Self, CliError> {
         let (sender, receiver) = mpsc::channel(STDIN_CHANNEL_CAPACITY);
         let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop = Arc::clone(&stopped);
@@ -189,13 +190,13 @@ impl StdinPump {
             handle: Some(handle),
         })
     }
-    async fn recv(&mut self) -> Option<StdinEvent> {
+    pub(super) async fn recv(&mut self) -> Option<StdinEvent> {
         if let Some(event) = self.retained.pop_front() {
             return Some(event);
         }
         self.receiver.as_mut()?.recv().await
     }
-    fn replace_after_active_fence(
+    pub(super) fn replace_after_active_fence(
         &mut self,
         input: &impl AsFd,
         epoch: &InputEpoch,
@@ -258,7 +259,7 @@ impl StdinPump {
         retained.extend(tail);
         Ok(retained)
     }
-    fn shutdown(&mut self) -> Result<(), CliError> {
+    pub(super) fn shutdown(&mut self) -> Result<(), CliError> {
         self.stop_reader().map(drop)
     }
 }
@@ -306,7 +307,9 @@ fn console_event_bytes(event: Event) -> Vec<u8> {
         }
         Event::Paste(text) => {
             // Keep delimiter-shaped clipboard text visible inside this single paste.
-            let text = text.replace("\x1b[200~", "␛[200~").replace("\x1b[201~", "␛[201~");
+            let text = text
+                .replace("\x1b[200~", "␛[200~")
+                .replace("\x1b[201~", "␛[201~");
             [PASTE_START, text.as_bytes(), PASTE_END].concat()
         }
         Event::FocusGained => b"\x1b[I".to_vec(),
@@ -377,8 +380,14 @@ mod windows_console_tests {
             let bytes = console_event_bytes(Event::Key(KeyEvent::new(code, modifiers)));
             let parsed = EnhancedKey::parse(bytes).expect("shared typed key");
             let KeyboardRoute::Forward { bytes, .. } = route_enhanced_input(
-                &parsed, TerminalModes::default(), HostKeyboard::WindowsConsole, false, &mut CopyKeyLease::default()
-            ) else { panic!("expected console input"); };
+                &parsed,
+                TerminalModes::default(),
+                HostKeyboard::WindowsConsole,
+                false,
+                &mut CopyKeyLease::default(),
+            ) else {
+                panic!("expected console input");
+            };
             assert_eq!(bytes, expected);
         }
         let released = console_event_bytes(Event::Key(KeyEvent::new_with_kind(
@@ -388,8 +397,10 @@ mod windows_console_tests {
         )));
         let parsed = EnhancedKey::parse(released).expect("release key");
         assert_eq!(parsed.kind, KeyEventKind::Release);
-        assert!(matches!(route_enhanced_input(&parsed, TerminalModes::default(), HostKeyboard::WindowsConsole, false, &mut CopyKeyLease::default()),
-            KeyboardRoute::Forward { bytes, .. } if bytes.is_empty()));
+        assert!(
+            matches!(route_enhanced_input(&parsed, TerminalModes::default(), HostKeyboard::WindowsConsole, false, &mut CopyKeyLease::default()),
+            KeyboardRoute::Forward { bytes, .. } if bytes.is_empty())
+        );
     }
 
     #[test]

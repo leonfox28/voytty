@@ -1,3 +1,4 @@
+use super::*;
 use nix::pty::openpty;
 use voytty_core::ResourceLimits;
 use voytty_daemon::bootstrap::bootstrap;
@@ -213,7 +214,10 @@ async fn queued_delta_resize_case(trigger: ResizeTrigger) {
             ui.transition_transport(&pty.slave, TerminalViewTransportState::Synchronizing)
                 .await
                 .expect("synchronization fixture operation succeeds");
-            assert_eq!(ui.current_input_epoch, epoch, "resize keeps the input reader/epoch");
+            assert_eq!(
+                ui.current_input_epoch, epoch,
+                "resize keeps the input reader/epoch"
+            );
             Some(queued)
         }
         ResizeTrigger::DeferredSnapshot => {
@@ -257,11 +261,23 @@ async fn queued_delta_resize_case(trigger: ResizeTrigger) {
         Some(next_snapshot(&mut ui).await)
     };
     if matches!(trigger, ResizeTrigger::Physical) {
-        ui.handle_event(&pty.slave, TerminalViewEvent::SyncRequired { latest_revision: replacement.as_ref().expect("resize snapshot").revision })
-            .await.expect("healthy sync marker");
-        assert!(ui.viewport.is_live(), "healthy resize must not start a replay queue");
+        ui.handle_event(
+            &pty.slave,
+            TerminalViewEvent::SyncRequired {
+                latest_revision: replacement.as_ref().expect("resize snapshot").revision,
+            },
+        )
+        .await
+        .expect("healthy sync marker");
+        assert!(
+            ui.viewport.is_live(),
+            "healthy resize must not start a replay queue"
+        );
         assert!(ui.healthy_resize);
-        ui.writer.write_input(b"DURING-RESIZE\n".to_vec()).await.expect("input before ACK");
+        ui.writer
+            .write_input(b"DURING-RESIZE\n".to_vec())
+            .await
+            .expect("input before ACK");
     }
     if let Some(queued) = queued {
         ui.handle_event(&pty.slave, TerminalViewEvent::Delta(queued))

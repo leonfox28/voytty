@@ -1,0 +1,3287 @@
+mod upload_tests;
+use std::fs;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc as std_mpsc;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use tokio::io::DuplexStream;
+use tokio::sync::{Notify, mpsc as tokio_mpsc};
+use voytty_core::terminal::TerminalSize;
+use voytty_core::{
+    AuthorizationSnapshot, AuthorizationStatus, DeviceDisplayName, DeviceSummary, OperationLease,
+};
+use voytty_platform::pty::{ExplicitPtyCommand, PtyHost, PtySize};
+use voytty_platform::user_state::UserPaths;
+
+use super::attachment_io::{
+    finish_history_task, process_attachment_frame, write_host_effect, write_lifecycle_event,
+};
+use super::*;
+use crate::bootstrap::bootstrap;
+use crate::config::{ValidatedInfrastructure, validate_setup_input};
+use crate::device_directory::DeviceDirectory;
+use crate::service::{DaemonService, DeviceLiveObservation, DeviceManagement, RemoteDeviceAccess};
+use crate::store::{
+    DeviceAuthorization, StateStore, StoreActor, StoreHandle, default_store_deadline,
+};
+
+fn device(byte: u8) -> DeviceId {
+    DeviceId::from_array([byte; 32])
+}
+
+#[tokio::test]
+async fn cancelling_attachment_owner_reclaims_both_stream_tasks() {
+    let (reader_alive, reader_dropped) = oneshot::channel::<()>();
+    let (writer_alive, writer_dropped) = oneshot::channel::<()>();
+    let (reader_ready, ready_reader) = oneshot::channel();
+    let (writer_ready, ready_writer) = oneshot::channel();
+    let reader = tokio::spawn(async move {
+        let _lifetime = reader_alive;
+        let _ = reader_ready.send(());
+        std::future::pending::<Result<AttachmentTaskEnd, DaemonError>>().await
+    });
+    let writer = tokio::spawn(async move {
+        let _lifetime = writer_alive;
+        let _ = writer_ready.send(());
+        std::future::pending::<Result<AttachmentTaskEnd, DaemonError>>().await
+    });
+    ready_reader.await.expect("reader started");
+    ready_writer.await.expect("writer started");
+    let cleanup = (reader.abort_handle(), writer.abort_handle());
+    let mut owner = Box::pin(finish_attachment_tasks(
+        reader,
+        writer,
+        Duration::from_secs(5),
+    ));
+    assert!(futures_util::poll!(&mut owner).is_pending());
+    // A cancelled broker/local service drops this future. Its streams and
+    // attachment ownership must not survive in detached Tokio tasks.
+    drop(owner);
+    let released = tokio::time::timeout(Duration::from_millis(100), async {
+        let (reader, writer) = tokio::join!(reader_dropped, writer_dropped);
+        assert!(reader.is_err() && writer.is_err());
+    })
+    .await;
+    cleanup.0.abort();
+    cleanup.1.abort();
+    assert!(
+        released.is_ok(),
+        "cancelled attachment leaked its reader/writer owners"
+    );
+}
+
+#[tokio::test]
+async fn explicit_detach_completion_joins_the_retired_writer() {
+    let (writer_alive, mut writer_dropped) = oneshot::channel::<()>();
+    let (writer_ready, ready_writer) = oneshot::channel();
+    let writer = tokio::spawn(async move {
+        let _lifetime = writer_alive;
+        let _ = writer_ready.send(());
+        std::future::pending::<Result<AttachmentTaskEnd, DaemonError>>().await
+    });
+    ready_writer.await.expect("writer started");
+    let reader = tokio::spawn(async { Ok(AttachmentTaskEnd::Explicit) });
+    assert_eq!(
+        finish_attachment_tasks(reader, writer, Duration::from_secs(5))
+            .await
+            .expect("explicit detach"),
+        AttachmentTaskEnd::Explicit
+    );
+    assert!(
+        matches!(
+            writer_dropped.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ),
+        "detach returned before its stream writer was retired"
+    );
+}
+
+fn generation(value: u64) -> AuthGeneration {
+    AuthGeneration::new(value).expect("test generation is in range")
+}
+
+fn authorization_row(
+    device_id: DeviceId,
+    status: AuthorizationStatus,
+    generation: AuthGeneration,
+) -> DeviceAuthorization {
+    DeviceAuthorization {
+        device_id,
+        display_name: DeviceDisplayName::new("remote fixture").expect("display name"),
+        status,
+        generation,
+        paired_at_unix: 1,
+        revoked_at_unix: (status == AuthorizationStatus::Revoked).then_some(2),
+        last_seen_at_unix: None,
+    }
+}
+
+fn authorized_registry(remote: DeviceId, accepted: AuthGeneration) -> AuthorizationRegistry {
+    let authorization = AuthorizationRegistry::new();
+    authorization
+        .preload(vec![authorization_row(
+            remote,
+            AuthorizationStatus::Authorized,
+            accepted,
+        )])
+        .expect("preload remote authorization");
+    authorization
+}
+
+const MATRIX_REMOTE: DeviceId = DeviceId::from_array([0x81; DeviceId::LENGTH]);
+const MATRIX_OTHER: DeviceId = DeviceId::from_array([0x82; DeviceId::LENGTH]);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MatrixCloseEvidence {
+    device_id: DeviceId,
+    durable: AuthorizationSnapshot,
+    memory: AuthorizationSnapshot,
+    attachments_before_detach: usize,
+    sessions_before_detach: usize,
+}
+
+struct MatrixRemoteAccess {
+    store: StoreHandle,
+    authorization: AuthorizationRegistry,
+    sessions: SessionService,
+    close_calls: AtomicUsize,
+    evidence: Mutex<Vec<MatrixCloseEvidence>>,
+    close_entered: Notify,
+    release_first_close: Notify,
+}
+
+impl MatrixRemoteAccess {
+    fn new(
+        store: StoreHandle,
+        authorization: AuthorizationRegistry,
+        sessions: SessionService,
+    ) -> Self {
+        Self {
+            store,
+            authorization,
+            sessions,
+            close_calls: AtomicUsize::new(0),
+            evidence: Mutex::new(Vec::new()),
+            close_entered: Notify::new(),
+            release_first_close: Notify::new(),
+        }
+    }
+
+    async fn wait_for_close(&self, index: usize) -> MatrixCloseEvidence {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let notified = self.close_entered.notified();
+                if let Some(evidence) = test_lock(&self.evidence).get(index).copied() {
+                    return evidence;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .expect("real revoke reached the fake close owner")
+    }
+
+    fn release_first_close(&self) {
+        self.release_first_close.notify_one();
+    }
+
+    fn close_count(&self) -> usize {
+        self.close_calls.load(Ordering::Acquire)
+    }
+}
+
+impl RemoteDeviceAccess for MatrixRemoteAccess {
+    fn observe<'a>(
+        &'a self,
+        _device_id: DeviceId,
+        _deadline: Instant,
+    ) -> Pin<Box<dyn Future<Output = Result<DeviceLiveObservation, DaemonError>> + Send + 'a>> {
+        Box::pin(async { Ok(DeviceLiveObservation::default()) })
+    }
+
+    fn close_remote<'a>(
+        &'a self,
+        device_id: DeviceId,
+        deadline: Instant,
+    ) -> Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + 'a>> {
+        Box::pin(async move {
+            let store = self.store.clone();
+            let authorization = self.authorization.clone();
+            let sessions = self.sessions.clone();
+            let evidence = tokio::task::spawn_blocking(move || {
+                Ok::<_, DaemonError>(MatrixCloseEvidence {
+                    device_id,
+                    durable: store.authorization_snapshot(device_id, deadline)?,
+                    memory: authorization.snapshot(device_id)?,
+                    attachments_before_detach: sessions
+                        .remote_attachment_count_until(device_id, deadline)?,
+                    sessions_before_detach: sessions.list()?.len(),
+                })
+            })
+            .await
+            .map_err(|error| {
+                DaemonError::new(
+                    DomainErrorKind::Cancelled,
+                    format!("matrix close observer ended unexpectedly: {error}"),
+                )
+            })??;
+            let call_index = self.close_calls.fetch_add(1, Ordering::AcqRel);
+            test_lock(&self.evidence).push(evidence);
+            self.close_entered.notify_waiters();
+            if call_index == 0 {
+                tokio::time::timeout_at(
+                    tokio::time::Instant::from_std(deadline),
+                    self.release_first_close.notified(),
+                )
+                .await
+                .map_err(|_| {
+                    DaemonError::new(
+                        DomainErrorKind::DeadlineExceeded,
+                        "matrix close barrier exceeded the revoke deadline",
+                    )
+                })?;
+            }
+            Ok(())
+        })
+    }
+}
+
+struct DirectRevokeHarness {
+    _temporary: tempfile::TempDir,
+    paths: UserPaths,
+    actor: StoreActor,
+    store: StoreHandle,
+    authorization: AuthorizationRegistry,
+    service: DaemonService,
+    access: Arc<MatrixRemoteAccess>,
+    writer_polled: tokio_mpsc::UnboundedReceiver<DeviceId>,
+}
+
+impl DirectRevokeHarness {
+    fn start(sessions: SessionService) -> Self {
+        let temporary = tempfile::tempdir().expect("temporary direct-revoke fixture");
+        let home = temporary.path().join("home");
+        fs::create_dir(&home).expect("direct-revoke fixture home");
+        let paths = UserPaths::for_test(
+            nix::unistd::Uid::effective().as_raw(),
+            home.clone(),
+            home.join(".voytty"),
+            temporary.path().join("run"),
+        );
+        let requested = validate_setup_input("matrix-host", ValidatedInfrastructure::OfficialN0)
+            .expect("valid direct-revoke setup");
+        let setup = bootstrap(&paths, &requested).expect("direct-revoke bootstrap");
+        let mut state = StateStore::open(&paths).expect("direct-revoke state store");
+        state
+            .authorize_device(MATRIX_REMOTE, "matrix remote", 10)
+            .expect("authorize matrix remote");
+        state
+            .authorize_device(MATRIX_OTHER, "matrix other", 11)
+            .expect("authorize unaffected remote");
+        let rows = state
+            .list_authorizations()
+            .expect("preload direct-revoke authorizations");
+        let actor = StoreActor::start(state).expect("direct-revoke StoreActor");
+        let store = actor.handle();
+        let authorization = AuthorizationRegistry::new();
+        authorization
+            .preload(rows)
+            .expect("preload direct-revoke registry");
+        let directory = DeviceDirectory::new(store.clone());
+        let access = Arc::new(MatrixRemoteAccess::new(
+            store.clone(),
+            authorization.clone(),
+            sessions.clone(),
+        ));
+        let remote_access: Arc<dyn RemoteDeviceAccess> = access.clone();
+        let (writer_polled_tx, writer_polled) = tokio_mpsc::unbounded_channel();
+        let management = DeviceManagement::new(
+            store.clone(),
+            directory,
+            authorization.clone(),
+            remote_access,
+        )
+        .with_revoke_guard_after_first_poll_for_test(writer_polled_tx);
+        let service =
+            DaemonService::with_sessions(setup, 123, sessions).with_device_management(management);
+        Self {
+            _temporary: temporary,
+            paths,
+            actor,
+            store,
+            authorization,
+            service,
+            access,
+            writer_polled,
+        }
+    }
+
+    async fn wait_for_writer(&mut self, device_id: DeviceId) {
+        let observed = tokio::time::timeout(Duration::from_secs(2), self.writer_polled.recv())
+            .await
+            .expect("revoke writer reached its first fair-lock poll");
+        assert_eq!(
+            observed,
+            Some(device_id),
+            "revoke writer notification follows its first real lock poll",
+        );
+    }
+
+    fn spawn_revoke(
+        &self,
+        request_id: u64,
+        device_id: DeviceId,
+    ) -> tokio::task::JoinHandle<DecodedFrame> {
+        let frame = decoded_message(
+            WireKind::LocalDeviceRevokeRequest,
+            request_id,
+            &v2::LocalDeviceRevokeRequest {
+                device_id: Some(device_id.into()),
+            },
+        );
+        let service = self.service.clone();
+        tokio::spawn(async move {
+            let reply = service
+                .dispatch_until(frame, Instant::now() + Duration::from_secs(10))
+                .await;
+            decode_one(&reply.bytes)
+        })
+    }
+
+    fn finish(self, sessions: &SessionService) -> AuthorizationSnapshot {
+        let paths = self.paths.clone();
+        sessions
+            .shutdown()
+            .expect("matrix Session owners shut down");
+        self.actor.shutdown();
+        StateStore::open(&paths)
+            .expect("reopen durable matrix state")
+            .authorization_snapshot(MATRIX_REMOTE)
+            .expect("read durable matrix revoke after StoreActor restart")
+    }
+}
+
+fn test_lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn empty_service(own: DeviceId) -> SessionService {
+    SessionService::with_spawner(own, ResourceLimits::default(), |_size, _cwd| {
+        panic!("empty Session wire tests must not spawn a PTY")
+    })
+}
+
+fn remote_context(
+    own: DeviceId,
+    remote: DeviceId,
+    accepted: AuthGeneration,
+    authorization: AuthorizationRegistry,
+) -> SessionRequestContext {
+    SessionRequestContext::remote(own, remote, accepted, authorization)
+        .expect("valid remote request context")
+}
+
+async fn require_first_poll_pending(
+    operation: &'static str,
+    expected_device: DeviceId,
+    mut observation: tokio_mpsc::UnboundedReceiver<(DeviceId, bool)>,
+) {
+    let (device_id, pending) = tokio::time::timeout(Duration::from_secs(2), observation.recv())
+        .await
+        .unwrap_or_else(|_| panic!("{operation} did not reach its first lock poll"))
+        .unwrap_or_else(|| panic!("{operation} first-poll observer was dropped"));
+    assert_eq!(
+        device_id, expected_device,
+        "{operation} observed the wrong authorization owner",
+    );
+    assert!(
+        pending,
+        "{operation} submitted after the revoke writer must wait behind it",
+    );
+}
+
+struct StalledFlushWriter;
+
+impl AsyncWrite for StalledFlushWriter {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::task::Poll::Ready(Ok(bytes.len()))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Pending
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+fn remote_target(device_id: DeviceId) -> v2::TargetSelector {
+    v2::TargetSelector {
+        target: Some(v2::target_selector::Target::Device(device_id.into())),
+    }
+}
+
+fn decode_one(bytes: &[u8]) -> DecodedFrame {
+    let mut decoder = FrameDecoder::new();
+    let mut frames = decoder.feed(bytes).expect("decode response frame");
+    decoder.finish().expect("complete response frame");
+    assert_eq!(frames.len(), 1, "one stream response frame is expected");
+    frames.remove(0)
+}
+
+fn decoded_message<Message: prost::Message>(
+    kind: WireKind,
+    request_id: u64,
+    message: &Message,
+) -> DecodedFrame {
+    let bytes =
+        encode_message(kind, request_id, 0, message).expect("encode bounded matrix request");
+    decode_one(&bytes)
+}
+
+fn service_error_kind(bytes: &[u8]) -> DomainErrorKind {
+    let frame = decode_one(bytes);
+    let error: v2::ServiceError = frame
+        .decode_message(WireKind::ServiceErrorResponse)
+        .expect("typed service error");
+    DomainErrorKind::from_code(&error.code).expect("stable domain error code")
+}
+
+struct TestRemotePeer {
+    stream: DuplexStream,
+    decoder: FrameDecoder,
+    queued: VecDeque<DecodedFrame>,
+}
+
+impl TestRemotePeer {
+    fn new(stream: DuplexStream) -> Self {
+        Self {
+            stream,
+            decoder: FrameDecoder::new(),
+            queued: VecDeque::new(),
+        }
+    }
+
+    async fn send<Message: prost::Message>(
+        &mut self,
+        kind: WireKind,
+        request_id: u64,
+        message: &Message,
+    ) {
+        let bytes = encode_message(kind, request_id, 0, message)
+            .expect("bounded remote duplex fixture frame");
+        self.stream
+            .write_all(&bytes)
+            .await
+            .expect("write remote duplex fixture frame");
+        self.stream
+            .flush()
+            .await
+            .expect("flush remote duplex fixture frame");
+    }
+
+    async fn next(&mut self) -> DecodedFrame {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            if let Some(frame) = self.queued.pop_front() {
+                return frame;
+            }
+            let mut buffer = [0_u8; 16 * 1024];
+            loop {
+                let read = self
+                    .stream
+                    .read(&mut buffer)
+                    .await
+                    .expect("read remote duplex fixture frame");
+                assert_ne!(read, 0, "remote duplex stream closed before its frame");
+                self.queued.extend(
+                    self.decoder
+                        .feed(&buffer[..read])
+                        .expect("decode remote duplex fixture frame"),
+                );
+                if let Some(frame) = self.queued.pop_front() {
+                    return frame;
+                }
+            }
+        })
+        .await
+        .expect("remote duplex fixture frame deadline")
+    }
+
+    /// Returns the next frame within `wait`, or None if none arrived.
+    async fn try_next(&mut self, wait: Duration) -> Option<DecodedFrame> {
+        if let Some(frame) = self.queued.pop_front() {
+            return Some(frame);
+        }
+        tokio::time::timeout(wait, async {
+            let mut buffer = [0_u8; 16 * 1024];
+            loop {
+                // Cancel-safe: an unfinished read consumed no bytes.
+                let read = self
+                    .stream
+                    .read(&mut buffer)
+                    .await
+                    .expect("read remote duplex fixture frame");
+                assert_ne!(read, 0, "remote duplex stream closed before its frame");
+                self.queued.extend(
+                    self.decoder
+                        .feed(&buffer[..read])
+                        .expect("decode remote duplex fixture frame"),
+                );
+                if let Some(frame) = self.queued.pop_front() {
+                    return frame;
+                }
+            }
+        })
+        .await
+        .ok()
+    }
+}
+
+async fn start_remote_attachment(
+    server: SessionWireServer,
+    context: SessionRequestContext,
+    request: v2::TerminalAttachRequest,
+) -> (
+    TestRemotePeer,
+    tokio::task::JoinHandle<Result<(), DaemonError>>,
+) {
+    let (peer, service_stream) = tokio::io::duplex(1024 * 1024);
+    let task = tokio::spawn(async move {
+        server
+            .handle_remote_stream(
+                service_stream,
+                context,
+                SessionWireLimits::default(),
+                Instant::now() + Duration::from_secs(2),
+            )
+            .await
+    });
+    let mut peer = TestRemotePeer::new(peer);
+    peer.send(WireKind::TerminalAttachRequest, 1, &request)
+        .await;
+    (peer, task)
+}
+
+fn remote_attach_request(
+    own: DeviceId,
+    session_id: SessionId,
+    view_id: ResumeViewId,
+    known_revision: Option<Revision>,
+) -> v2::TerminalAttachRequest {
+    v2::TerminalAttachRequest {
+        accept_zlib_frames: false,
+        acknowledge_surface_frames: false,
+        base_colors: Some(voytty_core::terminal::TerminalColorProfile::default().into()),
+
+        target: Some(remote_target(own)),
+        session_id: Some(session_id.into()),
+        takeover: false,
+        session_name: String::new(),
+        create_main: false,
+        viewport: None,
+        resume_view_id: Some(view_id.into()),
+        known_revision: known_revision.map(Revision::get),
+    }
+}
+
+async fn acknowledge_and_observe_semantic_state(
+    peer: &mut TestRemotePeer,
+    attachment_id: AttachmentId,
+    revision: Revision,
+) -> Revision {
+    peer.send(
+        WireKind::TerminalSnapshotApplied,
+        2,
+        &v2::TerminalSnapshotApplied {
+            attachment_id: Some(attachment_id.into()),
+            revision: revision.get(),
+        },
+    )
+    .await;
+    let mut latest_revision = revision;
+    let mut pending_resync = None;
+    let mut next_request_id = 3;
+    let mut probe_request_id = next_request_id;
+    next_request_id += 1;
+    send_history_probe(peer, attachment_id, probe_request_id, latest_revision).await;
+    loop {
+        let observed = peer.next().await;
+        match observed.kind {
+            WireKind::TerminalSyncRequired => {
+                let required: v2::TerminalSyncRequired = observed
+                    .decode_message(WireKind::TerminalSyncRequired)
+                    .expect("decode semantic resynchronization marker");
+                let required_attachment: AttachmentId = required
+                    .attachment_id
+                    .expect("resynchronization marker carries an attachment ID")
+                    .try_into()
+                    .expect("resynchronization attachment ID is valid");
+                assert_eq!(required_attachment, attachment_id);
+                assert!(pending_resync.replace(required.latest_revision).is_none());
+            }
+            WireKind::TerminalSemanticSnapshot => {
+                let snapshot: v2::TerminalSemanticSnapshot = observed
+                    .decode_message(WireKind::TerminalSemanticSnapshot)
+                    .expect("decode semantic resynchronization snapshot");
+                let (_, snapshot_attachment, snapshot) =
+                    voytty_proto::terminal_surface_snapshot_from_message(snapshot)
+                        .expect("validate semantic resynchronization snapshot");
+                assert_eq!(snapshot_attachment, attachment_id);
+                assert_eq!(
+                    pending_resync.take(),
+                    Some(snapshot.revision.get()),
+                    "a semantic replacement snapshot follows its exact marker"
+                );
+                latest_revision = snapshot.revision;
+                let acknowledgement_request_id = next_request_id;
+                next_request_id += 1;
+                peer.send(
+                    WireKind::TerminalSnapshotApplied,
+                    acknowledgement_request_id,
+                    &v2::TerminalSnapshotApplied {
+                        attachment_id: Some(attachment_id.into()),
+                        revision: latest_revision.get(),
+                    },
+                )
+                .await;
+                probe_request_id = next_request_id;
+                next_request_id += 1;
+                send_history_probe(peer, attachment_id, probe_request_id, latest_revision).await;
+            }
+            WireKind::TerminalSemanticDelta => {
+                assert_eq!(observed.request_id, 0);
+                let delta: v2::TerminalSemanticDelta = observed
+                    .decode_message(WireKind::TerminalSemanticDelta)
+                    .expect("decode live delta preceding the activation barrier");
+                let delta_attachment: AttachmentId = delta
+                    .attachment_id
+                    .expect("live activation delta carries an attachment ID")
+                    .try_into()
+                    .expect("live activation delta attachment ID is valid");
+                assert_eq!(delta_attachment, attachment_id);
+                assert_eq!(delta.from_revision, latest_revision.get());
+                assert!(delta.to_revision > delta.from_revision);
+                latest_revision = Revision::new(delta.to_revision);
+            }
+            WireKind::TerminalSemanticHistoryWindowFrame => {
+                if observed.request_id == probe_request_id {
+                    let frame: v2::TerminalSemanticHistoryWindowFrame = observed
+                        .decode_message(WireKind::TerminalSemanticHistoryWindowFrame)
+                        .expect("decode semantic active-state observation");
+                    let frame_attachment: AttachmentId = frame
+                        .attachment_id
+                        .expect("semantic observation carries an attachment ID")
+                        .try_into()
+                        .expect("semantic observation attachment ID is valid");
+                    assert_eq!(frame_attachment, attachment_id);
+                    assert!(pending_resync.is_none());
+                    return latest_revision;
+                }
+            }
+            WireKind::ServiceErrorResponse => {
+                let request_id = observed.request_id;
+                let error: v2::ServiceError = observed
+                    .decode_message(WireKind::ServiceErrorResponse)
+                    .expect("decode semantic observation error");
+                let kind = DomainErrorKind::from_code(&error.code)
+                    .expect("stable semantic observation error");
+                assert_eq!(kind, DomainErrorKind::NotSynchronized);
+                assert!(request_id <= probe_request_id);
+            }
+            kind => panic!("unexpected semantic activation frame: {kind:?}"),
+        }
+    }
+}
+
+async fn send_history_probe(
+    peer: &mut TestRemotePeer,
+    attachment_id: AttachmentId,
+    request_id: u64,
+    revision: Revision,
+) {
+    peer.send(
+        WireKind::TerminalHistoryWindowRequest,
+        request_id,
+        &v2::TerminalHistoryWindowRequest {
+            attachment_id: Some(attachment_id.into()),
+            anchor: Some(v2::TerminalHistoryWindowAnchor {
+                epoch: 0,
+                revision: revision.get(),
+                max_offset_from_bottom: 0,
+                viewport_rows: 24,
+                viewport_columns: 80,
+            }),
+            target_offset_from_bottom: 0,
+            older_margin_rows: 0,
+            newer_margin_rows: 0,
+        },
+    )
+    .await;
+}
+
+fn unix_wire_service(own: DeviceId, working_directory: PathBuf) -> SessionService {
+    let cat = [Path::new("/bin/cat"), Path::new("/usr/bin/cat")]
+        .into_iter()
+        .find(|path| path.is_file())
+        .expect("POSIX cat fixture")
+        .to_path_buf();
+    SessionService::with_spawner(own, ResourceLimits::default(), move |size, requested| {
+        let cwd = requested.unwrap_or(&working_directory).to_path_buf();
+        let session = PtyHost::new()
+            .spawn(
+                ExplicitPtyCommand::new(&cat, &cwd),
+                PtySize::new(size.rows, size.columns),
+            )
+            .map_err(|error| {
+                DaemonError::new(DomainErrorKind::StoreUnavailable, error.to_string())
+            })?;
+        Ok((session, cwd))
+    })
+}
+
+fn unix_delayed_output_wire_service(
+    own: DeviceId,
+    working_directory: PathBuf,
+    output_marker: PathBuf,
+) -> SessionService {
+    let shell = Path::new("/bin/sh").to_path_buf();
+    let cat = [Path::new("/bin/cat"), Path::new("/usr/bin/cat")]
+        .into_iter()
+        .find(|path| path.is_file())
+        .expect("POSIX cat fixture")
+        .to_path_buf();
+    SessionService::with_spawner(own, ResourceLimits::default(), move |size, requested| {
+        let cwd = requested.unwrap_or(&working_directory).to_path_buf();
+        let session = PtyHost::new()
+            .spawn(
+                ExplicitPtyCommand::new(&shell, &cwd)
+                    .arg("-c")
+                    .arg(
+                        "while [ ! -f \"$1\" ]; do sleep 0.01; done; printf 'resume-delta\\r\\n'; exec \"$2\"",
+                    )
+                    .arg("voytty-checkpoint-fixture")
+                    .arg(&output_marker)
+                    .arg(&cat),
+                PtySize::new(size.rows, size.columns),
+            )
+            .map_err(|error| {
+                DaemonError::new(DomainErrorKind::StoreUnavailable, error.to_string())
+            })?;
+        Ok((session, cwd))
+    })
+}
+
+fn activate_attachment(prepared: &PreparedAttachment) {
+    let replacement = prepared
+        .attachment
+        .snapshot_applied(prepared.snapshot.revision)
+        .expect("activate matrix attachment");
+    assert!(
+        replacement.is_none(),
+        "exact matrix snapshot acknowledgement cannot require replacement",
+    );
+}
+
+fn session_summary(sessions: &SessionService, session_id: SessionId) -> SessionSummary {
+    sessions
+        .list()
+        .expect("list matrix Sessions")
+        .into_iter()
+        .find(|summary| summary.session_id == session_id)
+        .expect("matrix Session remains present")
+}
+
+async fn issue_remote_lease(
+    server: SessionWireServer,
+    context: SessionRequestContext,
+    own: DeviceId,
+    request_id: u64,
+) -> OperationLease {
+    let request = encode_message(
+        WireKind::SessionOperationLeaseRequest,
+        request_id,
+        0,
+        &v2::SessionOperationLeaseRequest {
+            target: Some(remote_target(own)),
+        },
+    )
+    .expect("encode matrix remote lease request");
+    let (result, response) = run_remote_bytes(server, context, request).await;
+    result.expect("matrix remote lease stream completes");
+    let frame = decode_one(&response);
+    assert_eq!(frame.request_id, request_id);
+    assert_eq!(frame.kind, WireKind::SessionOperationLeaseResponse);
+    let response: v2::SessionOperationLeaseResponse = frame
+        .decode_message(WireKind::SessionOperationLeaseResponse)
+        .expect("decode matrix operation lease");
+    response
+        .lease
+        .expect("matrix host issued an operation lease")
+        .try_into()
+        .expect("valid matrix operation lease")
+}
+
+async fn run_remote_bytes(
+    server: SessionWireServer,
+    context: SessionRequestContext,
+    request: Vec<u8>,
+) -> (Result<(), DaemonError>, Vec<u8>) {
+    let (mut client, service_stream) = tokio::io::duplex(1024 * 1024);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let task = tokio::spawn(async move {
+        server
+            .handle_remote_stream(
+                service_stream,
+                context,
+                SessionWireLimits::default(),
+                deadline,
+            )
+            .await
+    });
+    client
+        .write_all(&request)
+        .await
+        .expect("write remote request");
+    client.shutdown().await.expect("finish remote request");
+    let mut response = Vec::new();
+    client
+        .read_to_end(&mut response)
+        .await
+        .expect("read remote response");
+    (
+        task.await
+            .expect("remote Session stream task did not panic"),
+        response,
+    )
+}
+
+#[tokio::test]
+async fn generic_first_read_retains_leftovers_and_strict_unary_rejects_them() {
+    let first = encode_message(
+        WireKind::SessionListRequest,
+        41,
+        0,
+        &v2::SessionListRequest { target: None },
+    )
+    .expect("encode first frame");
+    let trailing = encode_message(
+        WireKind::SessionListRequest,
+        42,
+        0,
+        &v2::SessionListRequest { target: None },
+    )
+    .expect("encode trailing frame");
+    let (mut client, mut server) = tokio::io::duplex(4 * 1024);
+    let mut request = first;
+    request.extend_from_slice(&trailing);
+    client.write_all(&request).await.expect("write both frames");
+    client.shutdown().await.expect("finish duplex request");
+
+    let first = read_first(&mut server).await.expect("read first frame");
+    assert_eq!(first.frame.request_id, 41);
+    assert_eq!(first.queued.len(), 1);
+    let error = finish_unary(&mut server, first)
+        .await
+        .expect_err("a second frame must not pass strict unary EOF");
+    assert_eq!(error.kind(), DomainErrorKind::MalformedFrame);
+}
+
+#[test]
+fn remote_context_rejects_self_and_zero_generation() {
+    let own = device(0x0f);
+    let authorization = AuthorizationRegistry::new();
+    let self_error =
+        match SessionRequestContext::remote(own, own, generation(1), authorization.clone()) {
+            Ok(_) => panic!("the host identity cannot become a remote principal"),
+            Err(error) => error,
+        };
+    assert_eq!(self_error.kind(), DomainErrorKind::Unauthorized);
+
+    let zero_error =
+        match SessionRequestContext::remote(own, device(0x10), AuthGeneration::ZERO, authorization)
+        {
+            Ok(_) => panic!("a remote principal requires a non-zero accepted generation"),
+            Err(error) => error,
+        };
+    assert_eq!(zero_error.kind(), DomainErrorKind::Unauthorized);
+}
+
+#[tokio::test]
+async fn host_clipboard_effect_uses_zero_request_id_and_typed_kind() {
+    let attachment_id = AttachmentId::from_array([0x5a; AttachmentId::LENGTH]);
+    let write = voytty_core::terminal::TerminalClipboardWrite::new("wire clipboard".to_owned())
+        .expect("valid wire clipboard fixture");
+    let effect = voytty_core::terminal::TerminalHostEffect::ClipboardWrite(write);
+    let (mut reader, mut writer) = tokio::io::duplex(1024 * 1024);
+    write_host_effect(
+        &mut writer,
+        attachment_id,
+        effect,
+        Instant::now() + Duration::from_secs(1),
+    )
+    .await
+    .expect("write typed host effect");
+
+    let mut bytes = vec![0; 1024];
+    let count = tokio::time::timeout(Duration::from_secs(1), reader.read(&mut bytes))
+        .await
+        .expect("effect read deadline")
+        .expect("effect bytes");
+    let frame = decode_one(&bytes[..count]);
+    assert_eq!(frame.kind, WireKind::TerminalClipboardWrite);
+    assert_eq!(frame.request_id, 0);
+    assert_eq!(frame.deadline_ms, 0);
+    let message: v2::TerminalClipboardWrite = frame
+        .decode_message(WireKind::TerminalClipboardWrite)
+        .expect("decode host clipboard effect");
+    let (actual_id, write) = voytty_proto::terminal_clipboard_write_from_message(message)
+        .expect("validate host clipboard effect");
+    assert_eq!(actual_id, attachment_id);
+    assert_eq!(write.as_str(), "wire clipboard");
+}
+
+#[tokio::test]
+async fn pending_marked_history_leaves_input_and_snapshot_ack_unblocked() {
+    let temp = tempfile::tempdir().expect("wire batch fixture");
+    let cwd = temp.path().to_path_buf();
+    let initialized = cwd.join("initialized");
+    let own = device(0x97);
+    let sessions = SessionService::with_spawner(own, ResourceLimits::default(), move |size, _| {
+        let pty = PtyHost::new().spawn(
+            ExplicitPtyCommand::new("/bin/sh", &cwd).arg("-c").arg(
+                "stty -echo; : > initialized; read -r begin; printf '\\033[?2026h'; read -r end; printf 'INPUT_RELEASE\\033[?2026l'; read -r finish"
+            ), PtySize::new(size.rows, size.columns),
+        ).map_err(|error| DaemonError::new(DomainErrorKind::StoreUnavailable, error.to_string()))?;
+        Ok((pty, cwd.clone()))
+    });
+    let view = AttachmentId::from_array([0x97; 16]);
+    let principal = sessions.local_principal(view);
+    let lease = sessions.issue_operation_lease(principal).expect("lease");
+    let summary = sessions
+        .create(
+            principal,
+            voytty_core::OperationId { lease, sequence: 1 },
+            voytty_core::SessionName::new("marked-history").expect("name"),
+            None,
+            None,
+        )
+        .expect("create");
+    let prepared = sessions
+        .prepare_attach(
+            principal,
+            Some(voytty_core::SessionSelector::Id(summary.session_id)),
+            false,
+            false,
+            None,
+        )
+        .expect("attach");
+    activate_attachment(&prepared);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !initialized.is_file() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("PTY initialized without echo");
+    let attachment = &prepared.attachment;
+    let mut revisions = attachment.revision_watch().expect("watch");
+    revisions.borrow_and_update();
+    attachment.write_input(b"begin\n").expect("start batch");
+    tokio::time::timeout(Duration::from_secs(2), revisions.changed())
+        .await
+        .expect("begin published")
+        .expect("watch live");
+    // A valid snapshot can be ACKed while history is waiting for the marked batch.
+    let snapshot = attachment
+        .sync_latest(prepared.snapshot.revision)
+        .expect("replacement");
+    let metrics = snapshot.surface.scroll_metrics.expect("main metrics");
+    let request = v2::TerminalHistoryWindowRequest {
+        attachment_id: Some(attachment.attachment_id().into()),
+        anchor: Some(v2::TerminalHistoryWindowAnchor {
+            epoch: metrics.epoch.get(),
+            revision: snapshot.revision.get(),
+            max_offset_from_bottom: metrics.max_offset_from_bottom,
+            viewport_rows: u32::from(snapshot.surface.size.rows),
+            viewport_columns: u32::from(snapshot.surface.size.columns),
+        }),
+        target_offset_from_bottom: 0,
+        older_margin_rows: 0,
+        newer_margin_rows: 0,
+    };
+    let query = terminal_history_window_query(&request).expect("history query");
+    let server = SessionWireServer::new(sessions.clone());
+    let context = SessionRequestContext::local(view);
+    let (outbound, mut responses) = mpsc::channel(8);
+    let mut reads = JoinSet::new();
+    let limits = SessionWireLimits::default();
+    process_attachment_frame(
+        decoded_message(WireKind::TerminalHistoryWindowRequest, 10, &request),
+        &server,
+        attachment,
+        &context,
+        &outbound,
+        limits,
+        &mut reads,
+    )
+    .await
+    .expect("history registered");
+    process_attachment_frame(
+        decoded_message(
+            WireKind::TerminalSnapshotApplied,
+            11,
+            &v2::TerminalSnapshotApplied {
+                attachment_id: Some(attachment.attachment_id().into()),
+                revision: snapshot.revision.get(),
+            },
+        ),
+        &server,
+        attachment,
+        &context,
+        &outbound,
+        limits,
+        &mut reads,
+    )
+    .await
+    .expect("ACK progresses");
+    process_attachment_frame(
+        decoded_message(
+            WireKind::TerminalInput,
+            12,
+            &v2::TerminalInput {
+                attachment_id: Some(attachment.attachment_id().into()),
+                operation_id: None,
+                bytes: b"end\n".to_vec(),
+            },
+        ),
+        &server,
+        attachment,
+        &context,
+        &outbound,
+        limits,
+        &mut reads,
+    )
+    .await
+    .expect("input progresses");
+    let response = tokio::time::timeout(Duration::from_secs(2), responses.recv())
+        .await
+        .expect("history delivered")
+        .expect("response");
+    let frame = decode_one(&response.bytes);
+    assert_eq!(frame.request_id, 10);
+    let message = frame
+        .decode_message(WireKind::TerminalSemanticHistoryWindowFrame)
+        .expect("history frame");
+    let (_, result) = voytty_proto::terminal_surface_history_window_from_message(message, query)
+        .expect("valid history");
+    let voytty_core::terminal::TerminalSurfaceHistoryWindowResult::Frame(frame) = result else {
+        panic!("unchanged history epoch");
+    };
+    let text: String = frame
+        .rows
+        .iter()
+        .flat_map(|row| &row.cells)
+        .map(|cell| cell.contents.as_str())
+        .collect();
+    assert!(
+        text.contains("INPUT_RELEASE"),
+        "history must capture the input-released batch, not its timeout predecessor"
+    );
+    finish_history_task(reads.join_next().await.expect("history worker"))
+        .expect("history worker completes");
+    attachment.detach();
+    sessions
+        .shutdown()
+        .expect("only fixture sessions shut down");
+}
+
+#[test]
+fn only_authenticated_clean_eof_can_move_a_resume_checkpoint() {
+    assert!(should_move_remote_resume_checkpoint(
+        true,
+        &Ok(AttachmentTaskEnd::TransportEof),
+    ));
+    assert!(!should_move_remote_resume_checkpoint(
+        false,
+        &Ok(AttachmentTaskEnd::TransportEof),
+    ));
+    assert!(!should_move_remote_resume_checkpoint(
+        true,
+        &Ok(AttachmentTaskEnd::Explicit),
+    ));
+    assert!(!should_move_remote_resume_checkpoint(
+        true,
+        &Err(DaemonError::new(
+            DomainErrorKind::DaemonStopped,
+            "transport I/O failed without clean EOF",
+        )),
+    ));
+}
+
+#[tokio::test]
+async fn delayed_snapshot_ack_and_coalesced_resize_publish_latest_viewport() {
+    let temporary = tempfile::tempdir().expect("resize fixture");
+    let sessions = unix_wire_service(device(0xca), temporary.path().to_path_buf());
+    let view = AttachmentId::from_array([0xcb; 16]);
+    let prepared = sessions
+        .prepare_attach(sessions.local_principal(view), None, true, false, None)
+        .expect("controller");
+    activate_attachment(&prepared);
+    let attachment = &prepared.attachment;
+    let (_outbound, receiver) = mpsc::channel(8);
+    // A snapshot exceeds this pipe: the writer genuinely stalls while the
+    // Session actor continues committing output and newer resize intent.
+    let (peer, stream) = tokio::io::duplex(256);
+    let writer = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(attachment_writer(
+        stream,
+        SessionWireServer::new(sessions.clone()),
+        Arc::clone(attachment),
+        SessionRequestContext::local(view),
+        receiver,
+        Duration::from_secs(2),
+        SurfaceOutput::default(),
+    )));
+    let mut peer = TestRemotePeer::new(peer);
+    for columns in 90..98 {
+        let first_size = voytty_core::terminal::TerminalSize::new(31, columns);
+        let latest_size = voytty_core::terminal::TerminalSize::new(32, columns + 10);
+        attachment.resize(first_size).expect("first resize");
+        // Any old output delta is allowed before the ordered sync marker.
+        while peer.next().await.kind != WireKind::TerminalSyncRequired {}
+        attachment
+            .write_input(b"output while snapshot is blocked\n")
+            .expect("healthy controller input during resize");
+        attachment.resize(latest_size).expect("coalesced resize");
+        let frame = peer.next().await;
+        let message = frame
+            .decode_message::<v2::TerminalSemanticSnapshot>(WireKind::TerminalSemanticSnapshot)
+            .expect("snapshot after sync marker");
+        let (session, id, first) = voytty_proto::terminal_surface_snapshot_from_message(message)
+            .expect("first valid snapshot");
+        assert_eq!(session, attachment.session_id());
+        assert_eq!(id, attachment.attachment_id());
+        assert_eq!(first.surface.size, first_size);
+        attachment
+            .snapshot_applied(first.revision)
+            .expect("delayed ACK");
+        assert_eq!(peer.next().await.kind, WireKind::TerminalSyncRequired);
+        let frame = peer.next().await;
+        let message = frame
+            .decode_message::<v2::TerminalSemanticSnapshot>(WireKind::TerminalSemanticSnapshot)
+            .expect("latest viewport snapshot");
+        let (_, _, latest) = voytty_proto::terminal_surface_snapshot_from_message(message)
+            .expect("latest valid snapshot");
+        assert_eq!(latest.surface.size, latest_size);
+        assert!(latest.revision > first.revision);
+        // A repeated old ACK must not release the new synchronization fence.
+        attachment
+            .snapshot_applied(first.revision)
+            .expect("duplicate ACK");
+        assert!(
+            attachment
+                .next_update()
+                .expect("new fence retained")
+                .is_none()
+        );
+        attachment
+            .snapshot_applied(latest.revision)
+            .expect("latest ACK");
+        attachment
+            .write_input(b"after resize\n")
+            .expect("same controller remains usable");
+    }
+    writer.abort();
+    let _ = writer.await;
+    attachment.detach();
+    sessions.shutdown().expect("stop resize fixture");
+}
+
+#[tokio::test]
+async fn takeover_reply_cannot_overtake_its_required_color_snapshot() {
+    use voytty_core::terminal::{COLOR_BACKGROUND, TerminalColorProfile, TerminalColorValue};
+
+    let temporary = tempfile::tempdir().expect("takeover fixture");
+    let sessions = unix_wire_service(device(0xc7), temporary.path().to_path_buf());
+    let old_view = AttachmentId::from_array([0xc8; 16]);
+    let old = sessions
+        .prepare_attach(sessions.local_principal(old_view), None, true, false, None)
+        .expect("old controller");
+    activate_attachment(&old);
+    let view = AttachmentId::from_array([0xc9; 16]);
+    let principal = sessions.local_principal(view);
+    let mut colors = TerminalColorProfile::default();
+    colors.values[COLOR_BACKGROUND] = TerminalColorValue::Rgb(12, 34, 56);
+    let prepared = sessions
+        .prepare_attach_with_colors_until(
+            principal,
+            Some(SessionSelector::Id(old.attachment.session_id())),
+            false,
+            true,
+            crate::session::InitialTerminal {
+                viewport: None,
+                colors: colors.clone(),
+            },
+            Instant::now() + Duration::from_secs(2),
+        )
+        .expect("prepare different controller colors");
+    activate_attachment(&prepared);
+    let (outbound, receiver) = mpsc::channel(8);
+    let (peer, stream) = tokio::io::duplex(1024 * 1024);
+    let writer = tokio::spawn(attachment_writer(
+        stream,
+        SessionWireServer::new(sessions.clone()),
+        Arc::clone(&prepared.attachment),
+        SessionRequestContext::local(view),
+        receiver,
+        Duration::from_secs(2),
+        SurfaceOutput::default(),
+    ));
+    // Observe the real writer after its initial lifecycle pass. The
+    // following synchronous commit and queue insertion make both branches
+    // ready together; a biased response queue used to win this race.
+    let (flushed, ready) = oneshot::channel();
+    outbound
+        .try_send(AttachmentOutbound {
+            flushed: Some(flushed),
+            ..AttachmentOutbound::queued(Vec::new(), Instant::now() + Duration::from_secs(2))
+        })
+        .expect("writer readiness barrier");
+    ready.await.expect("writer reached response queue");
+    let lease = sessions
+        .issue_operation_lease(principal)
+        .expect("operation lease");
+    let summary = sessions
+        .takeover(
+            principal,
+            OperationId { lease, sequence: 1 },
+            &prepared.attachment,
+        )
+        .expect("commit takeover");
+    let reply = mutate_reply(77, summary).expect("takeover response");
+    outbound
+        .try_send(AttachmentOutbound::takeover_reply(
+            reply.bytes.to_vec(),
+            Instant::now() + Duration::from_secs(2),
+        ))
+        .expect("queue successful takeover");
+    let mut peer = TestRemotePeer::new(peer);
+    assert_eq!(peer.next().await.kind, WireKind::TerminalSyncRequired);
+    let frame = peer.next().await;
+    let snapshot = frame
+        .decode_message::<v2::TerminalSemanticSnapshot>(WireKind::TerminalSemanticSnapshot)
+        .expect("required color snapshot precedes success");
+    let (_, _, snapshot) =
+        voytty_proto::terminal_surface_snapshot_from_message(snapshot).expect("valid replacement");
+    assert_eq!(snapshot.surface.colors.profile, colors);
+    let response = peer.next().await;
+    assert_eq!(response.kind, WireKind::SessionMutateResponse);
+    assert_eq!(response.request_id, 77);
+    assert_eq!(
+        prepared
+            .attachment
+            .write_input(b"too-early\n")
+            .expect_err("ACK still required")
+            .kind(),
+        DomainErrorKind::NotSynchronized
+    );
+    prepared
+        .attachment
+        .snapshot_applied(snapshot.revision)
+        .expect("apply required snapshot");
+    prepared
+        .attachment
+        .write_input(b"ready\n")
+        .expect("same controller becomes usable");
+    assert_eq!(
+        old.attachment
+            .write_input(b"retired\n")
+            .expect_err("old controller stays retired")
+            .kind(),
+        DomainErrorKind::LeaseLost
+    );
+    writer.abort();
+    let _ = writer.await;
+    sessions.shutdown().expect("stop takeover fixture");
+}
+
+#[tokio::test]
+async fn attachment_flush_and_control_queue_are_deadline_bounded() {
+    let mut writer = StalledFlushWriter;
+    let write_error = write_attachment_bytes_until(
+        &mut writer,
+        b"bounded",
+        Instant::now() + Duration::from_millis(10),
+        "test attachment flush deadline",
+        "test attachment flush",
+    )
+    .await
+    .expect_err("a stalled attachment flush must release at its deadline");
+    assert_eq!(write_error.kind(), DomainErrorKind::DeadlineExceeded);
+
+    let (sender, mut receiver) = mpsc::channel(ATTACHMENT_OUTBOUND_CAPACITY);
+    let future = Instant::now() + Duration::from_secs(1);
+    for index in 0..ATTACHMENT_OUTBOUND_CAPACITY {
+        let byte = u8::try_from(index).expect("outbound fixture index fits one byte");
+        assert!(
+            sender
+                .try_send(AttachmentOutbound::queued(vec![byte], future))
+                .is_ok(),
+            "every production outbound slot is admitted",
+        );
+    }
+    assert_eq!(sender.capacity(), 0);
+    let queue_error = send_attachment_outbound_until(
+        &sender,
+        AttachmentOutbound::queued(vec![0xff], future),
+        Instant::now(),
+    )
+    .await
+    .expect_err("the next outbound response is backpressured at the exact bound");
+    assert_eq!(queue_error.kind(), DomainErrorKind::DeadlineExceeded);
+
+    receiver
+        .recv()
+        .await
+        .expect("reap one queued outbound response");
+    send_attachment_outbound_until(
+        &sender,
+        AttachmentOutbound::queued(vec![0xfe], future),
+        future,
+    )
+    .await
+    .expect("reaping one response recovers one outbound slot");
+    assert_eq!(receiver.len(), ATTACHMENT_OUTBOUND_CAPACITY);
+}
+
+#[tokio::test(start_paused = true)]
+async fn writer_observing_reader_close_preserves_the_readers_result() {
+    for expected in [
+        Ok(AttachmentTaskEnd::TransportEof),
+        Ok(AttachmentTaskEnd::Explicit),
+        Err(DomainErrorKind::MalformedFrame),
+    ] {
+        let reader = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            expected.map_err(|kind| DaemonError::new(kind, "reader fixture failure"))
+        });
+        let writer = tokio::spawn(async { Ok(AttachmentTaskEnd::ReaderClosed) });
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert!(writer.is_finished(), "force the writer to finish first");
+        assert!(!reader.is_finished(), "reader has not published its result");
+
+        let result = finish_attachment_tasks(reader, writer, Duration::from_secs(1)).await;
+        assert_eq!(
+            result.as_ref().copied().map_err(DaemonError::kind),
+            expected
+        );
+        assert_eq!(
+            should_move_remote_resume_checkpoint(true, &result),
+            expected == Ok(AttachmentTaskEnd::TransportEof),
+            "only the authenticated reader's clean EOF retains the checkpoint",
+        );
+    }
+
+    let reader = tokio::spawn(std::future::pending());
+    let writer = tokio::spawn(async { Ok(AttachmentTaskEnd::ReaderClosed) });
+    let error = finish_attachment_tasks(reader, writer, Duration::from_secs(1))
+        .await
+        .expect_err("a stalled reader cannot turn queue closure into successful termination");
+    assert_eq!(error.kind(), DomainErrorKind::Cancelled);
+}
+
+#[tokio::test]
+async fn shared_decoder_diagnostics_do_not_describe_remote_streams_as_local() {
+    let own = device(0x11);
+    let remote = device(0x12);
+    let accepted = generation(2);
+    let authorization = authorized_registry(remote, accepted);
+    let (result, response) = run_remote_bytes(
+        SessionWireServer::new(empty_service(own)),
+        remote_context(own, remote, accepted, authorization),
+        Vec::new(),
+    )
+    .await;
+    let error = result.expect_err("EOF before the first frame is rejected");
+    assert!(!error.detail().to_ascii_lowercase().contains("local"));
+
+    let frame = decode_one(&response);
+    let response: v2::ServiceError = frame
+        .decode_message(WireKind::ServiceErrorResponse)
+        .expect("typed service error");
+    assert!(!response.message.to_ascii_lowercase().contains("local"));
+}
+
+#[tokio::test]
+async fn remote_target_is_exact_and_current_generation_dispatches_list() {
+    let own = device(0x11);
+    let remote = device(0x22);
+    let accepted = generation(7);
+    let authorization = authorized_registry(remote, accepted);
+    let server = SessionWireServer::new(empty_service(own));
+
+    let request = encode_message(
+        WireKind::SessionListRequest,
+        71,
+        0,
+        &v2::SessionListRequest {
+            target: Some(remote_target(own)),
+        },
+    )
+    .expect("encode remote list");
+    let (result, response) = run_remote_bytes(
+        server.clone(),
+        remote_context(own, remote, accepted, authorization.clone()),
+        request,
+    )
+    .await;
+    result.expect("current generation list succeeds");
+    let frame = decode_one(&response);
+    assert_eq!(frame.kind, WireKind::SessionListResponse);
+    let response: v2::SessionListResponse = frame
+        .decode_message(WireKind::SessionListResponse)
+        .expect("decode list response");
+    assert!(response.sessions.is_empty());
+
+    let wrong_target = encode_message(
+        WireKind::SessionListRequest,
+        72,
+        0,
+        &v2::SessionListRequest {
+            target: Some(remote_target(device(0x33))),
+        },
+    )
+    .expect("encode confused-deputy request");
+    let (result, response) = run_remote_bytes(
+        server.clone(),
+        remote_context(own, remote, accepted, authorization.clone()),
+        wrong_target,
+    )
+    .await;
+    result.expect("typed target rejection is a complete unary response");
+    assert_eq!(service_error_kind(&response), DomainErrorKind::Unauthorized);
+
+    let local_target = encode_message(
+        WireKind::SessionListRequest,
+        73,
+        0,
+        &v2::SessionListRequest {
+            target: Some(v2::TargetSelector {
+                target: Some(v2::target_selector::Target::Local(true)),
+            }),
+        },
+    )
+    .expect("encode local target over remote stream");
+    let (result, response) = run_remote_bytes(
+        server,
+        remote_context(own, remote, accepted, authorization),
+        local_target,
+    )
+    .await;
+    result.expect("typed local-target rejection is a complete unary response");
+    assert_eq!(service_error_kind(&response), DomainErrorKind::Unauthorized);
+}
+
+#[tokio::test]
+async fn stale_generation_cannot_list_issue_a_lease_or_prepare_attach() {
+    let own = device(0x31);
+    let remote = device(0x32);
+    let current = generation(9);
+    let stale = generation(8);
+    let authorization = authorized_registry(remote, current);
+    let sessions = empty_service(own);
+    let server = SessionWireServer::new(sessions.clone());
+    let context = remote_context(own, remote, stale, authorization.clone());
+
+    for (kind, request) in [
+        (
+            WireKind::SessionListRequest,
+            encode_message(
+                WireKind::SessionListRequest,
+                81,
+                0,
+                &v2::SessionListRequest {
+                    target: Some(remote_target(own)),
+                },
+            )
+            .expect("encode stale list"),
+        ),
+        (
+            WireKind::SessionOperationLeaseRequest,
+            encode_message(
+                WireKind::SessionOperationLeaseRequest,
+                82,
+                0,
+                &v2::SessionOperationLeaseRequest {
+                    target: Some(remote_target(own)),
+                },
+            )
+            .expect("encode stale lease"),
+        ),
+    ] {
+        let (result, response) = run_remote_bytes(server.clone(), context.clone(), request).await;
+        result.expect("typed stale-generation response completes");
+        assert_eq!(
+            service_error_kind(&response),
+            DomainErrorKind::Unauthorized,
+            "{kind:?} must acquire the current generation at its effect window"
+        );
+    }
+
+    let attach = encode_message(
+        WireKind::TerminalAttachRequest,
+        83,
+        0,
+        &v2::TerminalAttachRequest {
+            accept_zlib_frames: false,
+            acknowledge_surface_frames: false,
+            base_colors: Some(voytty_core::terminal::TerminalColorProfile::default().into()),
+
+            target: Some(remote_target(own)),
+            session_id: None,
+            takeover: false,
+            session_name: String::new(),
+            create_main: true,
+            viewport: None,
+            resume_view_id: None,
+            known_revision: None,
+        },
+    )
+    .expect("encode stale attach");
+    let frame = decode_one(&attach);
+    let error = match server
+        .prepare_attachment(&context, &frame, Instant::now() + Duration::from_secs(1))
+        .await
+    {
+        Ok(_) => panic!("stale prepare_attach cannot reach the PTY spawner"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), DomainErrorKind::Unauthorized);
+}
+
+#[tokio::test]
+async fn operation_lease_uses_the_remote_principal_generation() {
+    let own = device(0x41);
+    let remote = device(0x42);
+    let first = generation(1);
+    let authorization = authorized_registry(remote, first);
+    let server = SessionWireServer::new(empty_service(own));
+    let request = || {
+        encode_message(
+            WireKind::SessionOperationLeaseRequest,
+            91,
+            0,
+            &v2::SessionOperationLeaseRequest {
+                target: Some(remote_target(own)),
+            },
+        )
+        .expect("encode operation lease request")
+    };
+
+    let (_, response) = run_remote_bytes(
+        server.clone(),
+        remote_context(own, remote, first, authorization.clone()),
+        request(),
+    )
+    .await;
+    let frame = decode_one(&response);
+    let lease: v2::SessionOperationLeaseResponse = frame
+        .decode_message(WireKind::SessionOperationLeaseResponse)
+        .expect("decode operation lease");
+    assert!(lease.lease.is_some());
+
+    {
+        let mut writer = authorization
+            .authorize_guard(remote)
+            .await
+            .expect("generation writer");
+        writer
+            .publish(AuthorizationSnapshot {
+                status: AuthorizationStatus::Authorized,
+                generation: generation(2),
+            })
+            .expect("publish next generation");
+    }
+    let (_, response) = run_remote_bytes(
+        server,
+        remote_context(own, remote, first, authorization),
+        request(),
+    )
+    .await;
+    assert_eq!(service_error_kind(&response), DomainErrorKind::Unauthorized);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn submitted_revoke_survives_cancellation_while_waiting_for_sqlite() {
+    let sessions = empty_service(device(0x80));
+    let mut harness = DirectRevokeHarness::start(sessions.clone());
+    let store = harness.store.clone();
+    let (entered, blocked) = std_mpsc::sync_channel(1);
+    let (release, hold) = std_mpsc::channel();
+    let barrier = tokio::task::spawn_blocking(move || {
+        store.block_for_test(Instant::now() + Duration::from_secs(5), entered, hold)
+    });
+    blocked
+        .recv_timeout(Duration::from_secs(2))
+        .expect("SQLite actor paused");
+    let request = harness.spawn_revoke(401, MATRIX_REMOTE);
+    harness.wait_for_writer(MATRIX_REMOTE).await;
+    request.abort();
+    assert!(
+        request
+            .await
+            .expect_err("IPC caller cancelled")
+            .is_cancelled()
+    );
+    release.send(()).expect("resume SQLite actor");
+    barrier.await.expect("barrier task").expect("actor resumed");
+    let close = harness.access.wait_for_close(0).await;
+    assert_eq!(close.durable.status, AuthorizationStatus::Revoked);
+    assert_eq!(close.memory, close.durable);
+    harness.access.release_first_close();
+    // The write guard is released only after the worker completes cleanup.
+    let guard = tokio::time::timeout(
+        Duration::from_secs(2),
+        harness.authorization.revoke_guard(MATRIX_REMOTE),
+    )
+    .await
+    .expect("cleanup completed")
+    .expect("reacquire permit");
+    assert_eq!(guard.snapshot(), close.durable);
+    drop(guard);
+    assert_eq!(harness.finish(&sessions), close.durable);
+}
+
+#[tokio::test]
+async fn revoke_deadline_while_waiting_for_the_permit_has_no_side_effect() {
+    let sessions = empty_service(device(0x80));
+    let harness = DirectRevokeHarness::start(sessions.clone());
+    let guard = harness
+        .authorization
+        .revoke_guard(MATRIX_REMOTE)
+        .await
+        .expect("hold permit");
+    let frame = decoded_message(
+        WireKind::LocalDeviceRevokeRequest,
+        402,
+        &v2::LocalDeviceRevokeRequest {
+            device_id: Some(MATRIX_REMOTE.into()),
+        },
+    );
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        harness
+            .service
+            .dispatch_until(frame, Instant::now() + Duration::from_millis(40)),
+    )
+    .await
+    .expect("bounded permit wait");
+    assert_eq!(
+        service_error_kind(&result.bytes),
+        DomainErrorKind::DeadlineExceeded
+    );
+    let before = guard.snapshot();
+    drop(guard);
+    assert_eq!(harness.access.close_count(), 0);
+    assert_eq!(harness.finish(&sessions), before);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_revoke_writer_orders_remote_effect_matrix_and_preserves_sessions() {
+    let own = device(0x80);
+    let pty_temporary = tempfile::tempdir().expect("temporary revoke-matrix PTY fixture");
+    let sessions = unix_wire_service(own, pty_temporary.path().to_path_buf());
+    let mut harness = DirectRevokeHarness::start(sessions.clone());
+    let remote_before = harness
+        .authorization
+        .snapshot(MATRIX_REMOTE)
+        .expect("matrix remote authorization snapshot");
+    let other_before = harness
+        .authorization
+        .snapshot(MATRIX_OTHER)
+        .expect("matrix other authorization snapshot");
+    assert_eq!(remote_before.status, AuthorizationStatus::Authorized);
+    assert_eq!(other_before.status, AuthorizationStatus::Authorized);
+    let revoked = AuthorizationSnapshot {
+        status: AuthorizationStatus::Revoked,
+        generation: remote_before
+            .generation
+            .checked_next()
+            .expect("matrix generation advances once"),
+    };
+
+    let local = sessions.local_principal(AttachmentId::from_array([0x83; 16]));
+    let local_lease = sessions
+        .issue_operation_lease(local)
+        .expect("matrix local create lease");
+    let initial_viewport = TerminalSize::new(24, 80);
+    let primary = sessions
+        .create(
+            local,
+            OperationId {
+                lease: local_lease,
+                sequence: 1,
+            },
+            SessionName::new("matrix-primary").expect("matrix primary name"),
+            None,
+            Some(initial_viewport),
+        )
+        .expect("matrix primary Session creates");
+    let other = sessions
+        .create(
+            local,
+            OperationId {
+                lease: local_lease,
+                sequence: 2,
+            },
+            SessionName::new("matrix-other").expect("matrix other name"),
+            None,
+            Some(initial_viewport),
+        )
+        .expect("matrix other Session creates");
+    let server = SessionWireServer::new(sessions.clone());
+    let matrix_remote_context = remote_context(
+        own,
+        MATRIX_REMOTE,
+        remote_before.generation,
+        harness.authorization.clone(),
+    );
+    let other_context = remote_context(
+        own,
+        MATRIX_OTHER,
+        other_before.generation,
+        harness.authorization.clone(),
+    );
+
+    let remote_attach = decoded_message(
+        WireKind::TerminalAttachRequest,
+        401,
+        &remote_attach_request(
+            own,
+            primary.session_id,
+            ResumeViewId::from_array([0x84; 16]),
+            None,
+        ),
+    );
+    let remote_prepared = server
+        .prepare_attachment(
+            &matrix_remote_context,
+            &remote_attach,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .await
+        .expect("authorized matrix remote attaches");
+    activate_attachment(&remote_prepared);
+    let remote_attachment = Arc::clone(&remote_prepared.attachment);
+    let mut remote_lifecycle = remote_attachment
+        .lifecycle_watch()
+        .expect("matrix remote lifecycle watch");
+    assert!(matches!(
+        *remote_lifecycle.borrow_and_update(),
+        AttachmentLifecycle::Active { .. }
+    ));
+
+    let other_attach = decoded_message(
+        WireKind::TerminalAttachRequest,
+        402,
+        &remote_attach_request(
+            own,
+            other.session_id,
+            ResumeViewId::from_array([0x85; 16]),
+            None,
+        ),
+    );
+    let other_prepared = server
+        .prepare_attachment(
+            &other_context,
+            &other_attach,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .await
+        .expect("unaffected matrix remote attaches");
+    activate_attachment(&other_prepared);
+    let other_attachment = Arc::clone(&other_prepared.attachment);
+    assert!(session_summary(&sessions, primary.session_id).has_controller);
+    assert!(session_summary(&sessions, other.session_id).has_controller);
+
+    let remote_lease =
+        issue_remote_lease(server.clone(), matrix_remote_context.clone(), own, 403).await;
+
+    // This real input effect owns the old generation's read permit before
+    // revoke starts. It must finish before the queued revoke writer can
+    // persist or publish the next generation.
+    let first_commit = harness
+        .authorization
+        .acquire_commit(MATRIX_REMOTE, remote_before.generation)
+        .await
+        .expect("matrix old-generation commit acquired");
+    let old_effect_calls = Arc::new(AtomicUsize::new(0));
+    let old_effect_calls_worker = Arc::clone(&old_effect_calls);
+    let (old_entered_tx, mut old_entered_rx) = tokio_mpsc::unbounded_channel();
+    let (release_old_tx, release_old_rx) = std_mpsc::channel();
+    let old_attachment = Arc::clone(&remote_attachment);
+    let old_effect = tokio::spawn(async move {
+        first_commit
+            .run(move || {
+                old_effect_calls_worker.fetch_add(1, Ordering::AcqRel);
+                old_entered_tx
+                    .send(())
+                    .expect("matrix old effect observer remains live");
+                release_old_rx
+                    .recv()
+                    .expect("matrix old effect release remains live");
+                old_attachment
+                    .write_input_until(b"old-authorized\n", Instant::now() + Duration::from_secs(5))
+            })
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), old_entered_rx.recv())
+        .await
+        .expect("matrix old effect reached its commit boundary")
+        .expect("matrix old effect observer remains open");
+
+    let revoke_task = harness.spawn_revoke(404, MATRIX_REMOTE);
+    harness.wait_for_writer(MATRIX_REMOTE).await;
+
+    // Queue every sensitive operation owner only after the fair revoke
+    // writer's first real poll. Each future must report Pending on its
+    // first poll, proving it cannot overtake the writer.
+    let list_server = server.clone();
+    let (list_observer, list_observed) = tokio_mpsc::unbounded_channel();
+    let list_context = matrix_remote_context
+        .clone()
+        .with_commit_first_poll_observer(list_observer);
+    let list_task = tokio::spawn(async move {
+        list_server
+            .dispatch_unary_until(
+                &decoded_message(
+                    WireKind::SessionListRequest,
+                    405,
+                    &v2::SessionListRequest {
+                        target: Some(remote_target(own)),
+                    },
+                ),
+                list_context,
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+    });
+
+    let attach_server = server.clone();
+    let (attach_observer, attach_observed) = tokio_mpsc::unbounded_channel();
+    let attach_context = matrix_remote_context
+        .clone()
+        .with_commit_first_poll_observer(attach_observer);
+    let attach_task = tokio::spawn(async move {
+        let frame = decoded_message(
+            WireKind::TerminalAttachRequest,
+            406,
+            &remote_attach_request(
+                own,
+                primary.session_id,
+                ResumeViewId::from_array([0x86; 16]),
+                None,
+            ),
+        );
+        attach_server
+            .prepare_attachment(
+                &attach_context,
+                &frame,
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+    });
+
+    let limits = SessionWireLimits::default();
+    let (outbound, mut outbound_rx) = mpsc::channel(ATTACHMENT_OUTBOUND_CAPACITY);
+    let input_server = server.clone();
+    let (input_observer, input_observed) = tokio_mpsc::unbounded_channel();
+    let input_context = matrix_remote_context
+        .clone()
+        .with_commit_first_poll_observer(input_observer);
+    let input_attachment = Arc::clone(&remote_attachment);
+    let input_outbound = outbound.clone();
+    let input_task = tokio::spawn(async move {
+        process_attachment_frame(
+            decoded_message(
+                WireKind::TerminalInput,
+                407,
+                &v2::TerminalInput {
+                    operation_id: Some(
+                        OperationId {
+                            lease: remote_lease,
+                            sequence: 1,
+                        }
+                        .into(),
+                    ),
+                    attachment_id: Some(input_attachment.attachment_id().into()),
+                    bytes: b"must-not-reach-pty".to_vec(),
+                },
+            ),
+            &input_server,
+            &input_attachment,
+            &input_context,
+            &input_outbound,
+            limits,
+            &mut JoinSet::new(),
+        )
+        .await
+    });
+
+    let resize_server = server.clone();
+    let (resize_observer, resize_observed) = tokio_mpsc::unbounded_channel();
+    let resize_context = matrix_remote_context
+        .clone()
+        .with_commit_first_poll_observer(resize_observer);
+    let resize_attachment = Arc::clone(&remote_attachment);
+    let resize_outbound = outbound.clone();
+    let resize_task = tokio::spawn(async move {
+        process_attachment_frame(
+            decoded_message(
+                WireKind::TerminalResize,
+                408,
+                &v2::TerminalResize {
+                    operation_id: Some(
+                        OperationId {
+                            lease: remote_lease,
+                            sequence: 2,
+                        }
+                        .into(),
+                    ),
+                    attachment_id: Some(resize_attachment.attachment_id().into()),
+                    rows: 41,
+                    columns: 101,
+                },
+            ),
+            &resize_server,
+            &resize_attachment,
+            &resize_context,
+            &resize_outbound,
+            limits,
+            &mut JoinSet::new(),
+        )
+        .await
+    });
+
+    let takeover_server = server.clone();
+    let (takeover_observer, takeover_observed) = tokio_mpsc::unbounded_channel();
+    let takeover_context = matrix_remote_context
+        .clone()
+        .with_commit_first_poll_observer(takeover_observer);
+    let takeover_attachment = Arc::clone(&remote_attachment);
+    let takeover_outbound = outbound.clone();
+    let takeover_task = tokio::spawn(async move {
+        process_attachment_frame(
+            decoded_message(
+                WireKind::SessionTakeoverRequest,
+                409,
+                &v2::SessionTakeoverRequest {
+                    operation_id: Some(
+                        OperationId {
+                            lease: remote_lease,
+                            sequence: 3,
+                        }
+                        .into(),
+                    ),
+                    target: Some(remote_target(own)),
+                    session_id: Some(primary.session_id.into()),
+                    attachment_id: Some(takeover_attachment.attachment_id().into()),
+                },
+            ),
+            &takeover_server,
+            &takeover_attachment,
+            &takeover_context,
+            &takeover_outbound,
+            limits,
+            &mut JoinSet::new(),
+        )
+        .await
+    });
+
+    require_first_poll_pending("remote list", MATRIX_REMOTE, list_observed).await;
+    require_first_poll_pending("remote attach", MATRIX_REMOTE, attach_observed).await;
+    require_first_poll_pending("terminal input", MATRIX_REMOTE, input_observed).await;
+    require_first_poll_pending("terminal resize", MATRIX_REMOTE, resize_observed).await;
+    require_first_poll_pending("session takeover", MATRIX_REMOTE, takeover_observed).await;
+
+    assert_eq!(
+        harness
+            .store
+            .authorization_snapshot(MATRIX_REMOTE, default_store_deadline())
+            .expect("durable matrix snapshot before old commit releases"),
+        remote_before,
+    );
+    assert_eq!(
+        harness
+            .authorization
+            .snapshot(MATRIX_REMOTE)
+            .expect("memory matrix snapshot before old commit releases"),
+        remote_before,
+    );
+    assert_eq!(harness.access.close_count(), 0);
+    assert!(!revoke_task.is_finished());
+    for pending in [
+        list_task.is_finished(),
+        attach_task.is_finished(),
+        input_task.is_finished(),
+        resize_task.is_finished(),
+        takeover_task.is_finished(),
+    ] {
+        assert!(!pending, "a later remote effect overtook the revoke writer");
+    }
+
+    release_old_tx
+        .send(())
+        .expect("release matrix old-generation effect");
+    tokio::time::timeout(Duration::from_secs(2), old_effect)
+        .await
+        .expect("matrix old-generation effect completes")
+        .expect("matrix old-generation effect task does not panic")
+        .expect("matrix old-generation input commits");
+    assert_eq!(
+        old_effect_calls.load(Ordering::Acquire),
+        1,
+        "the already-started input effect commits exactly once",
+    );
+
+    // The production revoke has now committed SQLite and published memory,
+    // but the fake close owner holds it before remote detach. This exposes
+    // the required durable -> memory -> close -> detach ordering.
+    let close = harness.access.wait_for_close(0).await;
+    assert_eq!(close.device_id, MATRIX_REMOTE);
+    assert_eq!(close.durable, revoked);
+    assert_eq!(close.memory, revoked);
+    assert_eq!(close.attachments_before_detach, 1);
+    assert_eq!(close.sessions_before_detach, 2);
+    assert_eq!(harness.access.close_count(), 1);
+    assert!(!revoke_task.is_finished());
+    assert!(
+        remote_attachment
+            .write_input_until(
+                b"close-before-detach\n",
+                Instant::now() + Duration::from_secs(2),
+            )
+            .is_ok(),
+        "remote attachment stays live until the ordered close step returns",
+    );
+    for pending in [
+        list_task.is_finished(),
+        attach_task.is_finished(),
+        input_task.is_finished(),
+        resize_task.is_finished(),
+        takeover_task.is_finished(),
+    ] {
+        assert!(!pending, "the revoke writer released before remote detach");
+    }
+
+    harness.access.release_first_close();
+    let revoke_frame = tokio::time::timeout(Duration::from_secs(2), revoke_task)
+        .await
+        .expect("matrix revoke completes after close releases")
+        .expect("matrix revoke task does not panic");
+    assert_eq!(revoke_frame.kind, WireKind::LocalDeviceRevokeResponse);
+    let revoke_response: v2::LocalDeviceRevokeResponse = revoke_frame
+        .decode_message(WireKind::LocalDeviceRevokeResponse)
+        .expect("decode matrix revoke response");
+    let revoked_device: DeviceSummary = revoke_response
+        .device
+        .expect("matrix revoke returns a device summary")
+        .try_into()
+        .expect("valid matrix device summary");
+    assert_eq!(revoked_device.device_id(), MATRIX_REMOTE);
+    assert_eq!(revoked_device.auth_status(), AuthorizationStatus::Revoked);
+    assert_eq!(revoked_device.generation(), revoked.generation);
+    assert_eq!(revoked_device.remote_attachment_count(), 0);
+
+    let list_reply = tokio::time::timeout(Duration::from_secs(2), list_task)
+        .await
+        .expect("queued list completes after revoke")
+        .expect("queued list task does not panic");
+    assert_eq!(
+        service_error_kind(&list_reply.bytes),
+        DomainErrorKind::Unauthorized,
+    );
+    let attach_error = match tokio::time::timeout(Duration::from_secs(2), attach_task)
+        .await
+        .expect("queued attach completes after revoke")
+        .expect("queued attach task does not panic")
+    {
+        Ok(_) => panic!("queued remote attach cannot allocate after revoke"),
+        Err(error) => error,
+    };
+    assert_eq!(attach_error.kind(), DomainErrorKind::Unauthorized);
+    for (operation, task) in [
+        ("terminal input", input_task),
+        ("terminal resize", resize_task),
+        ("session takeover", takeover_task),
+    ] {
+        let error = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap_or_else(|_| panic!("queued {operation} completes after revoke"))
+            .unwrap_or_else(|_| panic!("queued {operation} task does not panic"))
+            .expect_err("queued remote effect cannot commit after revoke");
+        assert_eq!(error.kind(), DomainErrorKind::Unauthorized);
+    }
+    assert!(
+        matches!(
+            outbound_rx.try_recv(),
+            Err(tokio_mpsc::error::TryRecvError::Empty)
+        ),
+        "denied takeover emits no success response",
+    );
+    drop(outbound);
+
+    assert_eq!(
+        sessions
+            .remote_attachment_count_until(MATRIX_REMOTE, default_store_deadline())
+            .expect("count revoked matrix attachments"),
+        0,
+    );
+    assert_eq!(
+        sessions
+            .remote_attachment_count_until(MATRIX_OTHER, default_store_deadline())
+            .expect("count unaffected matrix attachments"),
+        1,
+    );
+    assert_eq!(
+        remote_attachment
+            .write_input_until(b"must-stay-stale", Instant::now() + Duration::from_secs(2),)
+            .expect_err("revoked attachment cannot write")
+            .kind(),
+        DomainErrorKind::LeaseLost,
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), remote_lifecycle.changed())
+            .await
+            .expect("revoked attachment lifecycle owner retires")
+            .is_err(),
+        "detached remote lifecycle channel closes",
+    );
+    other_attachment
+        .write_input_until(
+            b"unaffected-principal\n",
+            Instant::now() + Duration::from_secs(2),
+        )
+        .expect("unaffected remote attachment remains live");
+
+    let primary_after = session_summary(&sessions, primary.session_id);
+    let other_after = session_summary(&sessions, other.session_id);
+    assert!(!primary_after.has_controller);
+    assert_eq!(primary_after.viewport, initial_viewport);
+    assert!(other_after.has_controller);
+    assert_eq!(
+        sessions.list().expect("matrix Sessions remain live").len(),
+        2
+    );
+    assert_eq!(
+        harness
+            .authorization
+            .snapshot(MATRIX_REMOTE)
+            .expect("revoked matrix memory snapshot"),
+        revoked,
+    );
+    assert_eq!(
+        harness
+            .authorization
+            .snapshot(MATRIX_OTHER)
+            .expect("unaffected matrix memory snapshot"),
+        other_before,
+    );
+    assert_eq!(harness.access.close_count(), 1);
+
+    let local_continuation = sessions
+        .prepare_attach(
+            local,
+            Some(SessionSelector::Id(primary.session_id)),
+            false,
+            false,
+            None,
+        )
+        .expect("same-UID client can continue the preserved Session");
+    activate_attachment(&local_continuation);
+    local_continuation
+        .attachment
+        .write_input_until(
+            b"local-continuation\n",
+            Instant::now() + Duration::from_secs(2),
+        )
+        .expect("preserved PTY accepts a new local controller");
+
+    let durable_after_restart = harness.finish(&sessions);
+    assert_eq!(durable_after_restart, revoked);
+    drop(pty_temporary);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authenticated_duplex_eof_moves_checkpoint_but_explicit_and_protocol_end_do_not() {
+    let temporary = tempfile::tempdir().expect("temporary Session wire checkpoint fixture");
+    let own = device(0x43);
+    let remote = device(0x44);
+    let accepted = generation(5);
+    let authorization = authorized_registry(remote, accepted);
+    let output_marker = temporary.path().join("emit-resume-delta");
+    let sessions = unix_delayed_output_wire_service(
+        own,
+        temporary.path().to_path_buf(),
+        output_marker.clone(),
+    );
+    let local = sessions.local_principal(AttachmentId::from_array([0x45; 16]));
+    let lease = sessions
+        .issue_operation_lease(local)
+        .expect("checkpoint fixture create lease");
+    let summary = sessions
+        .create(
+            local,
+            OperationId { lease, sequence: 1 },
+            SessionName::new("wire-checkpoint").expect("fixture session name"),
+            None,
+            None,
+        )
+        .expect("checkpoint fixture session creates");
+    let server = SessionWireServer::new(sessions.clone());
+    let context = remote_context(own, remote, accepted, authorization);
+    let view_id = ResumeViewId::from_array([0x46; 16]);
+
+    let (mut first, first_task) = start_remote_attachment(
+        server.clone(),
+        context.clone(),
+        remote_attach_request(own, summary.session_id, view_id, None),
+    )
+    .await;
+    let first_snapshot = first.next().await;
+    assert_eq!(first_snapshot.kind, WireKind::TerminalSemanticSnapshot);
+    let first_snapshot: v2::TerminalSemanticSnapshot = first_snapshot
+        .decode_message(WireKind::TerminalSemanticSnapshot)
+        .expect("initial remote snapshot");
+    let first_attachment: AttachmentId = first_snapshot
+        .attachment_id
+        .clone()
+        .expect("initial attachment ID")
+        .try_into()
+        .expect("fixed-width initial attachment ID");
+    let baseline = acknowledge_and_observe_semantic_state(
+        &mut first,
+        first_attachment,
+        Revision::new(first_snapshot.revision),
+    )
+    .await;
+    first
+        .stream
+        .shutdown()
+        .await
+        .expect("transport EOF after active authentication");
+    tokio::time::timeout(Duration::from_secs(2), first_task)
+        .await
+        .expect("transport EOF server task completes")
+        .expect("transport EOF server task")
+        .expect("transport EOF is a normal attachment end");
+    std::fs::write(&output_marker, b"emit").expect("release delayed PTY output");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let advanced = sessions
+                .list()
+                .expect("observe delayed PTY revision")
+                .into_iter()
+                .find(|candidate| candidate.session_id == summary.session_id)
+                .is_some_and(|candidate| candidate.revision > baseline);
+            if advanced {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("delayed PTY output advances the saved checkpoint");
+
+    let (mut resumed, resumed_task) = start_remote_attachment(
+        server.clone(),
+        context.clone(),
+        remote_attach_request(own, summary.session_id, view_id, Some(baseline)),
+    )
+    .await;
+    let resumed_delta = resumed.next().await;
+    assert_eq!(
+        resumed_delta.kind,
+        WireKind::TerminalSemanticDelta,
+        "authenticated transport EOF moves the one exact checkpoint"
+    );
+    let resumed_delta: v2::TerminalSemanticDelta = resumed_delta
+        .decode_message(WireKind::TerminalSemanticDelta)
+        .expect("exact resumed delta");
+    let resumed_attachment: AttachmentId = resumed_delta
+        .attachment_id
+        .clone()
+        .expect("resumed attachment ID")
+        .try_into()
+        .expect("fixed-width resumed attachment ID");
+    assert_ne!(resumed_attachment, first_attachment);
+    assert_eq!(resumed_delta.from_revision, baseline.get());
+    let resumed_revision = acknowledge_and_observe_semantic_state(
+        &mut resumed,
+        resumed_attachment,
+        Revision::new(resumed_delta.to_revision),
+    )
+    .await;
+    resumed
+        .send(
+            WireKind::TerminalInput,
+            4,
+            &v2::TerminalInput {
+                operation_id: None,
+                attachment_id: Some(AttachmentId::from_array([0xff; 16]).into()),
+                bytes: b"must-not-reach-pty".to_vec(),
+            },
+        )
+        .await;
+    let protocol_error = resumed.next().await;
+    assert_eq!(protocol_error.kind, WireKind::ServiceErrorResponse);
+    assert_eq!(protocol_error.request_id, 4);
+    let protocol_error: v2::ServiceError = protocol_error
+        .decode_message(WireKind::ServiceErrorResponse)
+        .expect("typed protocol failure");
+    assert_eq!(
+        DomainErrorKind::from_code(&protocol_error.code),
+        Some(DomainErrorKind::MalformedFrame)
+    );
+    let protocol_result = tokio::time::timeout(Duration::from_secs(2), resumed_task)
+        .await
+        .expect("protocol-failure server task completes")
+        .expect("protocol-failure server task")
+        .expect_err("protocol failure remains stream-local and typed");
+    assert_eq!(protocol_result.kind(), DomainErrorKind::MalformedFrame);
+
+    let (mut after_protocol, after_protocol_task) = start_remote_attachment(
+        server.clone(),
+        context.clone(),
+        remote_attach_request(own, summary.session_id, view_id, Some(resumed_revision)),
+    )
+    .await;
+    let after_protocol_snapshot = after_protocol.next().await;
+    assert_eq!(
+        after_protocol_snapshot.kind,
+        WireKind::TerminalSemanticSnapshot,
+        "protocol failure discards rather than saves the live checkpoint"
+    );
+    let after_protocol_snapshot: v2::TerminalSemanticSnapshot = after_protocol_snapshot
+        .decode_message(WireKind::TerminalSemanticSnapshot)
+        .expect("authoritative snapshot after protocol failure");
+    let after_protocol_attachment: AttachmentId = after_protocol_snapshot
+        .attachment_id
+        .clone()
+        .expect("post-protocol attachment ID")
+        .try_into()
+        .expect("fixed-width post-protocol attachment ID");
+    let after_protocol_revision = acknowledge_and_observe_semantic_state(
+        &mut after_protocol,
+        after_protocol_attachment,
+        Revision::new(after_protocol_snapshot.revision),
+    )
+    .await;
+    after_protocol
+        .send(
+            WireKind::TerminalDetach,
+            4,
+            &v2::TerminalDetach {
+                attachment_id: Some(after_protocol_attachment.into()),
+            },
+        )
+        .await;
+    tokio::time::timeout(Duration::from_secs(2), after_protocol_task)
+        .await
+        .expect("explicit-detach server task completes")
+        .expect("explicit-detach server task")
+        .expect("explicit detach is a normal attachment end");
+
+    let (mut after_explicit, after_explicit_task) = start_remote_attachment(
+        server,
+        context,
+        remote_attach_request(
+            own,
+            summary.session_id,
+            view_id,
+            Some(after_protocol_revision),
+        ),
+    )
+    .await;
+    let after_explicit_snapshot = after_explicit.next().await;
+    assert_eq!(
+        after_explicit_snapshot.kind,
+        WireKind::TerminalSemanticSnapshot,
+        "explicit detach never creates a resume cell"
+    );
+    let after_explicit_snapshot: v2::TerminalSemanticSnapshot = after_explicit_snapshot
+        .decode_message(WireKind::TerminalSemanticSnapshot)
+        .expect("authoritative snapshot after explicit detach");
+    after_explicit_snapshot
+        .attachment_id
+        .expect("authoritative snapshot carries a final attachment ID");
+    // The prior stream already proved explicit detach. Leave this
+    // observation-only reconnect unsynchronized and close its transport;
+    // an unsynchronized attachment cannot create a resume checkpoint.
+    after_explicit
+        .stream
+        .shutdown()
+        .await
+        .expect("finish final cleanup transport");
+    tokio::time::timeout(Duration::from_secs(2), after_explicit_task)
+        .await
+        .expect("cleanup EOF server task completes")
+        .expect("cleanup EOF server task")
+        .expect("cleanup EOF succeeds");
+    sessions.shutdown().expect("checkpoint fixture shuts down");
+}
+
+#[test]
+fn history_window_query_enforces_product_viewport_limits_at_dispatch() {
+    let mut request = v2::TerminalHistoryWindowRequest {
+        attachment_id: None,
+        anchor: Some(v2::TerminalHistoryWindowAnchor {
+            epoch: 1,
+            revision: 1,
+            max_offset_from_bottom: 10,
+            viewport_rows: 4,
+            viewport_columns: 20,
+        }),
+        target_offset_from_bottom: 2,
+        older_margin_rows: 4,
+        newer_margin_rows: 4,
+    };
+    assert!(terminal_history_window_query(&request).is_ok());
+    request
+        .anchor
+        .as_mut()
+        .expect("history-window anchor")
+        .viewport_rows = u32::from(ResourceLimits::default().max_viewport_rows) + 1;
+    assert!(terminal_history_window_query(&request).is_err());
+}
+
+#[tokio::test]
+async fn trailing_malformed_and_stalled_remote_streams_are_isolated() {
+    let own = device(0x51);
+    let remote = device(0x52);
+    let accepted = generation(3);
+    let authorization = authorized_registry(remote, accepted);
+    let server = SessionWireServer::new(empty_service(own));
+    let context = remote_context(own, remote, accepted, authorization.clone());
+    let request = encode_message(
+        WireKind::SessionListRequest,
+        101,
+        0,
+        &v2::SessionListRequest {
+            target: Some(remote_target(own)),
+        },
+    )
+    .expect("encode healthy list");
+
+    let mut trailing = request.clone();
+    trailing.extend_from_slice(&request);
+    let (error, response) = run_remote_bytes(server.clone(), context.clone(), trailing).await;
+    assert_eq!(
+        error
+            .expect_err("trailing unary frame is stream-local")
+            .kind(),
+        DomainErrorKind::MalformedFrame
+    );
+    assert_eq!(
+        service_error_kind(&response),
+        DomainErrorKind::MalformedFrame
+    );
+
+    let (error, response) =
+        run_remote_bytes(server.clone(), context.clone(), vec![0x80, 0x00]).await;
+    assert_eq!(
+        error.expect_err("malformed prefix is stream-local").kind(),
+        DomainErrorKind::MalformedFrame
+    );
+    assert_eq!(
+        service_error_kind(&response),
+        DomainErrorKind::MalformedFrame
+    );
+
+    let (_client, stalled) = tokio::io::duplex(64);
+    let error = server
+        .handle_remote_stream(
+            stalled,
+            context.clone(),
+            SessionWireLimits::default(),
+            Instant::now(),
+        )
+        .await
+        .expect_err("elapsed first-frame deadline is stream-local");
+    assert_eq!(error.kind(), DomainErrorKind::DeadlineExceeded);
+
+    let (healthy, response) = run_remote_bytes(server, context, request).await;
+    healthy.expect("independent healthy stream remains usable");
+    assert_eq!(decode_one(&response).kind, WireKind::SessionListResponse);
+}
+#[tokio::test]
+async fn stale_color_sync_notification_cannot_hide_takeover_lease_loss() {
+    let temporary = tempfile::tempdir().expect("takeover notification fixture");
+    let sessions = unix_wire_service(device(0xe1), temporary.path().to_path_buf());
+    let view = AttachmentId::from_array([0xe2; 16]);
+    let principal = sessions.local_principal(view);
+    let first = sessions
+        .prepare_attach(principal, None, true, false, None)
+        .expect("first controller");
+    first
+        .attachment
+        .snapshot_applied(first.snapshot.revision)
+        .expect("first ACK");
+    let lifecycle = first.attachment.lifecycle_watch().expect("old lifecycle");
+    let pending = sessions
+        .prepare_attach(
+            principal,
+            Some(SessionSelector::Id(first.attachment.session_id())),
+            false,
+            true,
+            None,
+        )
+        .expect("prepared takeover");
+    pending
+        .attachment
+        .snapshot_applied(pending.snapshot.revision)
+        .expect("prepared ACK");
+    let lease = sessions
+        .issue_operation_lease(principal)
+        .expect("takeover lease");
+    sessions
+        .takeover(
+            principal,
+            OperationId { lease, sequence: 1 },
+            &pending.attachment,
+        )
+        .expect("takeover");
+    let server = SessionWireServer::new(sessions.clone());
+    let context = SessionRequestContext::local(view);
+    let attachment = Arc::new(first.attachment);
+    let mut bytes = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    for stale in [
+        AttachmentLifecycle::Active { generation: 1 },
+        AttachmentLifecycle::AwaitingSnapshot {
+            revision: first.snapshot.revision,
+        },
+    ] {
+        assert!(
+            !write_lifecycle_event(
+                &mut bytes,
+                &server,
+                &attachment,
+                &context,
+                stale,
+                deadline,
+                &mut SurfaceOutput::default()
+            )
+            .await
+            .expect("stale sync defers to lease loss")
+        );
+        assert!(bytes.is_empty());
+    }
+    let event = lifecycle.borrow().clone();
+    assert!(matches!(event, AttachmentLifecycle::LeaseLost { .. }));
+    assert!(
+        write_lifecycle_event(
+            &mut bytes,
+            &server,
+            &attachment,
+            &context,
+            event,
+            deadline,
+            &mut SurfaceOutput::default()
+        )
+        .await
+        .expect("deliver lease loss")
+    );
+    assert_eq!(decode_one(&bytes).kind, WireKind::TerminalLeaseLost);
+    sessions.shutdown().expect("notification fixture cleanup");
+}
+
+#[tokio::test]
+async fn authenticated_remote_color_profile_reaches_initial_snapshot_and_live_delta() {
+    use voytty_core::terminal::{COLOR_BACKGROUND, TerminalColorProfile, TerminalColorValue};
+    let temporary = tempfile::tempdir().expect("remote color fixture");
+    let own = device(0xd1);
+    let remote = device(0xd2);
+    let accepted = generation(2);
+    let authorization = authorized_registry(remote, accepted);
+    let sessions = unix_wire_service(own, temporary.path().to_path_buf());
+    let mut profile = TerminalColorProfile::default();
+    profile.values[COLOR_BACKGROUND] = TerminalColorValue::Rgb(200, 201, 202);
+    let request = v2::TerminalAttachRequest {
+        accept_zlib_frames: false,
+        acknowledge_surface_frames: false,
+        target: Some(remote_target(own)),
+        session_id: None,
+        takeover: false,
+        session_name: String::new(),
+        create_main: true,
+        viewport: None,
+        resume_view_id: Some(ResumeViewId::from_array([0xd3; 16]).into()),
+        known_revision: None,
+        base_colors: Some(profile.clone().into()),
+    };
+    let (mut peer, task) = start_remote_attachment(
+        SessionWireServer::new(sessions.clone()),
+        remote_context(own, remote, accepted, authorization),
+        request,
+    )
+    .await;
+    let (attachment, revision) = loop {
+        let frame = peer.next().await;
+        if frame.kind != WireKind::TerminalSemanticSnapshot {
+            assert_eq!(frame.kind, WireKind::TerminalTransportStateEvent);
+            continue;
+        }
+        let message = frame
+            .decode_message(WireKind::TerminalSemanticSnapshot)
+            .expect("remote snapshot DTO");
+        let (_, attachment, snapshot) =
+            voytty_proto::terminal_surface_snapshot_from_message(message).expect("remote snapshot");
+        assert_eq!(snapshot.surface.colors.profile, profile);
+        break (attachment, snapshot.revision);
+    };
+    acknowledge_and_observe_semantic_state(&mut peer, attachment, revision).await;
+    profile.values[COLOR_BACKGROUND] = TerminalColorValue::Rgb(10, 11, 12);
+    peer.send(
+        WireKind::TerminalBaseColors,
+        20,
+        &v2::TerminalBaseColors {
+            attachment_id: Some(attachment.into()),
+            profile: Some(profile.clone().into()),
+            sequence: 1,
+        },
+    )
+    .await;
+    let frame = peer.next().await;
+    assert_eq!(frame.kind, WireKind::TerminalSemanticDelta);
+    let message = frame
+        .decode_message(WireKind::TerminalSemanticDelta)
+        .expect("remote color delta DTO");
+    let (_, delta) =
+        voytty_proto::terminal_surface_delta_from_message(message).expect("remote color delta");
+    assert!(delta.row_patches.is_empty());
+    assert_eq!(delta.colors.profile, profile);
+    peer.send(
+        WireKind::TerminalBaseColors,
+        21,
+        &v2::TerminalBaseColors {
+            attachment_id: Some(AttachmentId::from_array([0xd4; 16]).into()),
+            profile: Some(profile.into()),
+            sequence: 2,
+        },
+    )
+    .await;
+    assert_eq!(peer.next().await.kind, WireKind::ServiceErrorResponse);
+    drop(peer);
+    let _ = task.await.expect("remote color server joins");
+    sessions.shutdown().expect("remote color cleanup");
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn initial_snapshot_crosses_a_four_kib_link_within_existing_deadline() {
+    use prost::Message;
+    for compressed in [false, true] {
+        let temporary = tempfile::tempdir().expect("bandwidth fixture");
+        let own = device(0x71);
+        let remote = device(0x72);
+        let accepted = generation(1);
+        let sessions = unix_wire_service(own, temporary.path().to_path_buf());
+        let local = sessions.local_principal(AttachmentId::from_array([0x73; 16]));
+        let lease = sessions.issue_operation_lease(local).expect("create lease");
+        let summary = sessions
+            .create(
+                local,
+                OperationId { lease, sequence: 1 },
+                SessionName::new("limited-link").expect("name"),
+                None,
+                None,
+            )
+            .expect("original session");
+        let server = SessionWireServer::new(sessions.clone());
+        let context = remote_context(own, remote, accepted, authorized_registry(remote, accepted));
+        let (client, bridge_client) = tokio::io::duplex(4096);
+        let (bridge_host, host) = tokio::io::duplex(4096);
+        let (mut client_read, mut client_write) = tokio::io::split(bridge_client);
+        let (mut host_read, mut host_write) = tokio::io::split(bridge_host);
+        let bridge = tokio::spawn(async move {
+            let incoming = tokio::io::copy(&mut client_read, &mut host_write);
+            let outgoing = async {
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let n = host_read.read(&mut chunk).await?;
+                    if n == 0 {
+                        return Ok::<_, std::io::Error>(());
+                    }
+                    if compressed {
+                        tokio::time::sleep(Duration::from_secs_f64(n as f64 / 4096.0)).await;
+                    }
+                    client_write.write_all(&chunk[..n]).await?;
+                }
+            };
+            tokio::try_join!(incoming, outgoing)
+        });
+        let task = tokio::spawn(async move {
+            server
+                .handle_remote_stream(
+                    host,
+                    context,
+                    SessionWireLimits::default(),
+                    Instant::now() + Duration::from_secs(5),
+                )
+                .await
+        });
+        let mut peer = TestRemotePeer::new(client);
+        let mut request = remote_attach_request(
+            own,
+            summary.session_id,
+            ResumeViewId::from_array([0x74; 16]),
+            None,
+        );
+        request.accept_zlib_frames = compressed;
+        peer.send(WireKind::TerminalAttachRequest, 1, &request)
+            .await;
+        let started = Instant::now();
+        let received = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut raw = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let n = peer
+                    .stream
+                    .read(&mut chunk)
+                    .await
+                    .expect("limited-link read");
+                assert_ne!(n, 0, "host ended before the snapshot");
+                raw.extend_from_slice(&chunk[..n]);
+                let mut frames = peer.decoder.feed(&chunk[..n]).expect("bounded frame");
+                if !frames.is_empty() {
+                    let wire = v2::WireFrame::decode_length_delimited(raw.as_slice())
+                        .expect("wire header");
+                    return (frames.remove(0), wire.payload_encoding);
+                }
+            }
+        })
+        .await;
+        eprintln!(
+            "initial snapshot compressed={compressed} elapsed_seconds={:.3} complete={}",
+            started.elapsed().as_secs_f64(),
+            received.is_ok()
+        );
+        drop(peer);
+        bridge.abort();
+        let _ = bridge.await;
+        task.abort();
+        let _ = task.await;
+        sessions.shutdown().expect("fixture cleanup");
+        let (frame, encoding) =
+            received.expect("initial snapshot must fit the existing five-second deadline");
+        assert_eq!(
+            encoding,
+            u32::from(compressed),
+            "legacy clients must receive the original encoding"
+        );
+        let message = frame
+            .decode_message(WireKind::TerminalSemanticSnapshot)
+            .expect("snapshot");
+        let (session_id, _, snapshot) =
+            voytty_proto::terminal_surface_snapshot_from_message(message)
+                .expect("validated surface");
+        assert_eq!(session_id, summary.session_id);
+        assert_eq!(snapshot.surface.size, summary.viewport);
+    }
+}
+
+/// Bounded full-screen output like the field load: every 20 ms the child
+/// prints 24 fresh pseudo-random 79-column rows, then it becomes an idle `cat`.
+const SURFACE_BACKLOG_SCRIPT: &str = r#"awk 'BEGIN { srand(20261010); a = "abcdefghijklmnopqrstuvwxyz0123456789"; for (i = 0; i < 1500; i++) { for (j = 0; j < 24; j++) { s = ""; for (k = 0; k < 79; k++) s = s substr(a, int(rand() * 36) + 1, 1); print s } fflush(); system("sleep 0.02") } }'; exec cat"#;
+
+fn unix_script_wire_service(
+    own: DeviceId,
+    working_directory: PathBuf,
+    script: &'static str,
+) -> SessionService {
+    SessionService::with_spawner(own, ResourceLimits::default(), move |size, requested| {
+        let cwd = requested.unwrap_or(&working_directory).to_path_buf();
+        let session = PtyHost::new()
+            .spawn(
+                ExplicitPtyCommand::new(Path::new("/bin/sh"), &cwd)
+                    .arg("-c")
+                    .arg(script),
+                PtySize::new(size.rows, size.columns),
+            )
+            .map_err(|error| {
+                DaemonError::new(DomainErrorKind::StoreUnavailable, error.to_string())
+            })?;
+        Ok((session, cwd))
+    })
+}
+
+/// R03 model: a transport send buffer that accepts far more bytes than the
+/// path delivers, like QUIC flow-control credit over a slow Relay path.
+/// The requested viewport's snapshot must not wait behind that backlog.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resize_snapshot_is_not_queued_behind_an_undelivered_surface_backlog() {
+    const DEEP_SEND_BUFFER: usize = 512 * 1024;
+    const LINK_BYTES_PER_SECOND: f64 = 32.0 * 1024.0;
+    const BACKLOG_BUILD: Duration = Duration::from_secs(4);
+    const RESIZE_BOUND: Duration = Duration::from_secs(5);
+    let temporary = tempfile::tempdir().expect("surface backlog fixture");
+    let own = device(0x75);
+    let remote = device(0x76);
+    let accepted = generation(1);
+    let sessions =
+        unix_script_wire_service(own, temporary.path().to_path_buf(), SURFACE_BACKLOG_SCRIPT);
+    let local = sessions.local_principal(AttachmentId::from_array([0x77; 16]));
+    let lease = sessions.issue_operation_lease(local).expect("create lease");
+    let summary = sessions
+        .create(
+            local,
+            OperationId { lease, sequence: 1 },
+            SessionName::new("surface-backlog").expect("name"),
+            None,
+            None,
+        )
+        .expect("output session");
+    let server = SessionWireServer::new(sessions.clone());
+    let context = remote_context(own, remote, accepted, authorized_registry(remote, accepted));
+    // Host writes complete into the deep buffer; only the bridge drains it
+    // at the slow path rate. Controller-to-host bytes are not limited.
+    let (client, bridge_client) = tokio::io::duplex(4096);
+    let (bridge_host, host) = tokio::io::duplex(DEEP_SEND_BUFFER);
+    let (mut client_read, mut client_write) = tokio::io::split(bridge_client);
+    let (mut host_read, mut host_write) = tokio::io::split(bridge_host);
+    let bridge = tokio::spawn(async move {
+        let upstream = tokio::io::copy(&mut client_read, &mut host_write);
+        let downstream = async {
+            let mut chunk = [0_u8; 1024];
+            loop {
+                let read = host_read.read(&mut chunk).await?;
+                if read == 0 {
+                    return Ok::<_, std::io::Error>(());
+                }
+                tokio::time::sleep(Duration::from_secs_f64(read as f64 / LINK_BYTES_PER_SECOND))
+                    .await;
+                client_write.write_all(&chunk[..read]).await?;
+            }
+        };
+        tokio::try_join!(upstream, downstream)
+    });
+    let task = tokio::spawn(async move {
+        server
+            .handle_remote_stream(
+                host,
+                context,
+                SessionWireLimits::default(),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+    });
+    let mut peer = TestRemotePeer::new(client);
+    let mut request = remote_attach_request(
+        own,
+        summary.session_id,
+        ResumeViewId::from_array([0x78; 16]),
+        None,
+    );
+    request.accept_zlib_frames = true;
+    request.acknowledge_surface_frames = true;
+    peer.send(WireKind::TerminalAttachRequest, 1, &request)
+        .await;
+    let initial = peer.next().await;
+    assert_eq!(initial.kind, WireKind::TerminalSemanticSnapshot);
+    let (_, attachment_id, initial) = voytty_proto::terminal_surface_snapshot_from_message(
+        initial
+            .decode_message(WireKind::TerminalSemanticSnapshot)
+            .expect("initial snapshot"),
+    )
+    .expect("validated initial snapshot");
+    peer.send(
+        WireKind::TerminalSnapshotApplied,
+        2,
+        &v2::TerminalSnapshotApplied {
+            attachment_id: Some(attachment_id.into()),
+            revision: initial.revision.get(),
+        },
+    )
+    .await;
+
+    let mut observed = SurfaceBacklogObservation::default();
+    let build_until = Instant::now() + BACKLOG_BUILD;
+    while Instant::now() < build_until {
+        observed.observe(&mut peer, attachment_id).await;
+    }
+    let before_resize = observed;
+    let requested = TerminalSize {
+        rows: 30,
+        columns: 100,
+    };
+    peer.send(
+        WireKind::TerminalResize,
+        3,
+        &v2::TerminalResize {
+            operation_id: None,
+            attachment_id: Some(attachment_id.into()),
+            rows: u32::from(requested.rows),
+            columns: u32::from(requested.columns),
+        },
+    )
+    .await;
+    let resized = Instant::now();
+    let snapshot_size = tokio::time::timeout(RESIZE_BOUND, async {
+        loop {
+            if let Some(size) = observed.observe(&mut peer, attachment_id).await
+                && size == requested
+            {
+                return size;
+            }
+        }
+    })
+    .await;
+    let elapsed = resized.elapsed();
+    eprintln!(
+        "surface backlog: before_resize frames={} decoded_payload_bytes={}; after_resize \
+         frames={} decoded_payload_bytes={} snapshot_received={} elapsed_seconds={:.3}",
+        before_resize.frames,
+        before_resize.payload_bytes,
+        observed.frames - before_resize.frames,
+        observed.payload_bytes - before_resize.payload_bytes,
+        snapshot_size.is_ok(),
+        elapsed.as_secs_f64(),
+    );
+    drop(peer);
+    bridge.abort();
+    let _ = bridge.await;
+    task.abort();
+    let _ = task.await;
+    sessions.shutdown().expect("fixture cleanup");
+    assert!(
+        snapshot_size.is_ok(),
+        "requested viewport snapshot waited behind the undelivered surface backlog",
+    );
+}
+
+#[derive(Clone, Copy, Default)]
+struct SurfaceBacklogObservation {
+    frames: usize,
+    payload_bytes: usize,
+    numbered: u64,
+}
+
+impl SurfaceBacklogObservation {
+    /// Reads one frame, reports numbered frames like the product client,
+    /// and returns a complete snapshot's surface size.
+    async fn observe(
+        &mut self,
+        peer: &mut TestRemotePeer,
+        attachment_id: AttachmentId,
+    ) -> Option<TerminalSize> {
+        let frame = peer.next().await;
+        self.frames += 1;
+        self.payload_bytes += frame.payload.len();
+        let (frame_sequence, size) = match frame.kind {
+            WireKind::TerminalSemanticSnapshot => {
+                let message: v2::TerminalSemanticSnapshot = frame
+                    .decode_message(WireKind::TerminalSemanticSnapshot)
+                    .expect("surface snapshot");
+                let frame_sequence = message.frame_sequence;
+                let (_, _, snapshot) =
+                    voytty_proto::terminal_surface_snapshot_from_message(message)
+                        .expect("validated surface snapshot");
+                (frame_sequence, Some(snapshot.surface.size))
+            }
+            WireKind::TerminalSemanticDelta => {
+                let message: v2::TerminalSemanticDelta = frame
+                    .decode_message(WireKind::TerminalSemanticDelta)
+                    .expect("surface delta");
+                (message.frame_sequence, None)
+            }
+            WireKind::TerminalSyncRequired => (0, None),
+            kind => panic!("unexpected surface backlog frame: {kind:?}"),
+        };
+        if frame_sequence != 0 {
+            assert_eq!(frame_sequence, self.numbered + 1, "consecutive numbering");
+            self.numbered = frame_sequence;
+            peer.send(
+                WireKind::TerminalSurfaceFramesReceived,
+                100,
+                &v2::TerminalSurfaceFramesReceived {
+                    attachment_id: Some(attachment_id.into()),
+                    frame_sequence,
+                },
+            )
+            .await;
+        }
+        size
+    }
+}
+
+#[tokio::test]
+async fn surface_frame_receipts_validate_the_written_range_and_bound_the_window() {
+    let malformed = |result: Result<(), DaemonError>| {
+        result.expect_err("receipt must be rejected").kind() == DomainErrorKind::MalformedFrame
+    };
+    let (receipts, mut window) = SurfaceFrameReceipts::pair();
+    assert!(window.has_room());
+    assert_eq!(window.next_sequence(), 1);
+    assert!(malformed(receipts.accept(1)), "nothing was written yet");
+    assert!(malformed(receipts.accept(0)), "zero is never a frame");
+    let frames = u64::try_from(MAX_UNRECEIVED_SURFACE_FRAMES).expect("small bound");
+    for frame_sequence in 1..=frames {
+        assert!(window.has_room());
+        assert_eq!(window.next_sequence(), frame_sequence);
+        window.record(frame_sequence, 100);
+    }
+    assert!(!window.has_room(), "frame-count bound");
+    receipts.accept(2).expect("cumulative receipt");
+    receipts.accept(2).expect("a repeated receipt is harmless");
+    assert!(malformed(receipts.accept(1)), "receipts cannot regress");
+    assert!(
+        malformed(receipts.accept(frames + 1)),
+        "receipt beyond the written range"
+    );
+    assert!(window.has_room(), "received frames leave the window");
+
+    receipts.accept(frames).expect("everything received");
+    assert!(window.has_room());
+    let large = frames + 1;
+    window.record(large, MAX_UNRECEIVED_SURFACE_BYTES * 2);
+    assert!(
+        !window.has_room(),
+        "byte bound after one admitted large frame"
+    );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::join!(window.receipt(), async {
+            receipts.accept(large).expect("large frame received");
+        });
+    })
+    .await
+    .expect("a receipt wakes the waiting writer");
+    assert!(window.has_room());
+
+    let mut disabled = SurfaceFrameWindow::default();
+    assert_eq!(
+        disabled.next_sequence(),
+        0,
+        "legacy frames are not numbered"
+    );
+    disabled.record(0, MAX_UNRECEIVED_SURFACE_BYTES * 8);
+    assert!(disabled.has_room(), "legacy attachments are never withheld");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn live_surface_updates_wait_for_receipts_without_losing_the_latest_state() {
+    let temporary = tempfile::tempdir().expect("receipt window fixture");
+    let own = device(0x79);
+    let remote = device(0x7a);
+    let accepted = generation(1);
+    let sessions =
+        unix_script_wire_service(own, temporary.path().to_path_buf(), SURFACE_BACKLOG_SCRIPT);
+    let local = sessions.local_principal(AttachmentId::from_array([0x7b; 16]));
+    let lease = sessions.issue_operation_lease(local).expect("create lease");
+    let summary = sessions
+        .create(
+            local,
+            OperationId { lease, sequence: 1 },
+            SessionName::new("receipt-window").expect("name"),
+            None,
+            None,
+        )
+        .expect("output session");
+    let context = remote_context(own, remote, accepted, authorized_registry(remote, accepted));
+    let mut request = remote_attach_request(
+        own,
+        summary.session_id,
+        ResumeViewId::from_array([0x7c; 16]),
+        None,
+    );
+    request.acknowledge_surface_frames = true;
+    let (mut peer, task) =
+        start_remote_attachment(SessionWireServer::new(sessions.clone()), context, request).await;
+    let initial = peer.next().await;
+    let initial: v2::TerminalSemanticSnapshot = initial
+        .decode_message(WireKind::TerminalSemanticSnapshot)
+        .expect("initial snapshot");
+    assert_eq!(
+        initial.frame_sequence, 0,
+        "the correlated attach reply is not counted"
+    );
+    let attachment_id: AttachmentId = initial
+        .attachment_id
+        .clone()
+        .expect("attachment ID")
+        .try_into()
+        .expect("valid attachment ID");
+    peer.send(
+        WireKind::TerminalSnapshotApplied,
+        2,
+        &v2::TerminalSnapshotApplied {
+            attachment_id: Some(attachment_id.into()),
+            revision: initial.revision,
+        },
+    )
+    .await;
+
+    // Without receipts the host writes at most one full window, then
+    // withholds further revisions although the child keeps printing.
+    let mut numbered = Vec::new();
+    let mut revision = initial.revision;
+    while let Some(frame) = peer.try_next(Duration::from_millis(700)).await {
+        assert_eq!(frame.kind, WireKind::TerminalSemanticDelta);
+        let delta: v2::TerminalSemanticDelta = frame
+            .decode_message(WireKind::TerminalSemanticDelta)
+            .expect("live delta");
+        assert_eq!(delta.from_revision, revision, "no update is skipped");
+        revision = delta.to_revision;
+        numbered.push(delta.frame_sequence);
+        assert!(
+            numbered.len() <= MAX_UNRECEIVED_SURFACE_FRAMES + 1,
+            "{numbered:?}"
+        );
+    }
+    let expected: Vec<u64> = (1..=u64::try_from(numbered.len()).expect("small")).collect();
+    assert!(
+        !numbered.is_empty(),
+        "the first live update is always admitted"
+    );
+    assert_eq!(numbered, expected, "live frames are numbered consecutively");
+
+    // One cumulative receipt resumes output with the latest merged state.
+    let received = *numbered.last().expect("numbered frame");
+    peer.send(
+        WireKind::TerminalSurfaceFramesReceived,
+        3,
+        &v2::TerminalSurfaceFramesReceived {
+            attachment_id: Some(attachment_id.into()),
+            frame_sequence: received,
+        },
+    )
+    .await;
+    let resumed = peer
+        .try_next(Duration::from_secs(2))
+        .await
+        .expect("a receipt resumes live output");
+    let resumed: v2::TerminalSemanticDelta = resumed
+        .decode_message(WireKind::TerminalSemanticDelta)
+        .expect("resumed delta");
+    assert_eq!(resumed.frame_sequence, received + 1);
+    assert_eq!(
+        resumed.from_revision, revision,
+        "withheld output was coalesced"
+    );
+    assert!(resumed.to_revision > revision);
+
+    drop(peer);
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+    sessions.shutdown().expect("fixture cleanup");
+}
+
+#[tokio::test]
+async fn legacy_attachments_stay_unnumbered_and_reject_surface_receipts() {
+    let temporary = tempfile::tempdir().expect("legacy receipt fixture");
+    let own = device(0x7d);
+    let remote = device(0x7e);
+    let accepted = generation(1);
+    let sessions = unix_wire_service(own, temporary.path().to_path_buf());
+    let local = sessions.local_principal(AttachmentId::from_array([0x7f; 16]));
+    let lease = sessions.issue_operation_lease(local).expect("create lease");
+    let summary = sessions
+        .create(
+            local,
+            OperationId { lease, sequence: 1 },
+            SessionName::new("legacy-receipt").expect("name"),
+            None,
+            None,
+        )
+        .expect("cat session");
+    let context = remote_context(own, remote, accepted, authorized_registry(remote, accepted));
+    let request = remote_attach_request(
+        own,
+        summary.session_id,
+        ResumeViewId::from_array([0x80; 16]),
+        None,
+    );
+    assert!(!request.acknowledge_surface_frames);
+    let (mut peer, task) =
+        start_remote_attachment(SessionWireServer::new(sessions.clone()), context, request).await;
+    let initial: v2::TerminalSemanticSnapshot = peer
+        .next()
+        .await
+        .decode_message(WireKind::TerminalSemanticSnapshot)
+        .expect("initial snapshot");
+    let attachment_id: AttachmentId = initial
+        .attachment_id
+        .clone()
+        .expect("attachment ID")
+        .try_into()
+        .expect("valid attachment ID");
+    peer.send(
+        WireKind::TerminalSnapshotApplied,
+        2,
+        &v2::TerminalSnapshotApplied {
+            attachment_id: Some(attachment_id.into()),
+            revision: initial.revision,
+        },
+    )
+    .await;
+    peer.send(
+        WireKind::TerminalInput,
+        3,
+        &v2::TerminalInput {
+            operation_id: None,
+            attachment_id: Some(attachment_id.into()),
+            bytes: b"legacy\r".to_vec(),
+        },
+    )
+    .await;
+    let delta = loop {
+        let frame = peer.next().await;
+        if frame.kind == WireKind::TerminalSemanticDelta {
+            break frame
+                .decode_message::<v2::TerminalSemanticDelta>(WireKind::TerminalSemanticDelta)
+                .expect("echo delta");
+        }
+    };
+    assert_eq!(
+        delta.frame_sequence, 0,
+        "legacy live frames are not numbered"
+    );
+    peer.send(
+        WireKind::TerminalSurfaceFramesReceived,
+        4,
+        &v2::TerminalSurfaceFramesReceived {
+            attachment_id: Some(attachment_id.into()),
+            frame_sequence: 1,
+        },
+    )
+    .await;
+    let error = loop {
+        let frame = peer.next().await;
+        if frame.kind == WireKind::ServiceErrorResponse {
+            break frame;
+        }
+    };
+    assert_eq!(error.request_id, 4);
+    let error: v2::ServiceError = error
+        .decode_message(WireKind::ServiceErrorResponse)
+        .expect("typed error");
+    assert_eq!(
+        DomainErrorKind::from_code(&error.code),
+        Some(DomainErrorKind::MalformedFrame)
+    );
+    drop(peer);
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+    sessions.shutdown().expect("fixture cleanup");
+}

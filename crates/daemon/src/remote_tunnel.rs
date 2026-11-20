@@ -414,27 +414,19 @@ where
     }
 
     async fn read_frame(&mut self) -> Result<Option<DecodedFrame>, DaemonError> {
-        if let Some(frame) = self.queued.pop_front() {
-            return Ok(Some(frame));
+        let frame = voytty_client::framing::read_queued_frame(
+            &mut self.reader,
+            &mut self.decoder,
+            &mut self.queued,
+            |_| transport_unavailable("local Session tunnel read failed"),
+        )
+        .await?;
+        if frame.is_none() {
+            std::mem::replace(&mut self.decoder, FrameDecoder::new())
+                .finish()
+                .map_err(protocol_error)?;
         }
-        let mut buffer = [0_u8; 16 * 1024];
-        loop {
-            let read = self
-                .reader
-                .read(&mut buffer)
-                .await
-                .map_err(|_| transport_unavailable("local Session tunnel read failed"))?;
-            if read == 0 {
-                let decoder = std::mem::replace(&mut self.decoder, FrameDecoder::new());
-                decoder.finish().map_err(protocol_error)?;
-                return Ok(None);
-            }
-            self.queued
-                .extend(self.decoder.feed(&buffer[..read]).map_err(protocol_error)?);
-            if let Some(frame) = self.queued.pop_front() {
-                return Ok(Some(frame));
-            }
-        }
+        Ok(frame)
     }
 }
 

@@ -5,7 +5,7 @@ use std::fmt;
 use std::fs;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -807,7 +807,7 @@ impl StateStore {
 /// Tokio runtime wrap these blocking calls in `spawn_blocking`.
 #[derive(Clone)]
 pub struct StoreHandle {
-    sender: SyncSender<StoreCommand>,
+    sender: crossbeam_channel::Sender<StoreCommand>,
 }
 
 impl StoreHandle {
@@ -1138,34 +1138,19 @@ impl StoreHandle {
             gate: Arc::clone(&gate),
         };
         let (reply, response) = mpsc::sync_channel(1);
-        let mut command = build(meta, reply);
-        loop {
-            match self.sender.try_send(command) {
-                Ok(()) => {
-                    if let Some(queued) = queued.as_ref() {
-                        let _ = queued.send(());
-                    }
-                    break;
-                }
-                Err(TrySendError::Disconnected(_)) => {
-                    return Err(store_unavailable("store actor has stopped"));
-                }
-                Err(TrySendError::Full(returned)) => {
-                    command = returned;
-                    if Instant::now() >= deadline {
-                        let _ = gate.state.compare_exchange(
-                            COMMAND_QUEUED,
-                            COMMAND_EXPIRED,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        );
-                        return Err(deadline_exceeded(
-                            "store command queue admission deadline elapsed",
-                        ));
-                    }
-                    thread::sleep(Duration::from_millis(1));
-                }
+        match self.sender.send_deadline(build(meta, reply), deadline) {
+            Ok(()) => {}
+            Err(crossbeam_channel::SendTimeoutError::Disconnected(_)) => {
+                return Err(store_unavailable("store actor has stopped"));
             }
+            Err(crossbeam_channel::SendTimeoutError::Timeout(_)) => {
+                return Err(deadline_exceeded(
+                    "store command queue admission deadline elapsed",
+                ));
+            }
+        }
+        if let Some(queued) = queued {
+            let _ = queued.send(());
         }
         wait_for_store_response(response, gate, deadline, await_started_revoke)
     }
@@ -1184,7 +1169,7 @@ pub struct StoreActor {
 impl StoreActor {
     /// Moves a store into one dedicated owner thread.
     pub fn start(store: StateStore) -> Result<Self, DaemonError> {
-        let (sender, receiver) = mpsc::sync_channel(STORE_COMMAND_CAPACITY);
+        let (sender, receiver) = crossbeam_channel::bounded(STORE_COMMAND_CAPACITY);
         let thread = thread::Builder::new()
             .name("voytty-state-store".to_owned())
             .spawn(move || run_store_actor(store, receiver))
@@ -1356,7 +1341,7 @@ enum StoreCommand {
     Shutdown,
 }
 
-fn run_store_actor(mut store: StateStore, receiver: Receiver<StoreCommand>) {
+fn run_store_actor(mut store: StateStore, receiver: crossbeam_channel::Receiver<StoreCommand>) {
     while let Ok(command) = receiver.recv() {
         match command {
             StoreCommand::Shutdown => return,

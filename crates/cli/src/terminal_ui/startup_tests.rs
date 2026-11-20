@@ -1,4 +1,5 @@
 use super::outer_terminal::project_outer_child_rows;
+use super::*;
 
 fn startup_request(target: &str) -> TerminalRequest {
     TerminalRequest {

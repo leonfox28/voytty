@@ -59,7 +59,12 @@ impl Default for HostColors {
 }
 impl HostColors {
     pub(super) fn for_host(owned_subscription: Arc<AtomicBool>, can_probe: bool) -> Self {
-        Self { owned_subscription, can_probe, refresh: can_probe, ..Self::default() }
+        Self {
+            owned_subscription,
+            can_probe,
+            refresh: can_probe,
+            ..Self::default()
+        }
     }
     pub(super) fn deadline(&self) -> Option<Instant> {
         self.round
@@ -505,21 +510,35 @@ mod tests {
     #[test]
     fn palette_probe_bounds_each_terminal_response_and_keeps_one_round() {
         #[derive(Default)]
-        struct ProbeWriter { bytes: Vec<u8>, flushes: usize }
+        struct ProbeWriter {
+            bytes: Vec<u8>,
+            flushes: usize,
+        }
         impl Write for ProbeWriter {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> io::Result<()> { self.flushes += 1; Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                self.flushes += 1;
+                Ok(())
+            }
         }
         let mut output = ProbeWriter::default();
-        DesktopPresenter::default().write_color_command(&mut output, HostColorCommand::Probe).expect("physical probe");
+        DesktopPresenter::default()
+            .write_color_command(&mut output, HostColorCommand::Probe)
+            .expect("physical probe");
         let text = String::from_utf8(output.bytes).expect("query text");
         let mut slots = Vec::new();
-        for command in text.split("\x1b\\").filter_map(|command| command.strip_prefix("\x1b]4;")) {
+        for command in text
+            .split("\x1b\\")
+            .filter_map(|command| command.strip_prefix("\x1b]4;"))
+        {
             let (index, query) = command.split_once(';').expect("palette query");
-            assert_eq!(query, "?", "a compound OSC response can overflow the host's fixed reply allocator");
+            assert_eq!(
+                query, "?",
+                "a compound OSC response can overflow the host's fixed reply allocator"
+            );
             slots.push(index.parse::<u16>().expect("palette index"));
         }
         assert_eq!(slots, (0..256).collect::<Vec<_>>());

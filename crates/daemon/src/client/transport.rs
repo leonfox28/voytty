@@ -1,8 +1,9 @@
 //! Direct and opaque-tunnel byte transport for one attachment epoch.
 use std::{collections::VecDeque, path::Path, sync::Arc};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 #[cfg(unix)]
 use tokio::net::UnixStream as LocalStream;
+use voytty_client::framing::read_queued_frame;
 use voytty_client::progress::{LocalProgressDecoder, ProgressObserver};
 use voytty_client::transport::{
     AttachmentConnector, AttachmentIo, AttachmentTransport, AttachmentTransportItem,
@@ -19,7 +20,6 @@ use voytty_core::connection_progress::ConnectionStage;
 #[cfg(windows)]
 use voytty_platform::local::Stream as LocalStream;
 use voytty_proto::{DecodedFrame, FrameDecoder, WireKind, encode_message, v2};
-use zeroize::Zeroizing;
 
 /// Concrete same-UID Session adapter, including opaque remote envelopes.
 #[allow(missing_docs)]
@@ -373,33 +373,24 @@ pub(super) async fn read_tunnel_first(
 ) -> Result<FirstFrame, DaemonError> {
     let mut progress = LocalProgressDecoder::new(1, progress);
     let mut decoder = FrameDecoder::new();
-    let mut buffer = Zeroizing::new([0_u8; 16 * 1024]);
-    loop {
-        let read = stream
-            .read(&mut *buffer)
-            .await
-            .map_err(|error| daemon_io("read remote Session tunnel Opened", error))?;
-        if read == 0 {
-            // The viewer daemon may have stopped between arbitrary Unix-socket
-            // writes. A truncated outer frame is therefore a lost transport
-            // epoch, not evidence that the peer emitted malformed bytes.
-            return Err(DaemonError::new(
-                DomainErrorKind::TransportUnavailable,
-                "remote Session tunnel closed before Opened",
-            ));
-        }
-        let mut frames = VecDeque::from(decoder.feed(&buffer[..read]).map_err(protocol_error)?);
-        while let Some(frame) = frames.pop_front() {
-            if progress.consume(&frame)? {
-                continue;
-            }
+    let mut queued = VecDeque::new();
+    while let Some(frame) = read_queued_frame(stream, &mut decoder, &mut queued, |e| {
+        daemon_io("read remote Session tunnel Opened", e)
+    })
+    .await?
+    {
+        if !progress.consume(&frame)? {
             return Ok(FirstFrame {
                 frame,
                 decoder,
-                queued: frames,
+                queued,
             });
         }
     }
+    Err(DaemonError::new(
+        DomainErrorKind::TransportUnavailable,
+        "remote Session tunnel closed before Opened",
+    ))
 }
 
 async fn read_tunnel_frame_parts<R: tokio::io::AsyncRead + Unpin>(
@@ -407,31 +398,19 @@ async fn read_tunnel_frame_parts<R: tokio::io::AsyncRead + Unpin>(
     decoder: &mut FrameDecoder,
     queued: &mut VecDeque<DecodedFrame>,
 ) -> Result<DecodedFrame, DaemonError> {
-    if let Some(frame) = queued.pop_front() {
+    if let Some(frame) = read_queued_frame(stream, decoder, queued, |e| {
+        daemon_io("read remote Session tunnel", e)
+    })
+    .await?
+    {
         return Ok(frame);
     }
-    let mut buffer = [0_u8; 16 * 1024];
-    loop {
-        let read = stream
-            .read(&mut buffer)
-            .await
-            .map_err(|error| daemon_io("read remote Session tunnel", error))?;
-        if read == 0 {
-            // Discard any partial outer envelope from the dead viewer-daemon
-            // epoch. Reconnect must not be suppressed by a synthetic framing
-            // error caused only by process interruption.
-            *decoder = FrameDecoder::new();
-            queued.clear();
-            return Err(DaemonError::new(
-                DomainErrorKind::TransportUnavailable,
-                "remote Session tunnel closed without a terminal outcome",
-            ));
-        }
-        queued.extend(decoder.feed(&buffer[..read]).map_err(protocol_error)?);
-        if let Some(frame) = queued.pop_front() {
-            return Ok(frame);
-        }
-    }
+    // A viewer daemon can disappear halfway through an envelope.
+    *decoder = FrameDecoder::new();
+    Err(DaemonError::new(
+        DomainErrorKind::TransportUnavailable,
+        "remote Session tunnel closed without a terminal outcome",
+    ))
 }
 
 /// Reads one local frame while preserving partial and coalesced bytes.
@@ -440,26 +419,17 @@ pub(super) async fn read_frame_parts(
     decoder: &mut FrameDecoder,
     queued: &mut VecDeque<DecodedFrame>,
 ) -> Result<DecodedFrame, DaemonError> {
-    if let Some(frame) = queued.pop_front() {
+    if let Some(frame) = read_queued_frame(stream, decoder, queued, |e| {
+        daemon_io("read local terminal event", e)
+    })
+    .await?
+    {
         return Ok(frame);
     }
-    let mut buffer = [0_u8; 16 * 1024];
-    loop {
-        let read = stream
-            .read(&mut buffer)
-            .await
-            .map_err(|error| daemon_io("read local terminal event", error))?;
-        if read == 0 {
-            std::mem::replace(decoder, FrameDecoder::new())
-                .finish()
-                .map_err(protocol_error)?;
-            return Err(attachment_cancelled());
-        }
-        queued.extend(decoder.feed(&buffer[..read]).map_err(protocol_error)?);
-        if let Some(frame) = queued.pop_front() {
-            return Ok(frame);
-        }
-    }
+    std::mem::replace(decoder, FrameDecoder::new())
+        .finish()
+        .map_err(protocol_error)?;
+    Err(attachment_cancelled())
 }
 
 /// Frozen desktop socket factory; aliases have already been resolved by the daemon.

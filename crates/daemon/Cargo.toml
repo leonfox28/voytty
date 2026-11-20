@@ -7,6 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+crossbeam-channel.workspace = true
 voytty-diagnostics.workspace = true
 flate2.workspace = true
 futures-util.workspace = true

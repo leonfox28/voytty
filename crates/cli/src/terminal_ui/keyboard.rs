@@ -2,9 +2,11 @@ use voytty_core::terminal::TerminalKeyboardFlags;
 #[cfg(test)]
 use voytty_core::terminal::TerminalModes;
 
-use voytty_client::keyboard::{FunctionalKey, KeyCode, KeyInput, legacy_control,
-    MOD_SHIFT, MOD_ALT, MOD_CONTROL, MOD_SUPER, MOD_HYPER, MOD_META, MOD_CAPS_LOCK, MOD_NUM_LOCK};
 pub(super) use voytty_client::keyboard::KeyEventKind;
+use voytty_client::keyboard::{
+    FunctionalKey, KeyCode, KeyInput, MOD_ALT, MOD_CAPS_LOCK, MOD_CONTROL, MOD_HYPER, MOD_META,
+    MOD_NUM_LOCK, MOD_SHIFT, MOD_SUPER, legacy_control,
+};
 
 /// A binding is a key and exact modifiers, independent of its wire encoding.
 #[derive(Clone, Copy)]
@@ -235,7 +237,6 @@ impl EnhancedKey {
             raw: &self.raw,
         }
     }
-
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

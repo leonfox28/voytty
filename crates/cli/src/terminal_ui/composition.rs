@@ -197,9 +197,16 @@ impl ComposedFrame {
             .map(|live| live.scroll_metrics)
             .unwrap_or_else(|| viewport.scroll_metrics());
         let is_live = live.is_some() || viewport.is_live();
-        let pan_rows = if is_live && surface.cursor.visible && content_size.columns == surface.size.columns {
-            surface.cursor.row.saturating_add(1).saturating_sub(content_size.rows)
-        } else { 0 };
+        let pan_rows =
+            if is_live && surface.cursor.visible && content_size.columns == surface.size.columns {
+                surface
+                    .cursor
+                    .row
+                    .saturating_add(1)
+                    .saturating_sub(content_size.rows)
+            } else {
+                0
+            };
         let mut rows = BTreeMap::new();
         let height = usize::from(content_size.rows);
         let width = usize::from(content_size.columns);

@@ -143,7 +143,8 @@ fn open_file(path: &Path) -> Result<PreparedSource, ClientError> {
     options.read(true);
     #[cfg(unix)]
     options.custom_flags(nix::libc::O_NONBLOCK);
-    let file = options.open(path)
+    let file = options
+        .open(path)
         .map_err(|_| local_error("Copied file cannot be opened"))?;
     let info = file
         .metadata()

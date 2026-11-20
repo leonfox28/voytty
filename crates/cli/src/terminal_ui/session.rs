@@ -716,7 +716,8 @@ impl TerminalUiSession {
             }
             TerminalViewEvent::Notification(notification) => {
                 let stdout = io::stdout();
-                self.presenter.write_notification(&mut stdout.lock(), &notification)?;
+                self.presenter
+                    .write_notification(&mut stdout.lock(), &notification)?;
             }
             TerminalViewEvent::ClipboardWrite(write) => {
                 let stdout = io::stdout();
@@ -1001,7 +1002,5 @@ fn presentation_state(
 }
 
 #[cfg(all(test, unix))]
-mod tests {
-    use super::*;
-    include!("session_tests.rs");
-}
+#[path = "session_tests.rs"]
+mod tests;
