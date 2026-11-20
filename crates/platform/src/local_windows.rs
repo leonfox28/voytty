@@ -97,7 +97,7 @@ fn random_marker() -> io::Result<[u8; 32]> {
     let mut nonce = [0; 32];
     ring::rand::SystemRandom::new()
         .fill(&mut nonce)
-        .map_err(io::Error::other)?;
+        .map_err(|_| io::Error::other("OS randomness unavailable for pipe marker"))?;
     Ok(nonce)
 }
 /// A reserved listener path, adopted once the daemon enters its Tokio runtime.
