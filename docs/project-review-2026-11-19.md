@@ -119,7 +119,20 @@ Windows x64 在 `5956410` 通过全工作区及测试目标的 `cargo xwin check
 
 提交 `9aaac17` 在 macOS 上通过 `just check-changes origin/main`。工作区 873 项、noq-proto 441 项、Iroh 165 项测试通过，合计 1,479 项通过，17 项按已有标记忽略。Clippy 和两个架构的 Relay 制品校验通过。Windows x64、ARM64 均通过守护进程及其测试目标的交叉编译检查，Windows 原生运行仍待托管 CI 验证。
 
-上轮列出的中危问题中，M8、M9、M13、M17、M18、M19、M20 仍待修复。M21 的 Linux 目录权限已修复，Windows 自动启动程序校验和交互终端的崩溃日志仍待处理。
+截至 `9aaac17`，上轮列出的中危问题中还有七项待修，M21 部分完成。
+
+## 连接管理后续修复
+
+分支 `fix/project-review-broker-followup` 接续会话管理修复，代码提交为 `7940911`。
+
+| 编号 | 修复与回归验证 |
+| --- | --- |
+| M8 | 退役请求在返回调用者之前就排入设备锁的等待队列。只有指定的旧连接仍被选中且符合退役条件时才将其关闭。接用已启动的备用连接时，新拨号可等候空位。真实中继测试占住唯一的拨号名额和设备锁，确认旧连接仍被退役，重试接用了备用连接，全程只建立两条连接。[拨号](../crates/daemon/src/connection_broker/dial.rs) · [回归测试](../crates/daemon/src/connection_broker/tests.rs) |
+| M9 | 同一个后台任务按 250 ms 窗口合并已验证的路由更新。停机时立即处理已接收的更新，并在调用方的截止时间内等待后台任务退出。定期清理空闲设备记录，同时保留在用连接和仍需拒绝过时握手的记录。测试覆盖 512 次路由更新、数据库阻塞时的停机超时与后续排空，以及空闲设备记录回收。[后台维护与测试](../crates/daemon/src/connection_broker/maintenance.rs) |
+
+提交 `7940911` 通过守护进程 Clippy、21 项连接管理测试和 11 项远端会话缓存测试。macOS 通过 `just check-changes origin/main`，其中工作区 875 项、noq-proto 441 项、Iroh 165 项测试通过，合计 1,481 项通过，17 项按已有标记忽略。Windows x64 和 ARM64 通过守护进程及测试目标的交叉编译。ARM64 使用 Clang 配套的 NEON 头文件，Windows 原生运行仍待托管 CI 验证。
+
+上轮列出的中危问题中，M13、M17、M18、M19、M20 仍待修复。M21 的 Linux 目录权限已修复，Windows 自动启动程序校验和交互终端的崩溃日志仍待处理。
 
 ---
 
@@ -347,10 +360,12 @@ Windows x64 在 `5956410` 通过全工作区及测试目标的 `cargo xwin check
 - **说明**：检查 `shutdown` 与加锁插入 `self.tasks` 非原子，停机瞬间可能漏掉新 spawn 的任务。
 
 #### M8. `ConnectionBroker` 锁竞争静默丢弃失败连接退役，且 `dial_replacement` 双重扣减 `pending_dials` 许可
+- **当前状态**　已修复。复核时确认，备用拨号持有的许可在拨号任务结束时释放。旧实现的问题是，即使已有可用的备用连接，重试也先要求一个空闲许可。[连接管理后续修复](#连接管理后续修复)
 - **位置**：[`crates/daemon/src/connection_broker.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L1580-L1644) / [`connection_broker.rs#L1955-L1965`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L1955-L1965)
-- **说明**：`retire_failed_candidate` 使用 `try_lock()`，遇短暂争用直接放弃退役；`dial_replacement` 已持 1 个许可存入 `state.replacement`，`dial_once` 又先申请第 2 个许可才取走旧许可，满额时误报 `ResourceExhausted` 并滞留许可。
+- **原实现**　`retire_failed_candidate` 使用 `try_lock()`，锁暂不可用就放弃退役。`dial_once` 先申请新拨号许可，再取走 `state.replacement`。名额用尽时，即使备用连接已经就绪，重试也会先收到 `ResourceExhausted`。
 
 #### M9. `ConnectionBroker` 后台任务未纳入追踪，路径事件无合并风暴刷库，`peers` 映射只增不减
+- **当前状态**　已修复。[连接管理后续修复](#连接管理后续修复)
 - **位置**：[`crates/daemon/src/connection_broker.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L287) / [`connection_broker.rs#L1411-L1436`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L1411-L1436) / [`connection_broker.rs#L2430`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L2430) / [`connection_broker.rs#L2667-L2716`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L2667-L2716)
 - **说明**：`quiesce_until` 不等待已脱离的拨号/连接/持久化任务；每次 `PathEvent` 都新起 `tokio::spawn` 写 SQLite，网络抖动易打满 `STORE_COMMAND_CAPACITY`（64）；空闲/撤销对端的 `PeerSlot` 永不回收。
 
