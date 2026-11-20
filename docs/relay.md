@@ -25,7 +25,7 @@ The checksum is verified at the artifact-download boundary. Deployment does
 not add another image digest parser; Docker and GHCR already transfer images by
 content address.
 
-The Relay forwards voytty's future end-to-end encrypted packets and stores no
+The Relay forwards voytty's end-to-end encrypted packets and stores no
 terminal state, device key, session, or business record. Like any network
 forwarder, it can still observe connection metadata such as source addresses,
 endpoint identifiers, timing, and encrypted traffic sizes.
@@ -67,7 +67,7 @@ sh tests/relay/secret-scan.sh
 
 - `verify-upstream.sh` downloads and verifies both official archives.
 - `build-platforms.sh` builds and executes the amd64 and arm64 images.
-- `static.sh` checks the minimal image, publication workflow, configuration,
+- `static.sh` checks the minimal image, publication policy, configuration,
   and rendered Compose contract.
 - `smoke.sh` reuses the native-platform image built by `build-platforms.sh`,
   then verifies `/healthz`, `/generate_204`, and an authenticated Iroh handshake without rebuilding it or
@@ -113,9 +113,9 @@ After an update, accept the deployment once:
 
 ```bash
 curl --fail http://127.0.0.1:38451/healthz
-curl --fail https://relay.zenithconsulting.cn/healthz
-curl --fail --output /dev/null https://relay.zenithconsulting.cn/generate_204
-sh tests/relay/public-handshake.sh https://relay.zenithconsulting.cn
+curl --fail https://relay.example.com/healthz
+curl --fail --output /dev/null https://relay.example.com/generate_204
+sh tests/relay/public-handshake.sh https://relay.example.com
 ```
 
 Also inspect the host once to confirm that only loopback TCP 38451 is published,
@@ -129,8 +129,8 @@ the repository. This deployment does not need a real `.env` file.
 
 ## Reverse-proxy requirements
 
-The public URL is `https://relay.zenithconsulting.cn`; only the same-host hop to
-`http://127.0.0.1:38451` is plain HTTP. The reverse proxy must preserve path,
+Use your own HTTPS Relay URL in the commands above. The proxy connects to
+`http://127.0.0.1:38451` over loopback. The reverse proxy must preserve path,
 query data, the long-lived HTTP/1.1 WebSocket upgrade on `/relay`, and Iroh's
 authentication headers. Equivalent Nginx/OpenResty semantics are:
 
@@ -198,12 +198,6 @@ recreate it:
 docker compose up -d --force-recreate
 ```
 
-If a newly published image is confirmed defective, an operator may temporarily
-replace `:latest` in the server Compose with the preceding version tag, then run
-`docker compose pull` and `docker compose up -d`. This is a manual escape hatch,
-not automatic rollback logic, a routine drill, or a release gate.
-
-Native GitHub Release and GHCR publication are separate, non-atomic service
-boundaries. If the immutable native Release succeeds but relay publication
-fails, retain the native Release and rerun only the explicit relay job for the
-same frozen commit/tag. Never replace native assets to retry the image.
+To roll back a local build, restore the previous reviewed deployment bundle,
+including its pinned archive checksums and Compose image tag, then run
+`docker compose up --build -d`. Run the health and handshake checks above.

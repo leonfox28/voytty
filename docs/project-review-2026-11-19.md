@@ -23,10 +23,10 @@
 
 | 编号 | 状态与提交 | 修复结果及验证 |
 | --- | --- | --- |
-| C4 | 已修复 · `1961dc8` | 单按 `Esc` 后，即使没有下一次输入，40 ms 的等待窗口结束时也会送出按键。测试覆盖了紧随其后的鼠标移动、翻页键、分段到达的转义序列和跨输入轮次的按键。[输入回归测试](../crates/cli/src/terminal_ui.rs#L6759) |
+| C4 | 已修复 · `1961dc8` | 单按 `Esc` 后，即使没有下一次输入，40 ms 的等待窗口结束时也会送出按键。测试覆盖了紧随其后的鼠标移动、翻页键、分段到达的转义序列和跨输入轮次的按键。[输入回归测试](../crates/cli/src/terminal_ui/desktop_tests.rs#L2893) |
 | C5 | 已修复 · `3f95d3e` | 生成的 systemd 用户单元使用 `WorkingDirectory=%h`。在 ARM64 Linux 虚拟机上，实际生成的单元通过了 `systemd-analyze --user verify`。已有安装可再次运行 `voytty daemon autostart enable` 更新旧单元。[自动启动说明](autostart.md#L28) |
 | M21 | 部分修复 · `3f95d3e` | Linux 实测接受属主独占主组的 `0775` 目录，并拒绝共享组可写、带扩展访问 ACL 的组可写目录及 `0777` 目录。Windows 启动程序校验和交互终端的 panic 日志仍待处理。[目录权限测试](../crates/platform/src/autostart.rs#L627) |
-| C3 | 已修复 · `02857b8` | 回归测试确认，等待撤权写锁超时会在写库前退出。撤权已提交给后台任务后，即使请求被取消，数据库与内存仍会同步为已撤权，并关闭该设备的连接、解除其终端会话挂接。停机成功后，即使客户端在回包前断开，监听器也会退出。[撤权测试](../crates/daemon/src/session_wire.rs#L3948) · [停机测试](../crates/daemon/src/local_ipc.rs#L627) |
+| C3 | 已修复 · `02857b8` | 回归测试确认，等待撤权写锁超时会在写库前退出。撤权已提交给后台任务后，即使请求被取消，数据库与内存仍会同步为已撤权，并关闭该设备的连接、解除其终端会话挂接。停机成功后，即使客户端在回包前断开，监听器也会退出。[撤权测试](../crates/daemon/src/session_wire/tests.rs#L1627) · [停机测试](../crates/daemon/src/local_ipc.rs#L627) |
 | C1 | 按维护者要求跳过 | 本轮未处置 Penpot 配置与令牌。 |
 
 修复提交 `02857b8` 在 macOS 上通过了 `just check-changes origin/main`，涵盖工作区 Clippy 与测试、依赖策略、传输层补丁测试及 Relay 静态检查。Linux 专项验证覆盖了单元文件和目录权限。实际登录自启和托管跨平台 CI 尚未验证。
@@ -143,24 +143,24 @@ Windows x64 在 `616ef39` 完成全工作区及测试目标的 `cargo xwin check
 ### 安全策略与终端引擎
 
 #### H1. 终端组合字符与超链接配额对账缺少脏标记 + `CSI b` 4096 倍放大导致单核 CPU 耗尽 DoS
-- **位置**：[`crates/terminal/src/engine.rs`](../crates/terminal/src/engine.rs#L337-L365) / [`engine.rs#L414-L440`](../crates/terminal/src/engine.rs#L414-L440)、[`crates/terminal/src/hyperlinks.rs`](../crates/terminal/src/hyperlinks.rs#L60-L69) / [`hyperlinks.rs#L86-L111`](../crates/terminal/src/hyperlinks.rs#L86-L111)、[`crates/terminal/src/ingress.rs`](../crates/terminal/src/ingress.rs#L441-L455) / [`ingress.rs#L584-L601`](../crates/terminal/src/ingress.rs#L584-L601)
+- **位置**：[`crates/terminal/src/engine.rs`](../crates/terminal/src/engine.rs#L337-L365) / [`engine.rs#L414-L440`](../crates/terminal/src/engine.rs#L414-L440)、[`crates/terminal/src/hyperlinks.rs`](../crates/terminal/src/hyperlinks.rs#L60-L69) / [`hyperlinks.rs#L86-L111`](../crates/terminal/src/hyperlinks.rs#L86-L111)、[`crates/terminal/src/ingress.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/terminal/src/ingress.rs#L441-L455) / [`ingress.rs#L584-L601`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/terminal/src/ingress.rs#L584-L601)
 - **根因**：一旦会话内组合字符（4,096 格 / 64 KiB）或超链接（1,024 条 / 1 MiB）配额被回滚缓冲中的存活单元格占满，后续**每一个**组合字符或新 `OSC 8` 都会无条件全量扫描 `(history_size + screen_lines) * cols`（最多 `(2000 + 80) * 240 = 499,200` 格）。同时 `print_character()` 也将组合字符写入 `preceding_character`，使得一条 7 字节的 `CSI 4096 b`（REP）触发 `4,096 × 499,200 ≈ 20.4 亿` 次单元格检查，持锁（`model_shared.commit`）将 `voytty-terminal-model` 线程打满数分钟。
 - **修复建议**：为网格维护仅在覆盖/擦除/滚动/切屏/缩放/重置时置位的脏标记或变更代数；对账后清零脏标记，未变脏时 O(1) 直接拒绝；禁止 `CSI b` 重复零宽组合字符。
 
 #### H2. 不可信 PTY 输出通过 `DCS +q` 10.6 倍响应放大触发 `ReplyOverflow`，直接杀死活跃会话
-- **位置**：[`crates/terminal/src/ingress.rs`](../crates/terminal/src/ingress.rs#L156-L162) / [`ingress.rs#L694-L697`](../crates/terminal/src/ingress.rs#L694-L697)、[`crates/terminal/src/colors.rs`](../crates/terminal/src/colors.rs#L321-L347)、[`crates/daemon/src/terminal_driver.rs`](../crates/daemon/src/terminal_driver.rs#L386-L394)、[`crates/daemon/src/session.rs`](../crates/daemon/src/session.rs#L3297-L3339)
+- **位置**：[`crates/terminal/src/ingress.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/terminal/src/ingress.rs#L156-L162) / [`ingress.rs#L694-L697`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/terminal/src/ingress.rs#L694-L697)、[`crates/terminal/src/colors.rs`](../crates/terminal/src/colors.rs#L321-L347)、[`crates/daemon/src/terminal_driver.rs`](../crates/daemon/src/terminal_driver.rs#L386-L394)、[`crates/daemon/src/session.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L3297-L3339)
 - **根因**：`DCS +q` 查询 `"Setulc"`（13 字节输入）会生成 138 字节回复（10.6 倍放大）。单次 8 KiB PTY 读取中仅需 7 条 `DCS +q`（约 7.2 KiB）即可产出 75,348 字节响应，突破 `MAX_REPLY_BYTES_PER_UPDATE`（64 KiB）并返回致命错误 `IngressError::ReplyOverflow`。`TerminalDriver` 将任何 `ingest()` 错误视为驱动故障并终止模型线程，进而促使 `SessionActor` 杀死用户 Shell 并以 `DriverFailure` 永久结束会话。
 - **修复建议**：将响应缓冲超限降级为“丢弃超额回复 + 上报有限侧事件”（类似 `EventsDropped`），而非终止驱动；限制单条 `DCS +q` / `OSC 4` / `CSI $p` 最多应答的条目数。
 
 #### H3. 未闭合的 OSC/DCS/APC/PM/SOS 控制串会永久卡死主机终端解析器
-- **位置**：[`crates/terminal/src/ingress.rs`](../crates/terminal/src/ingress.rs#L332-L366)
+- **位置**：[`crates/terminal/src/ingress.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/terminal/src/ingress.rs#L332-L366)
 - **根因**：在 `PolicyState::String` 状态中，遇到 `ESC` 后若下一字节不是 `\`（例如 `\x1b[2J` 或 `\x1bc` RIS 重置），代码将 `0x1b` 与该字节压入字符串并**停留在 `PolicyState::String`**，违背 ECMA-48/VT500 规范（应中止控制串并转入 `PolicyState::Escape`）。任何子程序输出截断的 OSC/DCS 后，整个会话后续输出（含 `reset`）均会被永久吞噬。
 - **修复建议**：当 `string.saw_escape && byte != b'\\'` 时，终止当前控制串并将 `byte` 交由 `PolicyState::Escape` 处理。
 
 ### 守护进程并发、网络与生命周期
 
 #### C2（保留原编号，现行等级：High / P1）. Unix 下后代持有 PTY 从端且读端未退出时，`TerminalDriver::finalize` 存在有条件的无界等待
-- **位置**：[`crates/platform/src/pty/unix_io.rs`](../crates/platform/src/pty/unix_io.rs#L32-L37) / [`unix_io.rs#L79-L95`](../crates/platform/src/pty/unix_io.rs#L79-L95)、[`crates/platform/src/pty.rs`](../crates/platform/src/pty.rs#L638-L651)、[`crates/daemon/src/terminal_driver.rs`](../crates/daemon/src/terminal_driver.rs#L626-L657)、[`crates/daemon/src/session.rs`](../crates/daemon/src/session.rs#L1117-L1141) / [`session.rs#L3355-L3373`](../crates/daemon/src/session.rs#L3355-L3373)
+- **位置**：[`crates/platform/src/pty/unix_io.rs`](../crates/platform/src/pty/unix_io.rs#L32-L37) / [`unix_io.rs#L79-L95`](../crates/platform/src/pty/unix_io.rs#L79-L95)、[`crates/platform/src/pty.rs`](../crates/platform/src/pty.rs#L638-L651)、[`crates/daemon/src/terminal_driver.rs`](../crates/daemon/src/terminal_driver.rs#L626-L657)、[`crates/daemon/src/session.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L1117-L1141) / [`session.rs#L3355-L3373`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L3355-L3373)
 - **证据与触发条件**（原有结论基于静态路径分析，跨平台持续时长及 Windows ConPTY 表现待实测验证）：
   1. 触发前提为会话内存在继承了 PTY 从端 FD 且未退出的后代进程（例如常见后台任务 `cmd &`、`nohup ...`）。
   2. 根 shell 退出或被 `session close` / `voytty daemon stop --yes` 终止后，`PtyChild::close_explicitly()` 仅终止直接子进程 PID；在后代仍持有从端且读端没有收到 EOF、EIO 或其他会让其退出的事件的前提下，读线程会继续停在阻塞读中。
@@ -175,7 +175,7 @@ Windows x64 在 `616ef39` 完成全工作区及测试目标的 `cargo xwin check
 - **修复建议**：移除 `local_ipc.rs:508` 的重复外层 `timeout`，统一依赖内层 `absolute_deadline`（并为 `service.rs:806` 的 `revoke_guard` 加上 deadline）；当 `reply.stop_after_flush == true` 时无论回包写入是否成功均须触发 `stop_sender`；在 `store.revoke` 提交后通过不可取消边界保证完成 `guard.publish(Revoked)` 及后续断连清理。
 
 #### H4. `ConnectionBroker` 两处 `Notify::notified()` 在释放互斥锁后才创建，存在唤醒丢失
-- **位置**：[`crates/daemon/src/connection_broker.rs`](../crates/daemon/src/connection_broker.rs#L1856-L1896) / [`connection_broker.rs#L2378-L2415`](../crates/daemon/src/connection_broker.rs#L2378-L2415) / [`connection_broker.rs#L3437-L3443`](../crates/daemon/src/connection_broker.rs#L3437-L3443)
+- **位置**：[`crates/daemon/src/connection_broker.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L1856-L1896) / [`connection_broker.rs#L2378-L2415`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L2378-L2415) / [`connection_broker.rs#L3437-L3443`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L3437-L3443)
 - **根因**：`run_dial_worker` 与 `promote_candidate` 均在释放 `slot.state` 锁**之后**才调用 `wait_for_notify_optional` / `wait_for_notify` 创建 `slot.changed.notified()`。若另一任务在“解锁 → 创建 `notified()`”窗口内触发 `slot.changed.notify_waiters()`，本次广播会被漏掉，分别导致重连卡死长达 30 秒或健康候选连接超期自毁。（注：初版同时列出的 `PairingService` `AcceptCell::wait_until` 经对照 Tokio 1.53.3 源码复核为误报——该处先于查锁创建 `notified()`，且 Tokio 对 `notify_waiters()` 保证从 `notified()` 创建起即捕获后续广播，已从本项移除；详见[误报核查](project-review-2026-11-19-false-positives.md)。）
 - **修复建议**：在这两处释放 `slot.state` 锁**之前**先创建 `let notified = slot.changed.notified();`，再在解锁后等待该 `notified`（或沿用同文件 L1668-1670 的 `tokio::pin!(notified); notified.as_mut().enable();` 模式）。
 
@@ -185,7 +185,7 @@ Windows x64 在 `616ef39` 完成全工作区及测试目标的 `cargo xwin check
 - **修复建议**：禁止在 `model_thread` 持锁期间执行无界阻塞写，将自动应答写入独立的有界非阻塞/异步写队列（满时按策略丢弃多余自动回复），确保 PTY stdout 持续排空。
 
 #### H6. 单线程 Tokio 守护进程运行时在关闭/重绑期间完全冻结，且被同步 zlib 与同步文件删除阻塞
-- **位置**：[`crates/daemon/src/lifecycle.rs`](../crates/daemon/src/lifecycle.rs#L452) / [`lifecycle.rs#L465-L491`](../crates/daemon/src/lifecycle.rs#L465-L491) / [`lifecycle.rs#L554-L571`](../crates/daemon/src/lifecycle.rs#L554-L571)、[`crates/daemon/src/session_wire.rs`](../crates/daemon/src/session_wire.rs#L636) / [`session_wire.rs#L1068-L1074`](../crates/daemon/src/session_wire.rs#L1068-L1074)、[`crates/daemon/src/session_wire/upload.rs`](../crates/daemon/src/session_wire/upload.rs#L183)
+- **位置**：[`crates/daemon/src/lifecycle.rs`](../crates/daemon/src/lifecycle.rs#L452) / [`lifecycle.rs#L465-L491`](../crates/daemon/src/lifecycle.rs#L465-L491) / [`lifecycle.rs#L554-L571`](../crates/daemon/src/lifecycle.rs#L554-L571)、[`crates/daemon/src/session_wire.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session_wire.rs#L636) / [`session_wire.rs#L1068-L1074`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session_wire.rs#L1068-L1074)、[`crates/daemon/src/session_wire/upload.rs`](../crates/daemon/src/session_wire/upload.rs#L183)
 - **根因**：整个守护进程运行在 `Builder::new_current_thread()` 上：
   1. 关闭和监听器重绑阶段退出 `runtime.block_on` 后同步执行长达 5 秒的 `sessions.shutdown_until()` 和 `thread::sleep(20ms)`，导致 Tokio reactor 彻底停摆，活跃 QUIC 连接心跳中断且 `TerminalSessionEnded` 无法在停网前刷出。
   2. 最大 8 MiB 快照的 zlib 压缩/解压直接在唯一异步线程上执行（且开启 zlib 时每个出站小控制帧还多绕了一遍 `FrameDecoder` 解析+重编码）。
@@ -231,7 +231,7 @@ Windows x64 在 `616ef39` 完成全工作区及测试目标的 `cargo xwin check
 - **修复建议**：限定 `recovery_key` 仅用于 `modifiers == 0`；无修饰 `Press` 省略 `;1`；传统模式不输出 CSI-u；将 `target_os = "ios"` 纳入 `MOD_SUPER` 抑制条件。
 
 #### H13. Windows 控制台启动/重连固定卡顿 250 ms（264 条无应答探测），且 `Event::Paste` 允许跳出括号粘贴注入指令
-- **位置**：[`crates/cli/src/terminal_ui.rs`](../crates/cli/src/terminal_ui.rs#L375-L419)、[`crates/cli/src/terminal_ui/windows_console.rs`](../crates/cli/src/terminal_ui/windows_console.rs#L141-L159) / [`windows_console.rs#L307`](../crates/cli/src/terminal_ui/windows_console.rs#L307)、[`crates/cli/src/terminal_ui/session.rs`](../crates/cli/src/terminal_ui/session.rs#L359-L381) / [`session.rs#L924`](../crates/cli/src/terminal_ui/session.rs#L924)
+- **位置**：[`crates/cli/src/terminal_ui.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/cli/src/terminal_ui.rs#L375-L419)、[`crates/cli/src/terminal_ui/windows_console.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/cli/src/terminal_ui/windows_console.rs#L141-L159) / [`windows_console.rs#L307`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/cli/src/terminal_ui/windows_console.rs#L307)、[`crates/cli/src/terminal_ui/session.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/cli/src/terminal_ui/session.rs#L359-L381) / [`session.rs#L924`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/cli/src/terminal_ui/session.rs#L924)
 - **根因**：
   1. Windows 下仍无条件发送 264 条 VT 颜色探测序列，但 `windows_console::StdinPump` 走 `crossterm::event::read()` 永不产出 `TerminalReply`，导致每次启动/重连固定卡满 250 ms 超时。
   2. `windows_console.rs:307` 将 `Event::Paste(text)` 直接拼装为 `\x1b[200~` + `text` + `\x1b[201~` 而不剔除内部 `\x1b[201~`，恶意粘贴文本可提前闭合粘贴态并触发本地 `Ctrl+]` 前缀命令（如断连/上传）。
@@ -279,14 +279,14 @@ Windows x64 在 `616ef39` 完成全工作区及测试目标的 `cargo xwin check
 - **修复建议**：在受保护的用户私有目录保存每次启动的随机管道后缀，复用 `win-custody`/原生 Win32 API 显式开启上述标志，并通过管道令牌直接校验对端 SID。
 
 #### M4. 文件上传缺少累计配额/数量/并发限制，且已发布文件永不自动清理（磁盘耗尽 DoS）
-- **位置**：[`crates/daemon/src/session.rs`](../crates/daemon/src/session.rs#L3490-L3509)、[`crates/daemon/src/session_wire/upload.rs`](../crates/daemon/src/session_wire/upload.rs#L79-L236)、[`crates/platform/src/upload.rs`](../crates/platform/src/upload.rs#L28-L147)
+- **位置**：[`crates/daemon/src/session.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L3490-L3509)、[`crates/daemon/src/session_wire/upload.rs`](../crates/daemon/src/session_wire/upload.rs#L79-L236)、[`crates/platform/src/upload.rs`](../crates/platform/src/upload.rs#L28-L147)
 - **说明**：仅限制单文件 50 MB，未限制单会话/全局累计大小、文件数与单会话并发数（单连接最多 16 并发 = 800 MB 瞬时暂存），且 `publish()` 后的文件在会话关闭和守护进程停止后永不清理；Unix 端还与 `runtime_fallback` 共用 `/tmp/voytty-{uid}`。
 - **修复建议**：增加单会话与全局累计字节/文件数/并发配额；会话结束或守护进程启停时安全清理会话上传目录（或引入 TTL/LRU 淘汰），并将上传目录与 `runtime_fallback` 隔离。
 
 ### 守护进程与协议细节
 
 #### M5. `ReplayRegistry`（上限 64 主体）永不清理或淘汰
-- **位置**：[`crates/daemon/src/session.rs`](../crates/daemon/src/session.rs#L53) / [`session.rs#L2414-L2447`](../crates/daemon/src/session.rs#L2414-L2447)
+- **位置**：[`crates/daemon/src/session.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L53) / [`session.rs#L2414-L2447`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L2414-L2447)
 - **说明**：按 `(device_id, auth_generation)` 建键但设备撤销或重新配对后从不回收，长驻守护进程累计超过 64 次配对/轮换后将永久返回 `ResourceExhausted`。
 
 #### M6. 入站配对持 `AuthorizationWriteGuard` 跨网络发送 `PairAccepted` 与 `shutdown`
@@ -298,11 +298,11 @@ Windows x64 在 `616ef39` 完成全工作区及测试目标的 `cargo xwin check
 - **说明**：检查 `shutdown` 与加锁插入 `self.tasks` 非原子，停机瞬间可能漏掉新 spawn 的任务。
 
 #### M8. `ConnectionBroker` 锁竞争静默丢弃失败连接退役，且 `dial_replacement` 双重扣减 `pending_dials` 许可
-- **位置**：[`crates/daemon/src/connection_broker.rs`](../crates/daemon/src/connection_broker.rs#L1580-L1644) / [`connection_broker.rs#L1955-L1965`](../crates/daemon/src/connection_broker.rs#L1955-L1965)
+- **位置**：[`crates/daemon/src/connection_broker.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L1580-L1644) / [`connection_broker.rs#L1955-L1965`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L1955-L1965)
 - **说明**：`retire_failed_candidate` 使用 `try_lock()`，遇短暂争用直接放弃退役；`dial_replacement` 已持 1 个许可存入 `state.replacement`，`dial_once` 又先申请第 2 个许可才取走旧许可，满额时误报 `ResourceExhausted` 并滞留许可。
 
 #### M9. `ConnectionBroker` 后台任务未纳入追踪，路径事件无合并风暴刷库，`peers` 映射只增不减
-- **位置**：[`crates/daemon/src/connection_broker.rs`](../crates/daemon/src/connection_broker.rs#L287) / [`connection_broker.rs#L1411-L1436`](../crates/daemon/src/connection_broker.rs#L1411-L1436) / [`connection_broker.rs#L2430`](../crates/daemon/src/connection_broker.rs#L2430) / [`connection_broker.rs#L2667-L2716`](../crates/daemon/src/connection_broker.rs#L2667-L2716)
+- **位置**：[`crates/daemon/src/connection_broker.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L287) / [`connection_broker.rs#L1411-L1436`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L1411-L1436) / [`connection_broker.rs#L2430`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L2430) / [`connection_broker.rs#L2667-L2716`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L2667-L2716)
 - **说明**：`quiesce_until` 不等待已脱离的拨号/连接/持久化任务；每次 `PathEvent` 都新起 `tokio::spawn` 写 SQLite，网络抖动易打满 `STORE_COMMAND_CAPACITY`（64）；空闲/撤销对端的 `PeerSlot` 永不回收。
 
 #### M10. `local_ipc.rs` 回包无写超时（可耗尽连接槽位），进度帧写超时后继续写错包破坏帧边界
@@ -311,11 +311,11 @@ Windows x64 在 `616ef39` 完成全工作区及测试目标的 `cargo xwin check
 - **说明**：同 UID 挂死客户端停止读取即可永久占住 `max_local_connections`；`LocalConnectionProgress` 的 `write_all` 被超时取消留下半帧后，外层继续往同一流写入 `ServiceReply::error` 破坏线缆 framing。
 
 #### M11. `SessionRuntime::takeover()` 失败时状态非原子变更，旧控制者失联且未收到 `LeaseLost`
-- **位置**：[`crates/daemon/src/session.rs`](../crates/daemon/src/session.rs#L4162-L4225)
+- **位置**：[`crates/daemon/src/session.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L4162-L4225)
 - **说明**：在可能失败的 `full_sync` / `reconcile_effect_target` 之前就替换了 `runtime.controller`，出错返回时旧控制者已被丢弃且未发送 `LeaseLost`，缓存摘要也与内存不一致。
 
 #### M12. `OperationCell::wait` 与 `SessionService::close_inner` 忽略调用方 `deadline`
-- **位置**：[`crates/daemon/src/session.rs`](../crates/daemon/src/session.rs#L690-L706) / [`session.rs#L1337-L1348`](../crates/daemon/src/session.rs#L1337-L1348) / [`session.rs#L2533-L2544`](../crates/daemon/src/session.rs#L2533-L2544)
+- **位置**：[`crates/daemon/src/session.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L690-L706) / [`session.rs#L1337-L1348`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L1337-L1348) / [`session.rs#L2533-L2544`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L2533-L2544)
 - **说明**：重放等待无界调用 `Condvar::wait`；`close_inner` 丢弃传入 `deadline` 并硬编码等待 5 秒。
 
 #### M13. `async fn` 中直接调用阻塞同步 I/O（`UnixStream` / `FileLock` / `diagnostics.flush`）
@@ -328,11 +328,11 @@ Windows x64 在 `616ef39` 完成全工作区及测试目标的 `cargo xwin check
 - **复核结论**：在项目锁定的 Rust `1.98.0` 及全部受支持目标上不会下溢 panic——Unix（含 macOS、Linux、iOS、Android）的 `Instant` 使用有符号 `Timespec.tv_sec: i64` 可直接表示跨零负值（macOS 同工具链实测倒推一百年成功）；Windows 的 `std/src/sys/time/windows.rs` 在 QPC 纳秒值上额外叠加了 `u64::MAX / 4` 偏移（rust-lang/rust#156142）。已撤回本项（保留编号占位，详见[误报与修订核查](project-review-2026-11-19-false-positives.md)）。
 
 #### M15. `DesktopPresenter::present_resolved` 每帧重复关开鼠标/焦点模式并重发 DECSCUSR
-- **位置**：[`crates/cli/src/terminal_ui/ansi_presenter.rs`](../crates/cli/src/terminal_ui/ansi_presenter.rs#L290-L314) / [`ansi_presenter.rs#L655-L690`](../crates/cli/src/terminal_ui/ansi_presenter.rs#L655-L690)
+- **位置**：[`crates/cli/src/terminal_ui/ansi_presenter.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/cli/src/terminal_ui/ansi_presenter.rs#L290-L314) / [`ansi_presenter.rs#L655-L690`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/cli/src/terminal_ui/ansi_presenter.rs#L655-L690)
 - **说明**：尽管已实现 `write_changed_input_modes`，增量重绘仍每帧先发 `?1003l`/`?1006l`/`?1004l` 再重开 `HOST_INPUT_CAPTURE` 并重发光标样式，打断外层鼠标拖拽、制造虚假 FocusIn 并重置光标闪烁。
 
 #### M16. 回滚缓冲满 2,000 行后，每次 PTY 写入均递增 `history_epoch`，令客户端历史缓存持续失效
-- **位置**：[`crates/terminal/src/model.rs`](../crates/terminal/src/model.rs#L518-L530)、[`crates/core/src/viewport_cache.rs`](../crates/core/src/viewport_cache.rs#L385-L397)
+- **位置**：[`crates/terminal/src/model.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/terminal/src/model.rs#L518-L530)、[`crates/core/src/viewport_cache.rs`](../crates/core/src/viewport_cache.rs#L385-L397)
 - **说明**：满容后即便零行滚动（如提示符打字、原地刷新进度条），`retained == self.scrollback_rows` 恒成立，每次输入都失效桌面/移动端所有未钉住的历史页，引发持续远端拉取。
 
 #### M17. `VoyttyColorState::stack`（XTPOPCOLORS）出栈将全部 262 个色槽钉死为显式覆盖并强制软件闪烁光标
@@ -399,17 +399,17 @@ Windows x64 在 `616ef39` 完成全工作区及测试目标的 `cargo xwin check
 2. **Unix 固定共享 `/tmp/voytty-{uid}` 路径允许同机用户预占 DoS**（[`crates/platform/src/upload.rs`](../crates/platform/src/upload.rs#L41-L48)、[`crates/platform/src/user_state.rs`](../crates/platform/src/user_state.rs#L1117-L1119)）：虽 fail-closed 不会劫持，但多用户机上可被他人抢注阻断上传与回退运行目录。
 3. **Unix `atomic_create` 使用 `fs::rename` 而非 `hard_link`**（[`crates/platform/src/user_state.rs`](../crates/platform/src/user_state.rs#L882-L889)）：并发调用下不具备严格原子 no-clobber 语义。
 4. **过期配对票据明文（含 `offer_key`）驻留守护进程内存永不主动清理**（[`crates/daemon/src/pairing.rs`](../crates/daemon/src/pairing.rs#L770-L776)）：`PairingManager::prune_expired()` 在全仓零调用；仅在下次配对操作时惰性清理。
-5. **长期身份私钥加载/创建临时缓冲未 `Zeroizing`**（[`crates/daemon/src/identity.rs`](../crates/daemon/src/identity.rs#L23-L47)）；部分帧编解码与读缓冲零化不一致（[`crates/proto/src/lib.rs`](../crates/proto/src/lib.rs#L1022-L1029)、[`crates/daemon/src/session_wire.rs`](../crates/daemon/src/session_wire.rs#L1282)、[`crates/daemon/src/remote_tunnel.rs`](../crates/daemon/src/remote_tunnel.rs#L139)）。
+5. **长期身份私钥加载/创建临时缓冲未 `Zeroizing`**（[`crates/daemon/src/identity.rs`](../crates/daemon/src/identity.rs#L23-L47)）；部分帧编解码与读缓冲零化不一致（[`crates/proto/src/lib.rs`](../crates/proto/src/lib.rs#L1022-L1029)、[`crates/daemon/src/session_wire.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session_wire.rs#L1282)、[`crates/daemon/src/remote_tunnel.rs`](../crates/daemon/src/remote_tunnel.rs#L139)）。
 6. **Windows 文件创建与延迟删除微瑕**（[`crates/platform/src/user_state.rs`](../crates/platform/src/user_state.rs#L966-L980)、[`crates/platform/src/windows_security.rs`](../crates/platform/src/windows_security.rs#L141)）：`create_new_executable` 缺 `FILE_FLAG_OPEN_REPARSE_POINT` 与失败回滚删除；`remove_retired_executable` 重试删除前未复查重解析点属性。
-7. **帧头预分配最大 8 MiB 与 `finish_unary` 多余字节送入解码器**（[`crates/proto/src/lib.rs`](../crates/proto/src/lib.rs#L963)、[`crates/daemon/src/session_wire.rs`](../crates/daemon/src/session_wire.rs#L419-L452)）：收到 4 字节长度头即立即 `Vec::with_capacity(length)`（建议上限 64 KiB 渐进增长）；`finish_unary` 收到非 EOF 字节应立即拒绝。
-8. **附着流上任何可恢复子错误（如并发历史窗口超限、陈旧色序）直接断开整个终端附着**（[`crates/daemon/src/session_wire.rs`](../crates/daemon/src/session_wire.rs#L1306-L1324) / [`session_wire.rs#L1441-L1507`](../crates/daemon/src/session_wire.rs#L1441-L1507)）；`SessionAttachment::detach()` 未唤醒 `SessionActor`（[`crates/daemon/src/session.rs`](../crates/daemon/src/session.rs#L405-L407)）。
+7. **帧头预分配最大 8 MiB 与 `finish_unary` 多余字节送入解码器**（[`crates/proto/src/lib.rs`](../crates/proto/src/lib.rs#L963)、[`crates/daemon/src/session_wire.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session_wire.rs#L419-L452)）：收到 4 字节长度头即立即 `Vec::with_capacity(length)`（建议上限 64 KiB 渐进增长）；`finish_unary` 收到非 EOF 字节应立即拒绝。
+8. **附着流上任何可恢复子错误（如并发历史窗口超限、陈旧色序）直接断开整个终端附着**（[`crates/daemon/src/session_wire.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session_wire.rs#L1306-L1324) / [`session_wire.rs#L1441-L1507`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session_wire.rs#L1441-L1507)）；`SessionAttachment::detach()` 未唤醒 `SessionActor`（[`crates/daemon/src/session.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L405-L407)）。
 9. **终端/CLI/平台细节**：
    - Windows `voytty pair create` 从不显示二维码（[`crates/cli/src/pair_qr.rs`](../crates/cli/src/pair_qr.rs#L10-L26) 未接已引入的 `crossterm::terminal::size()`）。
    - 非折行选区复制在每行末尾填充全宽空格（[`crates/core/src/terminal_selection.rs`](../crates/core/src/terminal_selection.rs#L114-L133)）。
-   - `OSC 1` 的 `bounded_text` 未过滤控制字符且按字节截断可能劈裂 UTF-8（[`crates/terminal/src/ingress.rs`](../crates/terminal/src/ingress.rs#L903-L907)）。
+   - `OSC 1` 的 `bounded_text` 未过滤控制字符且按字节截断可能劈裂 UTF-8（[`crates/terminal/src/ingress.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/terminal/src/ingress.rs#L903-L907)）。
    - `voytty_diagnostics::export` 将被过滤的 debug 快照字节误算入 `truncated_bytes`（[`crates/diagnostics/src/reader.rs`](../crates/diagnostics/src/reader.rs#L227)）。
    - Unix `BlockingReader::read` 未重试 `EINTR`（[`crates/platform/src/pty/unix_io.rs`](../crates/platform/src/pty/unix_io.rs#L84-L95)）；Windows `spawn_login_shell_with_identity` 未清理 `TMUX`/`WT_SESSION` 等外层终端环境变量且未用 `build_identity().version`（[`crates/platform/src/pty.rs`](../crates/platform/src/pty.rs#L443-L450)）。
-   - `voytty doctor` 存在 `[error]` 仍返回退出码 0（[`crates/cli/src/lib.rs`](../crates/cli/src/lib.rs#L1606-L1617)）；`voytty logs` 带过滤条件无匹配时误报 `"No daemon logs yet."`（[`crates/cli/src/lib.rs`](../crates/cli/src/lib.rs#L1734-L1740)）；`TerminalSignals` 未处理 `SIGTSTP`（[`crates/cli/src/terminal_ui.rs`](../crates/cli/src/terminal_ui.rs#L884-L897)）；`windows_console.rs:107` 空闲 100 ms 轮询窗口尺寸而非消费 `Event::Resize`；`LocalAttachmentEvent::Takeover` 覆盖未确认的同步态（[`crates/client/src/view.rs`](../crates/client/src/view.rs#L1022-L1028)）。
+   - `voytty doctor` 存在 `[error]` 仍返回退出码 0（[`crates/cli/src/lib.rs`](../crates/cli/src/lib.rs#L1606-L1617)）；`voytty logs` 带过滤条件无匹配时误报 `"No daemon logs yet."`（[`crates/cli/src/lib.rs`](../crates/cli/src/lib.rs#L1734-L1740)）；`TerminalSignals` 未处理 `SIGTSTP`（[`crates/cli/src/terminal_ui.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/cli/src/terminal_ui.rs#L884-L897)）；`windows_console.rs:107` 空闲 100 ms 轮询窗口尺寸而非消费 `Event::Resize`；`LocalAttachmentEvent::Takeover` 覆盖未确认的同步态（[`crates/client/src/view.rs`](../crates/client/src/view.rs#L1022-L1028)）。
 10. **POSIX 安装脚本 `ulimit -f` 重定向日志时触发 `SIGXFSZ`**（[`install/versioned.sh.in`](../install/versioned.sh.in#L146) / [`versioned.sh.in#L201`](../install/versioned.sh.in#L201)）：下载 64 字节签名时 `ulimit -f 1` 会让 `curl` 往已超过 512 字节的重定向 stderr 日志写入时被内核杀死。
 11. **依赖与工具链 hygiene**：
     - [`Cargo.toml`](../Cargo.toml#L55) 中 `reqwest` 开启了未使用的 `"blocking"` feature；同时 `distribution.rs` 在 `spawn_blocking` 里额外起了一个 `tokio::runtime::Runtime`。
@@ -418,9 +418,9 @@ Windows x64 在 `616ef39` 完成全工作区及测试目标的 `cargo xwin check
     - `Cargo.lock` 存在 27 组重复 crate 版本（如 `windows-sys` ×4、`hashbrown` ×3、`nix` ×3）。
 12. **文档漂移、18 处死链与仓库残留**：
     - [`docs/development.md`](development.md#L97-L119) 依赖图遗漏 `voytty-client` 和 `voytty-diagnostics`，目标列表遗漏 `aarch64-apple-ios-sim`。
-    - [`docs/install.md`](install.md#L97-L110) 仍写“3 个原生目标 / main push 构建候选”；[`docs/mobile-repository.md`](mobile-repository.md#L28-L35) 仍写“9 个资产”（实为 12 个）及“尚未迁移许可证”；[`deploy/relay/README.md`](../deploy/relay/README.md#L14-L16) 与 [`docs/relay.md`](relay.md#L129-L145) 存在已删除脚本说明与真实域名残留；[`docs/roadmap.md`](roadmap.md#L25) 仍将已交付的 Windows/iOS 标为未来事项；[`docs/remove-trellis-plan.md`](remove-trellis-plan.md) 与空文件 `.cursor/hooks.json` 尚未清理。
+    - [`docs/install.md`](install.md#L97-L110) 仍写“3 个原生目标 / main push 构建候选”；[`docs/mobile-repository.md`](mobile-repository.md#L28-L35) 仍写“9 个资产”（实为 12 个）及“尚未迁移许可证”；[`deploy/relay/README.md`](../deploy/relay/README.md#L14-L16) 与 [`docs/relay.md`](relay.md#L129-L145) 存在已删除脚本说明与真实域名残留；[`docs/roadmap.md`](roadmap.md#L25) 仍将已交付的 Windows/iOS 标为未来事项；[`docs/remove-trellis-plan.md`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/docs/remove-trellis-plan.md) 与空文件 `.cursor/hooks.json` 尚未清理。
     - `docs/verification/multi-device-issues.md`（16 处）与 `docs/verification/multi-device.md`（2 处）存在指向已拆分 `apps/android`、`crates/android`、`tests/e2e/multi-device*.py` 的失效相对链接。
-13. **纵深防御备忘（Info）**：`attachment_writer` 发送 `TerminalHostEffect` 未走 `request_context.run_effect`（极窄撤销竞态，[`crates/daemon/src/session_wire.rs`](../crates/daemon/src/session_wire.rs#L1743-L1747)）；`PairSecret`/`PairProof`/`PairAccepted` 派生了非常量时间 `PartialEq`（当前校验均走 `ring::hmac::verify`，属未来防呆）；`autostart.rs:235` 通过 `PATH` 调用 `systemctl` 而非绝对路径；`proto` 中多处 `operation_id` 字段声明但服务端未使用（建议文档标明保留或补齐幂等）。
+13. **纵深防御备忘（Info）**：`attachment_writer` 发送 `TerminalHostEffect` 未走 `request_context.run_effect`（极窄撤销竞态，[`crates/daemon/src/session_wire.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session_wire.rs#L1743-L1747)）；`PairSecret`/`PairProof`/`PairAccepted` 派生了非常量时间 `PartialEq`（当前校验均走 `ring::hmac::verify`，属未来防呆）；`autostart.rs:235` 通过 `PATH` 调用 `systemctl` 而非绝对路径；`proto` 中多处 `operation_id` 字段声明但服务端未使用（建议文档标明保留或补齐幂等）。
 
 ---
 

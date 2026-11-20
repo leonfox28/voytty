@@ -23,5 +23,4 @@ listener, UDP QAD listener, custom health binary, monitor, database, or volume.
 The Relay forwards end-to-end encrypted traffic and stores no voytty terminal
 state.
 
-See `docs/relay.md` for publication, deployment, and one-time acceptance
-commands.
+See the [Relay guide](../../docs/relay.md) for deployment, health checks, and the authenticated handshake probe.

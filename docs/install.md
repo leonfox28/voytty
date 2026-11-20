@@ -94,8 +94,8 @@ Before any formal tag is pushed, a repository administrator must have:
    its reviewed public key, and stored the lowercase seed as the Environment
    secret `ZTERM_RELEASE_SIGNING_KEY` (mapped to `VOYTTY_RELEASE_SIGNING_KEY`
    by the workflow; see [signing configuration](releasing.md#build-once-publish-the-verified-bytes));
-4. reviewed a successful `ci.yml` push run on `main` for the exact commit,
-   including the three native candidate builds and verified unsigned assembly.
+4. reviewed a successful manually dispatched full `ci.yml` run on `main` for the exact commit,
+   including the five native candidate builds and verified unsigned assembly.
 
 The default workflow token cannot read the repository Administration setting,
 so the workflow does not pretend to verify immutable Releases through an
@@ -107,7 +107,7 @@ CI never creates a tag. `release-prepare` prepares the version in the feature
 PR, or creates a standalone version PR from main. `release-publish` tags only
 after exact main CI and its retained candidate pass; `just release VERSION PR`
 coordinates the required waits and merge. The tag workflow reuses that candidate,
-tests three signed installers, round-trips one late draft, emits provenance
+tests the signed installers on all five targets, round-trips one late draft, emits provenance
 attestations, and requires immutable publication. Relay images are not published.
 
 A normal key rotation first ships a binary that trusts the next reviewed key

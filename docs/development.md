@@ -12,7 +12,7 @@ verified on 2026-08-21 with:
 | Rustup | 1.29.0 |
 | Rust / Cargo | 1.98.0 |
 | Rust components | rustfmt, Clippy, rust-src |
-| Rust targets | `aarch64-apple-darwin`, `aarch64-apple-ios`, `aarch64-linux-android` |
+| Rust targets | `aarch64-apple-darwin`, `aarch64-apple-ios`, `aarch64-apple-ios-sim`, `aarch64-linux-android` |
 | Preserved user toolchain | `1.95.0-aarch64-apple-darwin` |
 | Docker CLI | 29.7.2 |
 | Docker Engine in Colima | 29.5.2 |
@@ -96,25 +96,22 @@ directly to `prost-build`.
 
 ## Workspace dependency direction
 
-```text
-                         voytty-core
-                    /        |        \
-             voytty-proto  voytty-platform  voytty-terminal
-                    \        |        /
-                         voytty-daemon
-                              |
-                          voytty-cli
-```
+The main runtime dependencies are listed below. The release tool and tests have
+their own build-time dependencies.
 
-Arrows run from a consumer to its dependency. Core owns domain and
-transport-neutral terminal values; proto owns the wire codec; platform owns OS
-and PTY boundaries; the host-only terminal crate owns the pinned Alacritty
-parser/grid/state adapter. Daemon combines those owners and retains the live
-Session registry; CLI owns command parsing and the outer raw-terminal renderer.
-Core/proto never depend on the host terminal engine, and CLI has no direct
-engine dependency. The CLI reaches local and remote Sessions only through the
-daemon; do not move transport state into core, give the CLI an Endpoint or
-identity key, or move OS/Session ownership into adapters. Hosted Linux
+| Consumer | Local dependencies |
+| --- | --- |
+| `voytty-cli` | `voytty-diagnostics`, `voytty-core`, `voytty-client`, `voytty-daemon` |
+| `voytty-daemon` | `voytty-diagnostics`, `voytty-core`, `voytty-client`, `voytty-platform`, `voytty-proto`, `voytty-terminal` |
+| `voytty-client` | `voytty-diagnostics`, `voytty-proto`, `voytty-core` |
+| `voytty-platform` | `voytty-diagnostics`, `voytty-core` |
+| `voytty-terminal` | `voytty-core` |
+| `voytty-proto` | `voytty-core` |
+| `voytty-diagnostics` | `voytty-core` |
+
+Core owns transport-neutral values. The daemon owns local host sessions and
+combines the OS, protocol and Alacritty adapters. The CLI uses the shared client
+and the daemon for attachments and renders them in the outer terminal. Hosted Linux
 remote-runtime evidence remains a separate acceptance gate; see
 [Remote-session implementation contracts](remote-cli.md).
 

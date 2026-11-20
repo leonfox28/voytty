@@ -630,7 +630,7 @@ Linux 快速 unlink / rebind 会复用 inode 和时间戳，单靠这两者识�
 仅把提升移至 `onStartCommand` 的中间方案仍出现 4/20 次崩溃，已保留失败。
 最终实现保留已提交的启动，每次 `onStartCommand` 先提升，再按最新状态自行停止；销毁期间的新前台请求在销毁后重新评估，
 失败或系统停止不触发后台重启。
-代码：[BackgroundConnection.kt](../../apps/android/app/src/main/java/com/voytty/app/BackgroundConnection.kt)。
+代码：[BackgroundConnection.kt](https://github.com/leonfox28/voytty/blob/02f19ddb1f25cf9fc4ad4837e5aa33522ef6cd6c/apps/android/app/src/main/java/com/voytty/app/BackgroundConnection.kt)。
 同一主线程轮次“启动后立即取消”的最小复现修正前崩溃；通知允许／拒绝共 4 项回归通过。
 真实 `android-takeover-final-02` 的 Linux → Android 10/10 通过、无同类崩溃；另一方向有 1 项初连失败。
 证据 `checks/android-pending-start-before.log`、`checks/android-pending-start-after.json`。
@@ -740,8 +740,8 @@ P20 / P21 的真实 `attachment-shutdown-regression-01` 为 39/40 通过；另 1
 现在分离 `sessionListError`，以连接 epoch、主机和查询序号限制结果归属；退役的必要查询以取消结束。
 重试只读列表；已确认成功的重命名／删除先更新已知状态，后续读取失败不改报修改失败。
 当前必要查询失败和精确 Session 缺失仍报错，不新建同名替代会话。
-代码：[AppRepository.kt](../../apps/android/app/src/main/java/com/voytty/app/AppRepository.kt)、
-[TerminalScreen.kt](../../apps/android/app/src/main/java/com/voytty/app/TerminalScreen.kt)。
+代码：[AppRepository.kt](https://github.com/leonfox28/voytty/blob/02f19ddb1f25cf9fc4ad4837e5aa33522ef6cd6c/apps/android/app/src/main/java/com/voytty/app/AppRepository.kt)、
+[TerminalScreen.kt](https://github.com/leonfox28/voytty/blob/02f19ddb1f25cf9fc4ad4837e5aa33522ef6cd6c/apps/android/app/src/main/java/com/voytty/app/TerminalScreen.kt)。
 最初 3 项中 2 失败，修正后 6 项通过；新增必要查询退役复现从 6 通过／1 失败到 7/7。
 两项 UI 检查通过，证据 `checks/ordered-fixes/session-refresh-before/`、
 `checks/ordered-fixes/retired-initial-before-01.log`、`checks/ordered-fixes/retired-initial-after-01.log`。
@@ -960,7 +960,7 @@ TCP 转发 4.1 秒，保持生产默认 RTT 和五秒请求期限，旧代码 5.
 抛出 `EMFILE`，保留的旧状态被运行器继续读取，直到 60 秒恢复超时。这次现场不能
 归类为“快照未送达”：它暴露了产品资源泄漏和 T32 的失效观察问题。
 
-根因在 [AppDiagnostics.kt](../../apps/android/app/src/main/java/com/voytty/app/AppDiagnostics.kt)：
+根因在 [AppDiagnostics.kt](https://github.com/leonfox28/voytty/blob/02f19ddb1f25cf9fc4ad4837e5aa33522ef6cd6c/apps/android/app/src/main/java/com/voytty/app/AppDiagnostics.kt)：
 通过 `Os.open` 获得的描述符被传给普通 Java 文件流，`.use` 只关闭借用流，没有释放
 原始描述符。Android 的 [输入流说明](https://android.googlesource.com/platform/prebuilts/fullsdk/sources/+/refs/heads/androidx-constraintlayout-release/android-35/java/io/FileInputStream.java)
 和 [输出流说明](https://android.googlesource.com/platform/prebuilts/fullsdk/sources/+/refs/heads/androidx-transition-release/android-34/java/io/FileOutputStream.java)
@@ -971,7 +971,7 @@ TCP 转发 4.1 秒，保持生产默认 RTT 和五秒请求期限，旧代码 5.
 复制后的描述符，并在 `finally` 中关闭原描述符。正常返回、规范化的提前返回、
 导出失败及快照收集失败都释放句柄；存储额度、显式十五分钟窗口和网络期限不变。
 
-三项新增 [Android 回归](../../apps/android/app/src/androidTest/java/com/voytty/app/DiagnosticsTest.kt)
+三项新增 [Android 回归](https://github.com/leonfox28/voytty/blob/02f19ddb1f25cf9fc4ad4837e5aa33522ef6cd6c/apps/android/app/src/androidTest/java/com/voytty/app/DiagnosticsTest.kt)
 修正前全部失败：128 轮存储操作遗留 **775** 个句柄，导出分支额外遗留 **32** 个，
 收集失败额外遗留 **8** 个；修正后全部通过，完整诊断测试 **7/7**。测试只统计随机
 夹具目录的描述符，避免后台网络活动影响计数；首版夹具未考虑 Android 路径别名，
@@ -1502,7 +1502,7 @@ QUIC 对持久重置密钥、CID 不复用及重置 oracle 的约束见
 | 编号 | 调整及原因 | 已有证据与限制 |
 | --- | --- | --- |
 | D01 | `iroh` / `iroh-relay` 从 1.0.3 固定到 1.3.0，包含上游 Relay 发送队列拥塞时阻塞 remote actor 的修正 | 完成 Rust／Android 检查、60 ms 反向配对 10/10、独立网络门禁；`checks/iroh-1.3-*`。这是已实施升级，不能以相关上游缺陷断言全部现场超时同因；升级后真实 Relay 初连失败仍存在 |
-| D02 | Android DNS 继续使用接受 SocketAddr 的兼容 API，保留 IPv6 接口 scope，避免直接换到只接受 IpAddr 的新构造器 | [dns.rs](../../crates/android/src/dns.rs)；兼容性检查通过。这是迁移约束，没有把未发生的 scope 丢失记作现场故障 |
+| D02 | Android DNS 继续使用接受 SocketAddr 的兼容 API，保留 IPv6 接口 scope，避免直接换到只接受 IpAddr 的新构造器 | [dns.rs](https://github.com/leonfox28/voytty/blob/02f19ddb1f25cf9fc4ad4837e5aa33522ef6cd6c/crates/android/src/dns.rs)；兼容性检查通过。这是迁移约束，没有把未发生的 scope 丢失记作现场故障 |
 | D03 | 将 NOQ 修正固定到 vendor，Cargo patch 和 Android Gradle 构建输入统一引用，保留来源／许可证，加入 `just ci-noq` | [VOYTTY.md](../../vendor/noq-proto/VOYTTY.md)、[justfile](../../justfile)；两项旧 idle 修正为 429 项通过；本轮加入 P25 重置修正后完整库 436 项通过 |
 | D04 | 将 Iroh 1.3.0 固定到 vendor，增加 P27 重启重置策略、P29 关闭所有权修正及 `just ci-iroh` | [VOYTTY.md](../../vendor/iroh/VOYTTY.md) 记录来源、身份单实例约束、取消契约和升级边界；五项重启与六项关闭回归通过，三个生产配置使用同一实现；当前 Linux 完整库 138 通过／1 忽略 |
 | D05 | 有限详细窗口内的 Relay 阶段和 QUIC 流进度；daemon 和 Android 使用白名单事件 | [transport_trace.rs](../../crates/diagnostics/src/transport_trace.rs)、[Iroh 适配](../../vendor/iroh/src/transport_trace.rs)、[流进度](../../crates/client/src/iroh_controller.rs)。匿名标签、密文数据报指纹、进程内单调时钟；不转发地址、身份、载荷或任意依赖消息。拨号／断开使用封闭错误类别。R03 追加每流最多 1 Hz 的有序字节／解码／部分帧计数，连接级 STREAM 计数不等于送达或 ACK；真实 QUIC 回归覆盖取消读、分片及 EOF 保持累计计数，嵌套字段拒绝内容注入。这是诊断能力，不计作 R02／R03 传输行为修复 |
@@ -1529,14 +1529,14 @@ QUIC 对持久重置密钥、CID 不复用及重置 oracle 的约束见
 
 ## 测试器、证据与测试夹具的问题和修正
 
-这些条目不计作产品行为修复。入口为 [multi-device.py](../../tests/e2e/multi-device.py)、
-[审计脚本](../../tests/e2e/multi-device-audit.py)、[45 项回归](../../tests/e2e/multi_device_test.py)；
+这些条目不计作产品行为修复。入口为 [multi-device.py](https://github.com/leonfox28/voytty/blob/02f19ddb1f25cf9fc4ad4837e5aa33522ef6cd6c/tests/e2e/multi-device.py)、
+[审计脚本](https://github.com/leonfox28/voytty/blob/02f19ddb1f25cf9fc4ad4837e5aa33522ef6cd6c/tests/e2e/multi-device-audit.py)、[45 项回归](https://github.com/leonfox28/voytty/blob/02f19ddb1f25cf9fc4ad4837e5aa33522ef6cd6c/tests/e2e/multi_device_test.py)；
 各次运行固定自己的源码和摘要，早期不充分的证据没有事后升级为通过。
 
 | 编号 | 问题与已实施方案 | 证据／范围 |
 | --- | --- | --- |
 | T01 | PTY 扩展 CSI 解析污染画面、重复关闭描述符、VM 重启后仅凭复用 PID 判进程；分别修正解析、所有权清理与进程身份核对 | 早期 `smoke-01` 至 `smoke-06`；`test_split_extension_queries_do_not_corrupt_terminal_cells`，历史过程保留夹具失败 |
-| T02 | Android mailbox 发布顺序与读取时点竞争；修正阶段信号发布，使用私有目录和明确 serial | [MultiDeviceTest.kt](../../apps/android/app/src/androidTest/java/com/voytty/app/MultiDeviceTest.kt)、历史过程 |
+| T02 | Android mailbox 发布顺序与读取时点竞争；修正阶段信号发布，使用私有目录和明确 serial | [MultiDeviceTest.kt](https://github.com/leonfox28/voytty/blob/02f19ddb1f25cf9fc4ad4837e5aa33522ef6cd6c/apps/android/app/src/androidTest/java/com/voytty/app/MultiDeviceTest.kt)、历史过程 |
 | T03 | 仅 TIOCSWINSZ 不触发 SSH 远端 resize；底层 Active 也可能早于终端输入栅栏开放 | 显式 SIGWINCH 通知所属 SSH 子进程，并等待真实 PTY 输入呈现；恢复后仍在原绝对期限只发送一次 nonce；`checks/coordinator-19.log` |
 | T04 | 重启夹具混淆正常 guest reboot 与强杀模拟器；命名会话恢复缺少错误回退对照，上传故障时机不准确 | 区分故障类型，加入独立 `main` 对照，修正上传故障阶段；原 `extended-01` 39 通过／41 失败保留 |
 | T05 | Android 打开主机失败后仍继续 select，可能掩盖第一次错误 | 首次失败立即保留并结束该行，不以额外选择请求替代；`checks/android-open-before.log`、`checks/coordinator-13.log` |
@@ -1559,14 +1559,14 @@ QUIC 对持久重置密钥、CID 不复用及重置 oracle 的约束见
 | T22 | 私有配对命令失败时完全隐藏错误，无法分辨公开错误分类 | 仅透出白名单公开错误码，私有票据／内容仍隐藏，未知字符串不输出；`checks/private-error-kind-before-01.log`、`checks/coordinator-56.log` |
 | T23 | Android UI 测试默认寻找 my-mac，且完整标题匹配不适应 Linux OSC 标题追加 | 要求显式测试 hostName，并用唯一会话名匹配；保留几何、选择、恢复断言。通用 64 通过／35 条件跳过；指定 A 两项 UI 通过；`checks/ordered-fixes/ui-fixture-android-runtime.json` |
 | T24 | SettingsUiTest 将返回首页清理也塞入 1 秒设置断言窗口，保存会话恢复遇阻时失败 | 分开清理等待和设置断言，设置断言原 1 秒不变；空状态／受阻恢复对照各 10 次，20/20 通过并还原应用状态；`checks/settings-restore-before-01/`、`checks/settings-restore-after-01/results.json` |
-| T25 | 长运行只续开 Linux 详细日志，Android 15 分钟到期遗漏失败时证据 | 新增 [diagnostics helper](../../tests/e2e/multi-device-diagnostics.py) 显式续开三端有限窗口，以 Android 自身时钟／应用 UID 写控制标记，不启动实例、不重启应用、不请求 peer；停止状态拒绝和运行中续开均验证。已缺失日志不能补回 |
+| T25 | 长运行只续开 Linux 详细日志，Android 15 分钟到期遗漏失败时证据 | 新增 [diagnostics helper](https://github.com/leonfox28/voytty/blob/02f19ddb1f25cf9fc4ad4837e5aa33522ef6cd6c/tests/e2e/multi-device-diagnostics.py) 显式续开三端有限窗口，以 Android 自身时钟／应用 UID 写控制标记，不启动实例、不重启应用、不请求 peer；停止状态拒绝和运行中续开均验证。已缺失日志不能补回 |
 | T26 | vendor 协议 token 计算表达式被扫描器当成硬编码凭据 | 区分字符串字面量与运行时表达式，继续扫描 vendor、真实凭据格式、配置／shell 未引号赋值，新增拒绝夹具；`checks/noq-vendor-secret-*.log` |
 | T27 | 并行 tracing 全局 callsite 竞争导致既有配对日志断言偶发计数 0 | 将日志断言隔离到子进程，保留恰好一次及票据不泄露断言；[local_pair_ipc.rs](../../crates/daemon/tests/local_pair_ipc.rs)。不同于 R08 的等锁失败（P39） |
 | T28 | 模拟器重启后 adb root 短暂连接关闭、主动停止 instrumentation 被误报崩溃 | 在有界窗口确认实际 UID 就绪，区分主动停止与意外退出；`android-reboot-final-01` 无同类管理失败，其 3 项产品失败仍保留 |
 | T29 | 重启后 Relay 规则恢复、双栈部分失败和清理错误可能漏清其他设备／地址族 | 恢复范围仅所属测试链；一项清理失败仍尝试其他设备和地址族，管理规则检查、故障日志及 EOF guard 有对应回归；原 45 项运行器／审计检查通过 |
-| T30 | 独立 Android 验收在 VM 重启后直接开始，产品 daemon 仍为 Stopped；基础网络预检不保证产品主机已启动 | 新增 [本地主机准备工具](../../tests/e2e/multi-device-hosts.py)，通过显式 local 查询启动已配置 daemon，并记录前后状态、等待 Online；不重启活跃服务、不创建会话、不预热控制端。三项回归及完整运行器 48 项通过。`cold-start-fix/host-readiness-analysis-02.json` 区分前提错误与修正后仍存在的真实握手失败，原日志不改写 |
-| T31 | 短断网恢复只断言 Active／inputReady 和主机尺寸，未要求 Android 显示尺寸同步 | [运行器](../../tests/e2e/multi-device.py) 在原 60 秒期限内等待 Android 实际尺寸匹配，再发送连续性输入；[审计](../../tests/e2e/multi-device-audit.py) 按 `host-and-android-surface-v1` 检查尺寸和输入状态，旧证据保留原契约。两种尺寸滞后回归修正前均失败、修正后通过，另验证审计拒绝缺失／错误尺寸和不可输入状态；运行器及主机准备测试 49/49。旧制品 B→C 十轮通过；证据 `checks/ordered-fixes/r03-sync/` |
-| T32 | Android instrumentation 已退出，恢复轮询仍读取遗留状态文件，将观察器故障误报为同步超时 | [运行器](../../tests/e2e/multi-device.py) 的状态断言先确认测试进程存活，退出立即报错；证据采集仍显式保留最后状态。退出码 0／1 两种回归修正前均失败、修正后通过，运行器及主机准备 50/50；`checks/ordered-fixes/r03-relay-cause/coordinator-before.log` 和 `coordinator-after.log`。原 `cause-01/0016` 失败不改写，结合 P33 的 EMFILE 与已收到的快照 ACK 单列归因 |
+| T30 | 独立 Android 验收在 VM 重启后直接开始，产品 daemon 仍为 Stopped；基础网络预检不保证产品主机已启动 | 新增 [本地主机准备工具](https://github.com/leonfox28/voytty/blob/02f19ddb1f25cf9fc4ad4837e5aa33522ef6cd6c/tests/e2e/multi-device-hosts.py)，通过显式 local 查询启动已配置 daemon，并记录前后状态、等待 Online；不重启活跃服务、不创建会话、不预热控制端。三项回归及完整运行器 48 项通过。`cold-start-fix/host-readiness-analysis-02.json` 区分前提错误与修正后仍存在的真实握手失败，原日志不改写 |
+| T31 | 短断网恢复只断言 Active／inputReady 和主机尺寸，未要求 Android 显示尺寸同步 | [运行器](https://github.com/leonfox28/voytty/blob/02f19ddb1f25cf9fc4ad4837e5aa33522ef6cd6c/tests/e2e/multi-device.py) 在原 60 秒期限内等待 Android 实际尺寸匹配，再发送连续性输入；[审计](https://github.com/leonfox28/voytty/blob/02f19ddb1f25cf9fc4ad4837e5aa33522ef6cd6c/tests/e2e/multi-device-audit.py) 按 `host-and-android-surface-v1` 检查尺寸和输入状态，旧证据保留原契约。两种尺寸滞后回归修正前均失败、修正后通过，另验证审计拒绝缺失／错误尺寸和不可输入状态；运行器及主机准备测试 49/49。旧制品 B→C 十轮通过；证据 `checks/ordered-fixes/r03-sync/` |
+| T32 | Android instrumentation 已退出，恢复轮询仍读取遗留状态文件，将观察器故障误报为同步超时 | [运行器](https://github.com/leonfox28/voytty/blob/02f19ddb1f25cf9fc4ad4837e5aa33522ef6cd6c/tests/e2e/multi-device.py) 的状态断言先确认测试进程存活，退出立即报错；证据采集仍显式保留最后状态。退出码 0／1 两种回归修正前均失败、修正后通过，运行器及主机准备 50/50；`checks/ordered-fixes/r03-relay-cause/coordinator-before.log` 和 `coordinator-after.log`。原 `cause-01/0016` 失败不改写，结合 P33 的 EMFILE 与已收到的快照 ACK 单列归因 |
 | T33 | 重建环境后首次运行，C 的配对票据写入 `files/multi-device-ticket.txt` 失败，四个 Android 行被配对前提阻塞：新装应用在 08:56:07 才首次写入 `files/`，而写票据发生在 08:56:04–05，运行器又不创建目录。旧模拟器的 `files/` 早已存在，因此此前未暴露。改为先 `mkdir -p files` 再写入；新增回归在无 `files/` 的临时应用目录执行设备端脚本，修正前以 `No such file or directory` 失败、修正后通过，协调回归 48/48 | `$LAB/lab-rebuild-cold-01/pairing.json`、`checks/lab-rebuild/ticket-dir-before-01.log`、`ticket-dir-after-01.log`；见 [环境重建记录](multi-device-lab.md) |
 | T34 | `p37-cold-01` 第 2 轮 A←C Direct 以 `'hosts'` 失败：Android 桥在发布首个 `status.json` 之前就写入 `ready`，运行器看到 `ready` 后立即读状态得到空值，`snapshot()` 返回 `{}`，`connect()` 取 `hosts` 时 KeyError。状态文件本身以临时文件加 rename 原子发布，不是读到半个文件。改为先发布状态再写 `ready`，需重建测试 APK | `$LAB/p37-cold-01/0009-cold-A-C-C-direct-2/`；见 [环境重建记录](multi-device-lab.md) |
 
@@ -1872,7 +1872,7 @@ P25 的七项 NOQ 回归、P26 的三项真实 TLS 失败复现均已修正，�
    T31 要求短断网后的 Android 显示尺寸与请求匹配、Active 且 inputReady，再执行
    后续输入断言，所有检查仍共用原 60 秒期限。产品 15 秒首次请求／5 秒就绪操作、
    QUIC 计时器和终端同步状态机未修改。
-2. 新增 [原生同步回归](../../crates/android/src/terminal/sync_tests.rs)，通过真实
+2. 新增 [原生同步回归](https://github.com/leonfox28/voytty/blob/02f19ddb1f25cf9fc4ad4837e5aa33522ef6cd6c/crates/android/src/terminal/sync_tests.rs)，通过真实
    SessionClient、共享 TerminalView 驱动和 Android 原生状态处理，覆盖 17 个排队
    快照、同步中合并第二次 resize、最终尺寸、原 input epoch 和恢复后的实际输入发送。
    传输为注入的解码帧，不能替代真实 QUIC 或 Android UI；原主机真实流背压、输出、

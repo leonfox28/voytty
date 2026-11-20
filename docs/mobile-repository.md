@@ -25,13 +25,11 @@ the app pin deliberately and verify pairing, connection and session behavior
 against supported host versions. Protocol changes must account for users who
 upgrade their phone and hosts at different times.
 
-New desktop releases have nine assets and no APK. Historical immutable mobile
+Desktop releases publish twelve assets across five native targets. The signed inventory is described in [release operations](releasing.md). Historical immutable mobile
 assets, tags and source history remain available under their original terms.
 The shared historical Android release verifier and certificate pin remain for
 compatibility; the public repository no longer builds or signs an app.
 
-The intended product boundary is free desktop use and a subscription for the
-official mobile client's remote access. Billing is not implemented here, and
-existing license texts remain unchanged pending separate work. Peer-reported
-platform strings are not a subscription security boundary. The split introduces
-no subscription dependency into desktop connections or running host sessions.
+The desktop and shared source use the terms in the [project license](../LICENSE).
+The private app owns subscription enforcement for mobile remote access.
+Desktop connections and running host sessions operate independently of an app subscription.

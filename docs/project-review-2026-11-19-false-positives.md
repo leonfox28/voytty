@@ -14,7 +14,7 @@
 
 项目锁定的 Tokio 1.53.3 保证，等待对象从创建起就能收到 `notify_waiters()` 的广播，即使尚未被轮询。如果配对已经完成，等待方会直接读到结果。如果配对在检查之后完成，已创建的等待对象会收到广播。因此，这条路径无须补加 `enable()`。[锁定版本](../Cargo.lock#L4373-L4375) · [Tokio 1.53.3 的通知语义](https://github.com/tokio-rs/tokio/blob/tokio-1.53.3/tokio/src/sync/notify.rs#L525-L531)
 
-H4 中的 `run_dial_worker` 和 `promote_candidate` 都先检查连接状态，之后才创建等待对象，两处确认保留在原报告 `H4` 中。[拨号逻辑](../crates/daemon/src/connection_broker.rs#L1856-L1875) · [候选连接逻辑](../crates/daemon/src/connection_broker.rs#L2378-L2404) · [等待函数](../crates/daemon/src/connection_broker.rs#L3437-L3444)
+H4 中的 `run_dial_worker` 和 `promote_candidate` 都先检查连接状态，之后才创建等待对象，两处确认保留在原报告 `H4` 中。[拨号逻辑](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L1856-L1875) · [候选连接逻辑](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L2378-L2404) · [等待函数](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_broker.rs#L3437-L3444)
 
 ## M14：Rust 1.98 各受支持目标的 `Instant` 减 2 秒不会下溢
 
@@ -35,7 +35,7 @@ H4 中的 `run_dial_worker` 和 `promote_candidate` 都先检查连接状态，�
 | --- | --- | --- |
 | **C1** | Critical / P0 | 公开仓库追踪 [`.codex/config.toml`](../.codex/config.toml#L1-L3) 与 [`tests/secret-scan.sh`](../tests/secret-scan.sh#L5-L8) 扫描豁免均已证实；令牌当前是否仍有效未知（不探测、不转贴凭据），建议立即轮换、移出追踪并取消豁免。 |
 | **C4 / C5** | Critical / P0 | 传统输入单按 `Esc` 滞留缓冲、systemd `WorkingDirectory` 被 `unit_quote` 加字面双引号（`enable`/`status` 仅查注册文件）均已证实，继续优先修复。 |
-| **C3** | High / 优先处理（P0–P1 靠前） | 原 Critical 调至 High 但靠前处理。区分两条静态控制流：（1）`device_revoke_reply` 中后台数据库工作（`store.revoke`）可能已提交、但外层仍在 `.await` 其结果时被取消，该时序才会出现 SQLite 与内存状态不一致；恢复轮询后到同步 `guard.publish(Revoked)` 之间不再有新的 `.await`，取消若发生在发布之后则另影响后续 `close_remote`/`detach_remote_principal_until` 清理（外层超时亦违背 `PairOutcomeUnknown` 契约）；（2）[`local_ipc.rs`](../crates/daemon/src/local_ipc.rs#L539-L546) 停机已提交但回包写入/关闭失败时跳过 `stop_sender`，进程可能继续存活并拒绝新建会话。按 [`session.rs`](../crates/daemon/src/session.rs#L1982-L2014) 与 `1105–1116` 代码可再次正常 `stop` 恢复；故障与恢复均尚无现成运行记录。 |
+| **C3** | High / 优先处理（P0–P1 靠前） | 原 Critical 调至 High 但靠前处理。区分两条静态控制流：（1）`device_revoke_reply` 中后台数据库工作（`store.revoke`）可能已提交、但外层仍在 `.await` 其结果时被取消，该时序才会出现 SQLite 与内存状态不一致；恢复轮询后到同步 `guard.publish(Revoked)` 之间不再有新的 `.await`，取消若发生在发布之后则另影响后续 `close_remote`/`detach_remote_principal_until` 清理（外层超时亦违背 `PairOutcomeUnknown` 契约）；（2）[`local_ipc.rs`](../crates/daemon/src/local_ipc.rs#L539-L546) 停机已提交但回包写入/关闭失败时跳过 `stop_sender`，进程可能继续存活并拒绝新建会话。按 [`session.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L1982-L2014) 与 `1105–1116` 代码可再次正常 `stop` 恢复；故障与恢复均尚无现成运行记录。 |
 | **C2** | High / P1 | 原 Critical 调至 High / P1。在后代仍持有从端且读端未收到 EOF、EIO 或其他退出事件的前提下，`BlockingReader` 无唤醒机制且 `finalize` 等待 `join` 可能无界；原证据为静态路径分析，持续时长与跨平台（含 Windows ConPTY）表现待实测，建议先补 Unix 复现测试再修。 |
 | **H16** | High / P1 | 直接运行 [`tools/ci/workflow-policy.py`](../tools/ci/workflow-policy.py#L45-L53) 的 `path_plan` 实测确认，`crates/core/src/release.rs` 与 `crates/daemon/src/distribution.rs` 均选出 `native=false`，列为 P1。 |
 | **M1** | Low / P2 | 原 Medium 调至 Low / P2。普通 ALPN 必须认证预期远端且授权代次非零，未发现给未授权设备增加访问权的证据；实际范围为已有授权时可能把失败配对报告为成功并覆盖本地名称/别名。修复时必须保留最终确认丢失经普通 ALPN 恢复的正常用例（现有两项 `normal_confirmation` 用例通过）。 |

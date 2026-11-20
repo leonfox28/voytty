@@ -22,5 +22,5 @@
 4. 常用连接入口：Android 主机别名、置顶和常用会话。
 
 近期保留「Session 随 daemon 存活」边界。升级、daemon 崩溃和主机重启后的
-进程恢复，以及 iOS、Windows、桌面 GUI、多人同时控制，另立专项。
+进程恢复、桌面 GUI 与多人同时控制另立专项。Windows 已提供桌面 CLI，iOS 应用由移动端仓库维护。[Windows 支持](windows.md) · [移动端仓库](mobile-repository.md)
 后台服务提高连接连续性；系统终止或节电限制下要求正确恢复，不承诺永不掉线。
