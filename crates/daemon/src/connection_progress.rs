@@ -56,25 +56,28 @@ fn recorder_with_log(
 
 #[cfg(any(unix, windows))]
 pub(crate) mod local {
+    use crate::error::DaemonError;
     use std::{future::Future, time::Instant};
     use tokio::io::{AsyncWrite, AsyncWriteExt};
     use voytty_client::progress::{CONNECTION_PROGRESS_CAPACITY, ProgressObserver};
+    use voytty_core::DomainErrorKind;
     use voytty_proto::{WireKind, connection_stage_to_message, encode_message};
 
-    /// Progress writing never abandons the operation whose result must survive.
+    /// Retains the operation outcome. Returns the stream only at a complete frame
+    /// boundary so that the caller can safely write its next message.
     pub(crate) async fn observe<W, F, T>(
-        writer: &mut W,
+        mut writer: W,
         request_id: u64,
         deadline: Instant,
         enabled: bool,
         operation: impl FnOnce(ProgressObserver) -> F,
-    ) -> T
+    ) -> (T, Result<W, DaemonError>)
     where
         W: AsyncWrite + Unpin,
         F: Future<Output = T>,
     {
         if !enabled {
-            return operation(ProgressObserver::default()).await;
+            return (operation(ProgressObserver::default()).await, Ok(writer));
         }
         let (observer, mut receiver) = ProgressObserver::channel(|_| {});
         let future = operation(observer.clone());
@@ -86,7 +89,7 @@ pub(crate) mod local {
                 biased;
                 result = &mut future => Some(result),
                 changed = receiver.changed() => {
-                    if changed.is_err() { return future.await; }
+                    if changed.is_err() { return (future.await, Ok(writer)); }
                     None
                 }
             };
@@ -103,23 +106,32 @@ pub(crate) mod local {
                     encode_message(WireKind::LocalConnectionProgress, request_id, 0, &message)
                         .expect("fixed local progress frame");
                 sent += 1;
-                if !matches!(
-                    tokio::time::timeout_at(
-                        tokio::time::Instant::from_std(deadline),
-                        writer.write_all(&bytes)
-                    )
-                    .await,
-                    Ok(Ok(()))
-                ) {
-                    observer.stop();
-                    return match result {
-                        Some(result) => result,
-                        None => future.await,
-                    };
-                }
+                let failure = match tokio::time::timeout_at(
+                    tokio::time::Instant::from_std(deadline),
+                    writer.write_all(&bytes),
+                )
+                .await
+                {
+                    Ok(Ok(())) => continue,
+                    Ok(Err(_)) => DaemonError::new(
+                        DomainErrorKind::TransportUnavailable,
+                        "local connection progress write failed",
+                    ),
+                    Err(_) => DaemonError::new(
+                        DomainErrorKind::DeadlineExceeded,
+                        "local connection progress write timed out",
+                    ),
+                };
+                drop(writer);
+                observer.stop();
+                let result = match result {
+                    Some(result) => result,
+                    None => future.await,
+                };
+                return (result, Err(failure));
             }
             if let Some(result) = result {
-                return result;
+                return (result, Ok(writer));
             }
         }
     }
@@ -226,9 +238,9 @@ mod tests {
             ConnectionStage::ConnectingSecurely,
             ConnectionStage::SessionChannelReady,
         ];
-        let (mut writer, mut reader) = tokio::io::duplex(4096);
+        let (writer, mut reader) = tokio::io::duplex(4096);
         let operation = local::observe(
-            &mut writer,
+            writer,
             17,
             std::time::Instant::now() + std::time::Duration::from_secs(1),
             true,
@@ -239,8 +251,13 @@ mod tests {
                 42
             },
         );
-        assert_eq!(operation.await, 42);
-        writer.shutdown().await.expect("finish progress prefix");
+        let (result, output) = operation.await;
+        assert_eq!(result, 42);
+        output
+            .expect("whole progress frames written")
+            .shutdown()
+            .await
+            .expect("finish progress prefix");
         let mut bytes = Vec::new();
         reader
             .read_to_end(&mut bytes)
@@ -261,11 +278,11 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(stages, expected);
 
-        let (mut writer, reader) = tokio::io::duplex(64);
+        let (writer, reader) = tokio::io::duplex(64);
         drop(reader);
         let (release, ready) = tokio::sync::oneshot::channel();
         let operation = local::observe(
-            &mut writer,
+            writer,
             18,
             std::time::Instant::now() + std::time::Duration::from_secs(1),
             true,
@@ -278,10 +295,54 @@ mod tests {
             tokio::task::yield_now().await;
             release.send(43).expect("release submitted operation");
         };
-        let (result, ()) = tokio::join!(operation, release);
+        let ((result, output), ()) = tokio::join!(operation, release);
+        assert_eq!(
+            output.expect_err("closed reader").kind(),
+            DomainErrorKind::TransportUnavailable
+        );
         assert_eq!(
             result, 43,
             "diagnostic failure must retain the submitted operation"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn partial_progress_write_closes_stream_and_preserves_operation_result() {
+        let (writer, mut reader) = tokio::io::duplex(1);
+        let (release, finished) = tokio::sync::oneshot::channel();
+        let budget = std::time::Duration::from_secs(1);
+        let deadline = tokio::time::Instant::now() + budget;
+        let operation = local::observe(
+            writer,
+            19,
+            deadline.into_std(),
+            true,
+            |observer| async move {
+                observer.report(ConnectionStage::OpeningSessionChannel);
+                finished.await.expect("submitted operation")
+            },
+        );
+        tokio::pin!(operation);
+        assert!(futures_util::poll!(&mut operation).is_pending());
+        tokio::time::advance(budget).await;
+        assert!(futures_util::poll!(&mut operation).is_pending());
+
+        let mut received = Vec::new();
+        tokio::time::timeout(budget, reader.read_to_end(&mut received))
+            .await
+            .expect("stream retired before waiting for operation")
+            .expect("read prefix");
+        assert_eq!(
+            received.len(),
+            1,
+            "no final reply may follow a partial frame"
+        );
+        release.send(44).expect("operation retained");
+        let (result, output) = operation.await;
+        assert_eq!(result, 44);
+        assert_eq!(
+            output.expect_err("partial progress frame").kind(),
+            DomainErrorKind::DeadlineExceeded
         );
     }
 }

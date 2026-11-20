@@ -20,7 +20,7 @@ use std::{
 };
 #[cfg(any(unix, windows))]
 use tokio::{
-    io::AsyncWriteExt,
+    io::{AsyncWrite, AsyncWriteExt},
     sync::{Semaphore, mpsc},
     task::{AbortHandle, JoinSet},
 };
@@ -381,11 +381,12 @@ async fn handle_connection(
     }
 
     let started = Instant::now();
+    let initial_deadline = started + limits.initial_read_timeout;
     let first =
-        match tokio::time::timeout(limits.initial_read_timeout, read_first(&mut stream)).await {
+        match tokio::time::timeout_at(initial_deadline.into(), read_first(&mut stream)).await {
             Ok(Ok(first)) => first,
             Ok(Err(error)) => {
-                let _ = write_error(&mut stream, 0, &error).await;
+                write_error(&mut stream, 0, &error, initial_deadline).await;
                 return;
             }
             Err(_) => {
@@ -393,13 +394,14 @@ async fn handle_connection(
                     DomainErrorKind::DeadlineExceeded,
                     "local request frame read exceeded its deadline",
                 );
-                let _ = write_error(&mut stream, 0, &error).await;
+                write_error(&mut stream, 0, &error, initial_deadline).await;
                 return;
             }
         };
+    // Copy only routing metadata. Pair/device payloads move into their handler.
+    let request_id = first.frame.request_id;
+    let absolute_deadline = started + limits.request_deadline(first.frame.deadline_ms);
     if first.frame.kind == WireKind::LocalSessionTunnelOpenRequest {
-        let deadline = limits.request_deadline(first.frame.deadline_ms);
-        let absolute_deadline = started + deadline;
         let result = match service.remote_sessions() {
             Some(remote) => {
                 remote
@@ -416,7 +418,7 @@ async fn handle_connection(
                     DomainErrorKind::TransportUnavailable,
                     "remote Session transport is not composed into this daemon",
                 );
-                let _ = write_error(&mut stream, first.frame.request_id, &error).await;
+                write_error(&mut stream, request_id, &error, absolute_deadline).await;
                 Err(error)
             }
         };
@@ -438,12 +440,10 @@ async fn handle_connection(
         return;
     }
     if first.frame.kind == WireKind::TerminalAttachRequest {
-        let deadline = limits.request_deadline(first.frame.deadline_ms);
-        let absolute_deadline = started + deadline;
         let target = match terminal_attach_target(&first.frame) {
             Ok(target) => target,
             Err(error) => {
-                let _ = write_error(&mut stream, first.frame.request_id, &error).await;
+                write_error(&mut stream, request_id, &error, absolute_deadline).await;
                 return;
             }
         };
@@ -452,7 +452,7 @@ async fn handle_connection(
             let error = malformed(
                 "remote terminal attachment requires a local Session tunnel Open request",
             );
-            let _ = write_error(&mut stream, first.frame.request_id, &error).await;
+            write_error(&mut stream, request_id, &error, absolute_deadline).await;
             return;
         }
         local_attachment.store(true, Ordering::Release);
@@ -482,14 +482,8 @@ async fn handle_connection(
         }
         return;
     }
-    // Only copy non-sensitive routing metadata. The decoded frame itself is
-    // moved through strict unary EOF validation and then into the dispatcher;
-    // pair/device request payloads are never cloned by the generic classifier.
-    let request_id = first.frame.request_id;
-    let deadline = limits.request_deadline(first.frame.deadline_ms);
-    let absolute_deadline = started + deadline;
-    let remaining = deadline.saturating_sub(started.elapsed());
-    let unary_finished = tokio::time::timeout(remaining, finish_unary(&mut stream, first)).await;
+    let unary_finished =
+        tokio::time::timeout_at(absolute_deadline.into(), finish_unary(&mut stream, first)).await;
     let frame = match unary_finished.unwrap_or_else(|_| {
         Err(DaemonError::new(
             DomainErrorKind::DeadlineExceeded,
@@ -498,7 +492,7 @@ async fn handle_connection(
     }) {
         Ok(frame) => frame,
         Err(error) => {
-            let _ = write_error(&mut stream, request_id, &error).await;
+            write_error(&mut stream, request_id, &error, absolute_deadline).await;
             return;
         }
     };
@@ -512,44 +506,44 @@ async fn handle_connection(
             | WireKind::LocalDeviceRevokeRequest
             | WireKind::LocalStopRequest
     );
-    let dispatch = crate::connection_progress::local::observe(
-        &mut stream,
+    let (reply, output) = crate::connection_progress::local::observe(
+        stream,
         request_id,
         absolute_deadline,
         report_progress,
         |progress| async {
-            if SessionWireServer::handles_unary(frame.kind) {
-                session_wire
-                    .dispatch_local_unary_until(frame, absolute_deadline)
-                    .await
+            let dispatch = async {
+                if SessionWireServer::handles_unary(frame.kind) {
+                    session_wire
+                        .dispatch_local_unary_until(frame, absolute_deadline)
+                        .await
+                } else {
+                    service
+                        .dispatch_until_with_progress(frame, absolute_deadline, progress)
+                        .await
+                }
+            };
+            if owns_outcome {
+                dispatch.await
             } else {
-                service
-                    .dispatch_until_with_progress(frame, absolute_deadline, progress)
+                tokio::time::timeout_at(absolute_deadline.into(), dispatch)
                     .await
+                    .unwrap_or_else(|_| {
+                        ServiceReply::error(
+                            request_id,
+                            &DaemonError::new(
+                                DomainErrorKind::DeadlineExceeded,
+                                "local request exceeded its deadline",
+                            ),
+                        )
+                    })
             }
         },
-    );
-    let deadline = tokio::time::Instant::from_std(absolute_deadline);
-    let reply = if owns_outcome {
-        dispatch.await
-    } else {
-        tokio::time::timeout_at(deadline, dispatch)
-            .await
-            .unwrap_or_else(|_| {
-                ServiceReply::error(
-                    request_id,
-                    &DaemonError::new(
-                        DomainErrorKind::DeadlineExceeded,
-                        "local request exceeded its deadline",
-                    ),
-                )
-            })
-    };
-    let _ = tokio::time::timeout_at(deadline, async {
-        stream.write_all(&reply.bytes).await?;
-        stream.shutdown().await
-    })
+    )
     .await;
+    if let Ok(mut stream) = output {
+        write_reply_until(&mut stream, &reply, absolute_deadline).await;
+    }
     if reply.stop_committed {
         let _ = stop_sender.send(());
     }
@@ -581,14 +575,25 @@ fn terminal_attach_target(frame: &DecodedFrame) -> Result<Option<DeviceId>, Daem
 
 #[cfg(any(unix, windows))]
 async fn write_error(
-    stream: &mut LocalStream,
+    stream: &mut (impl AsyncWrite + Unpin),
     request_id: u64,
     error: &DaemonError,
-) -> Result<(), std::io::Error> {
-    stream
-        .write_all(&ServiceReply::error(request_id, error).bytes)
-        .await?;
-    stream.shutdown().await
+    deadline: Instant,
+) {
+    write_reply_until(stream, &ServiceReply::error(request_id, error), deadline).await;
+}
+
+#[cfg(any(unix, windows))]
+async fn write_reply_until(
+    stream: &mut (impl AsyncWrite + Unpin),
+    reply: &ServiceReply,
+    deadline: Instant,
+) {
+    let _ = tokio::time::timeout_at(deadline.into(), async {
+        stream.write_all(&reply.bytes).await?;
+        stream.shutdown().await
+    })
+    .await;
 }
 
 #[cfg(any(unix, windows))]
@@ -621,6 +626,28 @@ mod tests {
             )
             .expect("fixture setup"),
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_early_error_write_finishes_within_the_ingress_deadline() {
+        let (mut writer, mut reader) = tokio::io::duplex(1);
+        let budget = Duration::from_secs(1);
+        let deadline = tokio::time::Instant::now() + budget;
+        let error = malformed("invalid local request");
+        // A full error frame cannot fit until this peer starts reading.
+        tokio::time::timeout(
+            budget * 2,
+            write_error(&mut writer, 0, &error, deadline.into_std()),
+        )
+        .await
+        .expect("early error write is bounded");
+        assert!(tokio::time::Instant::now() >= deadline);
+        drop(writer);
+        let mut received = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut received)
+            .await
+            .expect("read error prefix");
+        assert_eq!(received.len(), 1);
     }
 
     #[tokio::test]

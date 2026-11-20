@@ -289,9 +289,9 @@ impl PairingService {
     /// Cancels new/running local accept operations and joins every owned task
     /// within the caller's one absolute shutdown deadline.
     pub async fn shutdown_until(&self, deadline: Instant) -> Result<(), DaemonError> {
-        self.inner.shutdown.send_replace(true);
         let mut tasks = {
             let mut owned = mutex_lock(&self.inner.tasks);
+            self.inner.shutdown.send_replace(true);
             std::mem::take(&mut *owned)
         };
         while let Some(mut task) = tasks.pop() {
@@ -450,51 +450,52 @@ impl PairingServiceInner {
                 return result;
             }
         };
-        let completed_during_shutdown = if *self.shutdown.borrow() {
-            let result = Err(cancelled("pairing service is stopping"));
-            cell.complete(result);
-            true
-        } else {
-            let operation_id = input.operation_id;
-            let operation_cell = Arc::clone(&cell);
-            let operation_inner = Arc::clone(&self);
-            let task = tokio::spawn(async move {
-                let result = AssertUnwindSafe(
-                    Arc::clone(&operation_inner).execute_accept(prepared, deadline),
-                )
-                .catch_unwind()
-                .await
-                .unwrap_or_else(|_| {
-                    Err(pair_outcome_unknown(
-                        "pair accept operation ended unexpectedly",
-                    ))
-                });
-                match &result {
-                    Ok(_) => tracing::info!(
-                        component = "pairing",
-                        operation = "accept_committed",
-                        "Outbound pairing committed"
-                    ),
-                    Err(error) => tracing::warn!(
-                        component = "pairing",
-                        operation = "accept_failed",
-                        reason = error.kind().code(),
-                        "Pair acceptance failed"
-                    ),
-                }
-                operation_cell.complete(result);
-                operation_inner.record_accept_completion(operation_id, &operation_cell);
-            });
-            let mut tasks = mutex_lock(&self.tasks);
-            tasks.retain(|task| !task.is_finished());
-            tasks.push(task);
-            false
-        };
-        if completed_during_shutdown {
-            self.record_accept_completion(input.operation_id, &cell);
+        let operation_id = input.operation_id;
+        let operation_cell = Arc::clone(&cell);
+        let operation_inner = Arc::clone(&self);
+        let admission = self.spawn_accept(async move {
+            let result =
+                AssertUnwindSafe(Arc::clone(&operation_inner).execute_accept(prepared, deadline))
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(pair_outcome_unknown(
+                            "pair accept operation ended unexpectedly",
+                        ))
+                    });
+            match &result {
+                Ok(_) => tracing::info!(
+                    component = "pairing",
+                    operation = "accept_committed",
+                    "Outbound pairing committed"
+                ),
+                Err(error) => tracing::warn!(
+                    component = "pairing",
+                    operation = "accept_failed",
+                    reason = error.kind().code(),
+                    "Pair acceptance failed"
+                ),
+            }
+            operation_cell.complete(result);
+            operation_inner.record_accept_completion(operation_id, &operation_cell);
+        });
+        if let Err(error) = admission {
+            cell.complete(Err(error));
+            self.record_accept_completion(operation_id, &cell);
         }
-
         cell.wait_until(deadline, self.shutdown.subscribe()).await
+    }
+
+    fn spawn_accept(
+        &self,
+        operation: impl Future<Output = ()> + Send + 'static,
+    ) -> Result<(), DaemonError> {
+        // Shutdown closes admission and drains this same list under the lock.
+        let mut tasks = mutex_lock(&self.tasks);
+        self.ensure_running()?;
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(tokio::spawn(operation));
+        Ok(())
     }
 
     async fn accept_pair_connection(
@@ -854,6 +855,7 @@ impl PairingServiceInner {
         guard
             .publish(durable)
             .map_err(|_| generic_pair_rejection())?;
+        drop(guard);
 
         tracing::info!(
             component = "pairing",
@@ -1336,7 +1338,7 @@ mod tests {
         input_position: usize,
         output: Arc<Mutex<Zeroizing<Vec<u8>>>>,
         write_count: usize,
-        fail_on_write: Option<usize>,
+        fail_accepted_write: Option<Box<dyn FnOnce() + Send + Sync>>,
         local: DeviceId,
         remote: DeviceId,
     }
@@ -1348,15 +1350,10 @@ mod tests {
                 input_position: 0,
                 output: Arc::new(Mutex::new(Zeroizing::new(Vec::new()))),
                 write_count: 0,
-                fail_on_write: None,
+                fail_accepted_write: None,
                 local,
                 remote,
             }
-        }
-
-        fn failing_on_write(mut self, write_number: usize) -> Self {
-            self.fail_on_write = Some(write_number);
-            self
         }
     }
 
@@ -1395,7 +1392,10 @@ mod tests {
             buffer: &[u8],
         ) -> Poll<io::Result<usize>> {
             self.write_count = self.write_count.saturating_add(1);
-            if self.fail_on_write == Some(self.write_count) {
+            if self.write_count == 2
+                && let Some(check) = self.fail_accepted_write.take()
+            {
+                check();
                 return Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
                     "injected in-memory pair write failure",
@@ -1914,17 +1914,31 @@ mod tests {
         })
         .await
         .expect("proof sent before stopping the waiter");
-        harness.service.inner.shutdown.send_replace(true);
+        let shutdown = harness
+            .service
+            .shutdown_until(Instant::now() + Duration::from_secs(1));
+        tokio::pin!(shutdown);
+        assert!(
+            futures_util::poll!(&mut shutdown).is_pending(),
+            "shutdown joins the active accept"
+        );
+        // A second request that already passed initial admission must be
+        // rejected when it arrives at the actual spawn after the drain.
+        let late = harness
+            .service
+            .inner
+            .spawn_accept(async { panic!("late accept ran") });
+        assert_eq!(
+            late.expect_err("task admission closed").kind(),
+            DomainErrorKind::Cancelled
+        );
+        assert!(mutex_lock(&harness.service.inner.tasks).is_empty());
         let error = waiter
             .await
             .expect("pair waiter")
             .expect_err("unresolved operation");
         gate.notify_one();
-        harness
-            .service
-            .shutdown_until(Instant::now() + Duration::from_secs(1))
-            .await
-            .expect("join released operation");
+        shutdown.await.expect("join released operation");
         assert_eq!(error.kind(), DomainErrorKind::PairOutcomeUnknown);
         assert_eq!(transport.connect_calls.load(Ordering::SeqCst), 1);
     }
@@ -2131,7 +2145,15 @@ mod tests {
         let harness = harness(transport);
         let controller = device_id(0x75);
         let mut attempt = host_attempt(&harness, controller, 0x85, true);
-        attempt.io = attempt.io.failing_on_write(2);
+        let authorization = harness.authorization.clone();
+        attempt.io.fail_accepted_write = Some(Box::new(move || {
+            let guard = authorization
+                .revoke_guard(controller)
+                .now_or_never()
+                .expect("the network write must not hold the authorization lock")
+                .expect("published controller");
+            assert_eq!(guard.snapshot().status, AuthorizationStatus::Authorized);
+        }));
 
         harness
             .service

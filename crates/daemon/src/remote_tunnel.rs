@@ -32,7 +32,7 @@ const PATH_POLL_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) async fn serve_remote_session_tunnel<LocalStream>(
     broker: &ConnectionBroker,
     target: DeviceId,
-    mut local_stream: LocalStream,
+    local_stream: LocalStream,
     first: FirstFrame,
     limits: SessionWireLimits,
     deadline: Instant,
@@ -45,8 +45,8 @@ where
         .frame
         .decode_message(WireKind::LocalSessionTunnelOpenRequest)
         .map_err(protocol_error)?;
-    let opened = crate::connection_progress::local::observe(
-        &mut local_stream,
+    let (opened, output) = crate::connection_progress::local::observe(
+        local_stream,
         request_id,
         deadline,
         request.report_progress,
@@ -59,6 +59,7 @@ where
         },
     )
     .await;
+    let mut local_stream = output?;
     let (demand, remote) = match opened {
         Ok(opened) => opened,
         Err(error) => {
