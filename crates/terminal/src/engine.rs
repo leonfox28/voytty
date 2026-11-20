@@ -166,6 +166,8 @@ pub(crate) struct AlacrittyEngine {
     pub(crate) application_title: String,
     pub(crate) colors: crate::colors::VoyttyColorState,
     pub(crate) grid_input: bool,
+    history_limit: usize,
+    pub(crate) history_discarded: bool,
     processor: Processor,
     pub(crate) term: Term<BoundedEventSink>,
     sink: BoundedEventSink,
@@ -180,7 +182,8 @@ impl AlacrittyEngine {
     pub(crate) fn new(size: TerminalSize, scrollback_rows: usize) -> Self {
         let sink = BoundedEventSink::default();
         let config = Config {
-            scrolling_history: scrollback_rows,
+            // One transient row distinguishes actual eviction from a write at capacity.
+            scrolling_history: scrollback_rows + usize::from(scrollback_rows != 0),
             kitty_keyboard: true,
             osc52: Osc52::Disabled,
             ..Config::default()
@@ -189,6 +192,8 @@ impl AlacrittyEngine {
             application_title: String::new(),
             colors: crate::colors::VoyttyColorState::default(),
             grid_input: false,
+            history_limit: scrollback_rows,
+            history_discarded: false,
             processor: Processor::new(),
             term: Term::new(config, &EngineSize::new(size), sink.clone()),
             sink,
@@ -210,12 +215,30 @@ impl AlacrittyEngine {
         self.hyperlinks.scanned = false;
     }
 
+    fn advance(&mut self, bytes: &[u8]) {
+        let previous = self.term.grid().history_size();
+        self.processor.advance(&mut self.term, bytes);
+        if self.active_screen() == ActiveScreen::Main {
+            self.history_discarded |= self.term.grid().history_size() < previous;
+            self.trim_history();
+        }
+    }
+
+    fn trim_history(&mut self) {
+        if self.term.grid().history_size() > self.history_limit {
+            let grid = self.term.grid_mut();
+            grid.update_history(self.history_limit);
+            grid.update_history(self.history_limit + 1);
+            self.history_discarded = true;
+        }
+    }
+
     pub(crate) fn feed_raw(&mut self, bytes: &[u8]) {
         self.combining_dirty = true;
         self.hyperlinks.dirty = true;
         let previous_screen = self.active_screen();
         self.grid_input = true;
-        self.processor.advance(&mut self.term, bytes);
+        self.advance(bytes);
         if self.active_screen() != previous_screen {
             self.reconcile_active_combining_budget();
         }
@@ -225,7 +248,7 @@ impl AlacrittyEngine {
         self.reconcile_hyperlinks();
         self.reconcile_active_combining_budget();
         self.grid_input = true;
-        self.processor.advance(&mut self.term, bytes);
+        self.advance(bytes);
         self.reconcile_active_combining_budget();
         self.reconcile_hyperlinks();
     }
@@ -234,7 +257,7 @@ impl AlacrittyEngine {
         self.colors.reset();
         self.application_title.clear();
         self.grid_input = true;
-        self.processor.advance(&mut self.term, bytes);
+        self.advance(bytes);
         self.legacy_x10_mouse = false;
         self.combining = CombiningBudget::default();
         self.hyperlinks = Default::default();
@@ -255,6 +278,7 @@ impl AlacrittyEngine {
             cursor.point.line = cursor.point.line.min(Line(i32::from(size.rows) - 1));
         }
         self.term.resize(EngineSize::new(size));
+        self.trim_history();
         self.reconcile_active_combining_budget();
         self.reconcile_hyperlinks();
     }

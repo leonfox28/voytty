@@ -304,6 +304,7 @@ impl TerminalModel {
         self.finish_synchronized_output();
         self.revision = next_revision;
         self.history_epoch = next_revision;
+        self.engine.history_discarded = false;
         if self.engine.active_screen() == ActiveScreen::Main {
             self.retained_history_rows = self.engine.term().grid().history_size();
         }
@@ -509,17 +510,16 @@ impl TerminalModel {
     }
 
     fn refresh_history_epoch_after_ingest(&mut self) {
-        if self.engine.active_screen() != ActiveScreen::Main {
-            return;
-        }
-        let retained = self.engine.term().grid().history_size();
-        let reached_capacity = self.scrollback_rows > 0
-            && retained == self.scrollback_rows
-            && self.retained_history_rows <= retained;
-        if retained < self.retained_history_rows || reached_capacity {
+        if std::mem::take(&mut self.engine.history_discarded) {
             self.history_epoch = self.revision;
         }
-        self.retained_history_rows = retained;
+        if self.engine.active_screen() == ActiveScreen::Main {
+            let retained = self.engine.term().grid().history_size();
+            if retained < self.retained_history_rows {
+                self.history_epoch = self.revision;
+            }
+            self.retained_history_rows = retained;
+        }
     }
 }
 
@@ -547,6 +547,28 @@ fn validate_allocation(size: TerminalSize, scrollback_rows: usize) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_history_epoch_tracks_eviction_and_clear_even_for_identical_rows() {
+        for limit in [1, 3] {
+            let mut model = TerminalModel::new(TerminalSize::new(2, 8), limit).expect("model");
+            model.ingest(&b"\r\n".repeat(limit + 1)).expect("fill");
+            assert_eq!(model.retained_history_rows, limit);
+            let full = model.history_epoch;
+            model.ingest(b"abc\rdef\x1b[2K").expect("edit in place");
+            assert_eq!(model.history_epoch, full);
+            model.ingest(b"\r\n").expect("evict one blank row");
+            assert!(model.history_epoch > full);
+            let evicted = model.history_epoch;
+            model
+                .ingest(b"\x1b[?1049halternate\x1b[?1049l")
+                .expect("alternate screen");
+            assert_eq!(model.history_epoch, evicted);
+            model.ingest(b"\x1b[3J").expect("clear history");
+            assert!(model.history_epoch > evicted);
+            assert_eq!(model.retained_history_rows, 0);
+        }
+    }
 
     #[test]
     fn revision_overflow_never_mutates_terminal_state() {
