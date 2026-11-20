@@ -1,5 +1,8 @@
 //! Disk-backed admission shared by every daemon for this account.
-use crate::user_state::{open_append, open_read, validate_directory, validate_regular_file};
+use crate::user_state::{
+    ExistingLockState, inspect_existing_lock, open_append, validate_directory,
+    validate_regular_file,
+};
 use std::{
     fs::{self, File},
     io,
@@ -158,11 +161,10 @@ pub(super) fn scan(
                     continue;
                 }
                 let stale = if active && !legacy {
-                    let part = open_read(&path, uid).map_err(private_path_error)?;
-                    match part.try_lock() {
-                        Ok(()) => true, // The staging process exited before publication.
-                        Err(std::fs::TryLockError::WouldBlock) => false,
-                        Err(std::fs::TryLockError::Error(error)) => return Err(error),
+                    match inspect_existing_lock(&path, uid).map_err(private_path_error)? {
+                        ExistingLockState::Unlocked => true, // The staging process exited.
+                        ExistingLockState::Locked => false,
+                        ExistingLockState::Missing => continue,
                     }
                 } else {
                     metadata

@@ -353,7 +353,11 @@ impl FileLock {
         uid: u32,
         create: bool,
     ) -> Result<Option<Self>, PathError> {
-        let file = open_managed_file(path, uid, create, create)?;
+        let file = open_managed_file(
+            path,
+            uid,
+            OpenOptions::new().read(true).write(true).create(create),
+        )?;
         Self::try_lock_file(path, file)
     }
 
@@ -392,6 +396,11 @@ impl FileLock {
         }
     }
 
+    /// Handle to the locked inode, for state coordinated by this lock.
+    pub(crate) fn file(&self) -> &File {
+        &self.file
+    }
+
     /// Path whose file description owns this lock.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -425,12 +434,26 @@ pub fn atomic_create(
 
 /// Opens a managed file for bounded append after validating owner, type and mode.
 pub fn open_append(path: &Path, uid: u32) -> Result<File, PathError> {
-    open_managed_file(path, uid, true, true)
+    open_managed_file(
+        path,
+        uid,
+        OpenOptions::new().read(true).append(true).create(true),
+    )
 }
 
 /// Opens an existing managed regular file without following a symlink.
 pub fn open_read(path: &Path, uid: u32) -> Result<File, PathError> {
-    open_managed_file(path, uid, false, false)
+    open_managed_file(path, uid, OpenOptions::new().read(true))
+}
+
+/// Opens an existing file for a durability barrier, without creating or truncating it.
+pub(crate) fn open_for_sync(path: &Path, uid: u32) -> Result<File, PathError> {
+    // FlushFileBuffers on Windows requires write access.
+    open_managed_file(
+        path,
+        uid,
+        OpenOptions::new().read(true).write(cfg!(windows)),
+    )
 }
 
 /// Validates an existing managed regular file.
@@ -452,7 +475,7 @@ pub fn inspect_existing_lock(path: &Path, uid: u32) -> Result<ExistingLockState,
         }
         Err(error) => return Err(io_error(path, error)),
     }
-    let file = open_managed_file(path, uid, false, false)?;
+    let file = open_managed_file(path, uid, OpenOptions::new().read(true).write(true))?;
     match file.try_lock() {
         Ok(()) => {
             File::unlock(&file).map_err(|error| io_error(path, error))?;
@@ -942,14 +965,12 @@ pub(crate) fn create_or_validate_directory(path: &Path, uid: u32) -> Result<(), 
     }
 }
 
-fn open_managed_file(path: &Path, uid: u32, create: bool, append: bool) -> Result<File, PathError> {
+fn open_managed_file(path: &Path, uid: u32, options: &mut OpenOptions) -> Result<File, PathError> {
     ensure_absolute(path)?;
     if fs::symlink_metadata(path).is_ok() {
         validate_regular_file(path, uid)?;
     }
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(create).append(append);
-    configure_secure_open(&mut options);
+    configure_secure_open(options);
     let file = options.open(path).map_err(|error| io_error(path, error))?;
     validate_regular_file(path, uid)?;
     Ok(file)

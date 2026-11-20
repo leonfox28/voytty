@@ -19,3 +19,12 @@ delivery. Sampling uses the existing reader wakeup, adds no network probe, and
 stops with the same finite detail window. An absent sample can mean the reader
 was not polled or a record was suppressed; check loss reports before concluding
 that the transport stopped.
+
+Desktop writers hold `writer.lock` while appending or rotating. Its inode stays
+in place. A nonzero length marks a pending retention cleanup for every process.
+Writers set the marker before a legacy-compatible append and when publishing
+or repairing daemon registration. The first eligible write by a storage adapter
+checks all four log files, as does a write that finds the marker or an oversized
+current file. A successful cleanup clears the marker under the same lock.
+Ordinary writes reuse the validated append handle. Rotation replaces the
+archive with a rename, so previously captured read handles keep their data.

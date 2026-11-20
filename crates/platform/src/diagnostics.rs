@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use voytty_diagnostics::{Control, MAX_RECORD_BYTES, Sink, Snapshot};
@@ -33,6 +34,7 @@ struct Document {
 pub struct Store {
     paths: UserPaths,
     limit: u64,
+    normalized: Arc<AtomicBool>,
     registered_socket: Arc<Mutex<Option<[i64; 4]>>>,
 }
 impl Store {
@@ -41,6 +43,7 @@ impl Store {
         Self {
             paths,
             limit: FILE_BYTES,
+            normalized: Arc::default(),
             registered_socket: Arc::default(),
         }
     }
@@ -76,6 +79,19 @@ impl Store {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
+    fn writer_lock(&self) -> io::Result<FileLock> {
+        Ok(self.lock(true)?.expect("creating lock returns an owner"))
+    }
+
+    // The lock inode stays in place across rotation. Its nonzero length tells
+    // every cooperating process that a legacy writer may have exceeded a cap.
+    fn mark_cleanup_pending(writer: &FileLock) -> io::Result<()> {
+        if writer.file().metadata()?.len() == 0 {
+            writer.file().set_len(1)?;
+        }
+        Ok(())
+    }
+
     fn document(&self) -> io::Result<Document> {
         let path = self.paths.logs().join("diagnostics.json");
         if !exists(&path)? {
@@ -100,7 +116,7 @@ impl Store {
     }
     /// Enables, renews or disables local detail without starting any daemon.
     pub fn set_control(&self, control: Control) -> io::Result<()> {
-        let _lock = self.lock(true)?;
+        let _lock = self.writer_lock()?;
         let mut document = self.document()?;
         document.control = control;
         self.write_document(&document)
@@ -115,14 +131,15 @@ impl Store {
             .registered_socket
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = signature;
-        let _writer = self.lock(true)?;
+        let writer = self.writer_lock()?;
+        Self::mark_cleanup_pending(&writer)?;
         let mut document = self.document()?;
         document.daemon_socket = signature;
         self.write_document(&document)
     }
     // Called only with writer.lock held. Cached proof is valid solely for the
     // socket registered by this daemon, never for its replacement.
-    fn repair_registration(&self) -> io::Result<()> {
+    fn repair_registration(&self, writer: &FileLock) -> io::Result<()> {
         let signature = *self
             .registered_socket
             .lock()
@@ -130,6 +147,7 @@ impl Store {
         if signature.is_some() && signature == self.socket_signature()? {
             let mut document = self.document()?;
             if document.daemon_socket != signature {
+                Self::mark_cleanup_pending(writer)?;
                 document.daemon_socket = signature;
                 self.write_document(&document)?;
             }
@@ -179,7 +197,7 @@ impl Store {
     }
     /// Validates known log/control paths before an updater can stop the daemon.
     pub fn preflight(&self) -> io::Result<()> {
-        let _lock = self.lock(true)?;
+        let _lock = self.writer_lock()?;
         for name in FILES
             .iter()
             .map(|(name, _)| *name)
@@ -301,33 +319,53 @@ impl Sink for Store {
                 "invalid diagnostic record size",
             ));
         }
-        let _lock = self.lock(true)?;
-        self.repair_registration()?;
+        let writer = self.writer_lock()?;
+        self.repair_registration(&writer)?;
         let name = if detail {
             "daemon.debug.log"
         } else {
             "daemon.log"
         };
         let path = self.paths.logs().join(name);
-        let archive = self.paths.logs().join(format!("{name}.1"));
-        if !self.retention_pending()? {
-            for (name, _) in FILES {
-                self.normalize(&self.paths.logs().join(name))?;
-            }
-            let current =
-                user_state::open_append(&path, self.paths.uid()).map_err(io::Error::other)?;
-            if current.metadata()?.len() + bytes.len() as u64 > self.limit {
-                drop(current);
-                if exists(&archive)? {
-                    user_state::validate_regular_file(&archive, self.paths.uid())
-                        .map_err(io::Error::other)?;
-                    fs::remove_file(&archive)?;
-                }
-                fs::rename(&path, &archive)?;
-            }
+        let open_current =
+            || user_state::open_append(&path, self.paths.uid()).map_err(io::Error::other);
+        if self.retention_pending()? {
+            Self::mark_cleanup_pending(&writer)?;
+            return open_current()?.write_all(bytes);
         }
-        let mut file =
-            user_state::open_append(&path, self.paths.uid()).map_err(io::Error::other)?;
+
+        let mut file = open_current()?;
+        let mut length = file.metadata()?.len();
+        let dirty = writer.file().metadata()?.len() != 0;
+        if dirty || !self.normalized.load(Ordering::Relaxed) || length > self.limit {
+            // Do the full migration once per adapter or cutover. If an older
+            // producer grew the current file independently, check all lanes again.
+            for (other, _) in FILES {
+                if other != name {
+                    self.normalize(&self.paths.logs().join(other))?;
+                }
+            }
+            if length > self.limit {
+                drop(file);
+                self.normalize(&path)?;
+                file = open_current()?;
+                length = file.metadata()?.len();
+            }
+            if dirty {
+                writer.file().set_len(0)?;
+            }
+            self.normalized.store(true, Ordering::Relaxed);
+        }
+        if length.saturating_add(bytes.len() as u64) > self.limit {
+            drop(file);
+            let archive = self.paths.logs().join(format!("{name}.1"));
+            if exists(&archive)? {
+                user_state::validate_regular_file(&archive, self.paths.uid())
+                    .map_err(io::Error::other)?;
+            }
+            fs::rename(&path, &archive)?;
+            file = open_current()?;
+        }
         file.write_all(bytes)
     }
     fn control(&self) -> io::Result<Control> {
@@ -339,8 +377,8 @@ impl Sink for Store {
         if registered.is_some() && self.document()?.daemon_socket != registered {
             // The daemon may otherwise be idle while foreground/updater writers
             // keep appending. Repair on its worker poll as well as its writes.
-            let _writer = self.lock(true)?;
-            self.repair_registration()?;
+            let writer = self.writer_lock()?;
+            self.repair_registration(&writer)?;
         }
         Ok(self.document()?.control)
     }
@@ -355,7 +393,8 @@ impl Sink for Store {
                 let path = self.paths.logs().join(name);
                 if exists(&path)? {
                     files.push(
-                        user_state::open_read(&path, self.paths.uid()).map_err(io::Error::other)?,
+                        user_state::open_for_sync(&path, self.paths.uid())
+                            .map_err(io::Error::other)?,
                     );
                 }
             }
@@ -372,6 +411,27 @@ fn exists(path: &Path) -> io::Result<bool> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(e),
     }
+}
+
+#[cfg(all(test, any(unix, windows)))]
+fn fixture(limit: u64) -> (tempfile::TempDir, Store) {
+    let temp = tempfile::tempdir().expect("private fixture");
+    let paths = UserPaths::for_test(
+        crate::account::EffectiveAccount::current()
+            .expect("account")
+            .uid(),
+        temp.path().into(),
+        temp.path().join("state"),
+        temp.path().join("runtime"),
+    );
+    paths.prepare_state_directories().expect("private paths");
+    (
+        temp,
+        Store {
+            limit,
+            ..Store::new(paths)
+        },
+    )
 }
 
 #[cfg(all(test, unix))]
@@ -407,23 +467,6 @@ mod tests {
     }
     use voytty_diagnostics::{Event, Filter, Kind, Recorder};
 
-    fn fixture(limit: u64) -> (tempfile::TempDir, Store) {
-        let temp = tempfile::tempdir().expect("private fixture");
-        let paths = UserPaths::for_test(
-            nix::unistd::geteuid().as_raw(),
-            temp.path().into(),
-            temp.path().join("state"),
-            temp.path().join("runtime"),
-        );
-        paths.prepare_state_directories().expect("private paths");
-        (
-            temp,
-            Store {
-                limit,
-                ..Store::new(paths)
-            },
-        )
-    }
     #[test]
     fn concurrent_rotation_separates_lanes_and_readers_keep_snapshot_handles() {
         let (_temp, store) = fixture(8192);
@@ -581,6 +624,105 @@ mod tests {
         .expect("tail");
         assert_eq!(tail.omitted, 1);
         assert_eq!(tail.lines.len(), 1);
+    }
+}
+
+#[cfg(all(test, any(unix, windows)))]
+mod rotation_tests {
+    use super::*;
+
+    #[test]
+    fn read_only_snapshots_survive_replacement_of_the_current_file_and_archive() {
+        let (_temp, store) = fixture(8);
+        store.append(false, b"first01\n").expect("first file");
+        store
+            .append(false, b"second2\n")
+            .expect("rotate first file");
+        let snapshots = store.snapshots(false).expect("held readers");
+        assert_eq!(snapshots.len(), 2);
+        store
+            .append(false, b"third03\n")
+            .expect("replace held archive");
+        store.append(false, b"fourth4\n").expect("rotate again");
+        store.flush().expect("sync after rotation");
+        for (snapshot, expected) in snapshots.into_iter().zip([b"second2\n", b"first01\n"]) {
+            let mut file = snapshot.file;
+            assert!(file.write_all(b"x").is_err(), "reader cannot write");
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).expect("snapshot bytes");
+            assert_eq!(&bytes, expected);
+        }
+        assert_eq!(
+            fs::read(store.paths.daemon_log()).expect("current"),
+            b"fourth4\n"
+        );
+        assert_eq!(
+            fs::read(store.paths.logs().join("daemon.log.1")).expect("archive"),
+            b"third03\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owner_read_only_log_can_be_inspected() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_temp, store) = fixture(128);
+        store.append(false, b"readable\n").expect("initial record");
+        fs::set_permissions(store.paths.daemon_log(), fs::Permissions::from_mode(0o400))
+            .expect("owner read only");
+        let mut snapshot = store
+            .snapshots(false)
+            .expect("read-only log")
+            .pop()
+            .expect("snapshot");
+        let mut text = String::new();
+        snapshot.file.read_to_string(&mut text).expect("contents");
+        assert_eq!(text, "readable\n");
+        assert!(snapshot.file.write_all(b"x").is_err());
+    }
+
+    #[test]
+    fn ordinary_appends_skip_inactive_files_and_legacy_cutover_rechecks_both_lanes() {
+        let (_temp, warm) = fixture(64);
+        warm.append(false, b"ready\n").expect("first pass");
+        let debug = warm.paths.logs().join("daemon.debug.log");
+        fs::create_dir(&debug).expect("unusable inactive lane");
+        warm.append(false, b"key\n")
+            .expect("only active file opened");
+        assert!(
+            warm.append(true, b"bad\n").is_err(),
+            "active paths are still validated"
+        );
+        fs::remove_dir(&debug).expect("repair inactive lane");
+        let legacy = crate::local::DaemonLock::try_acquire(&warm.paths)
+            .expect("daemon lock")
+            .expect("old daemon");
+        let other = Store {
+            limit: warm.limit,
+            ..Store::new(warm.paths.clone())
+        };
+        for _ in 0..32 {
+            other
+                .append(true, b"legacy record\n")
+                .expect("independent legacy-mode writer");
+        }
+        assert!(fs::metadata(&debug).expect("unchecked lane").len() > warm.limit);
+        drop(legacy);
+        let archive = warm.paths.logs().join("daemon.debug.log.1");
+        fs::create_dir(&archive).expect("temporarily invalid archive");
+        assert!(
+            warm.append(false, b"blocked\n").is_err(),
+            "cutover checks inactive entries"
+        );
+        fs::remove_dir(&archive).expect("repair archive");
+        warm.append(false, b"after\n").expect("retry cutover");
+        let bytes = fs::read(debug).expect("trimmed legacy lane");
+        assert!(!bytes.is_empty() && bytes.len() <= warm.limit as usize);
+        assert!(bytes.ends_with(b"legacy record\n") && bytes.starts_with(b"legacy record\n"));
+        assert_eq!(
+            fs::read(warm.paths.daemon_log()).expect("key lane"),
+            b"ready\nkey\nafter\n"
+        );
     }
 }
 
