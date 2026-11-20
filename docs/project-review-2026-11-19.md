@@ -23,10 +23,10 @@
 
 | 编号 | 状态与提交 | 修复结果及验证 |
 | --- | --- | --- |
-| C4 | 已修复 · `1961dc8` | 单按 `Esc` 后，即使没有下一次输入，40 ms 的等待窗口结束时也会送出按键。测试覆盖了紧随其后的鼠标移动、翻页键、分段到达的转义序列和跨输入轮次的按键。[输入回归测试](../crates/cli/src/terminal_ui/desktop_tests.rs#L2893) |
+| C4 | 已修复 · `1961dc8` | 单按 `Esc` 后，即使没有下一次输入，40 ms 的等待窗口结束时也会送出按键。测试覆盖了紧随其后的鼠标移动、翻页键、分段到达的转义序列和跨输入轮次的按键。[输入回归测试](../crates/cli/src/terminal_ui/desktop_tests.rs#L2894) |
 | C5 | 已修复 · `3f95d3e` | 生成的 systemd 用户单元使用 `WorkingDirectory=%h`。在 ARM64 Linux 虚拟机上，实际生成的单元通过了 `systemd-analyze --user verify`。已有安装可再次运行 `voytty daemon autostart enable` 更新旧单元。[自动启动说明](autostart.md#L28) |
 | M21 | 部分修复 · `3f95d3e` | Linux 实测接受属主独占主组的 `0775` 目录，并拒绝共享组可写、带扩展访问 ACL 的组可写目录及 `0777` 目录。Windows 启动程序校验和交互终端的 panic 日志仍待处理。[目录权限测试](../crates/platform/src/autostart.rs#L627) |
-| C3 | 已修复 · `02857b8` | 回归测试确认，等待撤权写锁超时会在写库前退出。撤权已提交给后台任务后，即使请求被取消，数据库与内存仍会同步为已撤权，并关闭该设备的连接、解除其终端会话挂接。停机成功后，即使客户端在回包前断开，监听器也会退出。[撤权测试](../crates/daemon/src/session_wire/tests.rs#L1627) · [停机测试](../crates/daemon/src/local_ipc.rs#L627) |
+| C3 | 已修复 · `02857b8` | 回归测试确认，等待撤权写锁超时会在写库前退出。撤权已提交给后台任务后，即使请求被取消，数据库与内存仍会同步为已撤权，并关闭该设备的连接、解除其终端会话挂接。停机成功后，即使客户端在回包前断开，监听器也会退出。[撤权测试](../crates/daemon/src/session_wire/tests.rs#L1630) · [停机测试](../crates/daemon/src/local_ipc.rs#L627) |
 | C1 | 按维护者要求跳过 | 本轮未处置 Penpot 配置与令牌。 |
 
 修复提交 `02857b8` 在 macOS 上通过了 `just check-changes origin/main`，涵盖工作区 Clippy 与测试、依赖策略、传输层补丁测试及 Relay 静态检查。Linux 专项验证覆盖了单元文件和目录权限。实际登录自启和托管跨平台 CI 尚未验证。
@@ -74,6 +74,24 @@ H3 的通知回归测试另见 `79505b1`。测试逐字节送入被打断的通�
 移动端 `fix/project-review-p2` 的 `3b5aaac` 固定公开仓库核心 `e7737c9`，在独立检出通过 `just check-changes origin/main`。Android 完成 Lint、单元测试、Debug 和 Release 构建及原生库对齐检查。iOS 设备目标构建成功，模拟器 XCTest 共 115 项，114 项通过，1 项需要一次性配对票据的远端验收按配置跳过。
 
 Windows x64 在 `616ef39` 完成全工作区及测试目标的 `cargo xwin check --locked --workspace --all-targets --target x86_64-pc-windows-msvc`。Windows 管道 ACL、PowerShell 5.1 的真实 HTTPS 安装及 Windows ARM64 运行仍由原生托管 CI 验证。
+
+## P3 修复记录
+
+2026-11-20，`fix/project-review-p3` 从同一审查基准接续 P2。
+
+| 范围 | 当前行为 |
+| --- | --- |
+| M15 桌面重绘 | 首次绘制和丢失绘制基线后，完整设置鼠标捕获、焦点和光标。增量绘制只发送改变的输入模式，光标形状或闪烁设置变化时才发送 DECSCUSR。[ANSI 呈现器](../crates/cli/src/terminal_ui/ansi_presenter.rs) |
+| M16 历史缓存 | 主屏历史达到上限后，原地改字和清行保留缓存。滚动实际挤出旧行、清空历史或调整窗口大小会更新历史版本。测试覆盖了新旧行内容相同和切换备用屏幕。[终端模型](../crates/terminal/src/model.rs) |
+| 桌面与守护进程模块 | 桌面入口、输入解码、历史视口和 Windows 控制台使用独立 Rust 模块。守护进程按会话服务、附着命令、附着流读写、连接需求与拨号拆分。原内联测试移到对应模块。[桌面入口](../crates/cli/src/terminal_ui.rs) · [会话](../crates/daemon/src/session.rs) · [会话协议](../crates/daemon/src/session_wire.rs) · [连接管理](../crates/daemon/src/connection_broker.rs) |
+| 帧读取与命令排队 | 共享读取函数保留半帧和一次读到的后续帧。各调用方保留自己的流结束语义，包括本机隧道断开时允许重连。会话和数据库命令通过有界通道等候空位，保留各自的截止时间、错误分类与已开始操作的处理。[帧读取](../crates/client/src/framing.rs) · [数据库队列](../crates/daemon/src/store.rs) |
+| 文档与清理 | 更新依赖图、移动端编译目标、五个桌面发布目标、十二件发布资产、Relay 本地构建与回滚步骤，以及 Windows、iOS 的交付状态。18 处历史死链指向拆库前的公开提交 `02f19ddb`，逐一核对 Git 对象。移除了已执行的 Trellis 迁移计划和空钩子配置。[开发指南](development.md) · [移动端边界](mobile-repository.md) · [历史验收](verification/multi-device.md) |
+
+公开仓库以 `5956410` 在 macOS 的干净构建目录通过 `just check-changes origin/main`。工作区通过 868 项、noq-proto 441 项、Iroh 165 项，合计 1,474 项通过，17 项按已有标记忽略。守护进程启动、诊断日志并发写入及两项新增终端回归均以默认测试并发通过。Clippy、四份锁文件的依赖审计和两个架构的 Relay 制品校验通过。
+
+Windows x64 在 `5956410` 通过全工作区及测试目标的 `cargo xwin check --locked --workspace --all-targets --target x86_64-pc-windows-msvc`。原生控制台运行验证由 Windows 托管 CI 执行。
+
+移动端分支 `fix/project-review-p3` 的 `df286c0` 固定共享提交 `5cd5ba5`，在独立检出通过 `just check-changes origin/main`。Android Lint、单测与 Debug、Release 构建通过。iOS 设备构建通过，模拟器 XCTest 共 115 项，114 项通过，1 项需要一次性配对票据的远端验收按配置跳过。
 
 ---
 
@@ -455,5 +473,5 @@ flowchart LR
    - 收窄已有授权时的 `resolve_normal_confirmation` 行为，保留最终确认丢失的正常恢复用例（**M1**，现行等级 Low）。
    - 加固 Unix `validate_executable_parent`（**M2**）、Windows Named Pipe（**M3**）、上传累计配额与自动清理（**M4/L1**）及 Windows 安装脚本测试（**M24**）。
    - 补齐 `vendor/iroh` TLS 回归与独立 lockfile `cargo-deny`（**M26**），对齐 Relay `iroh 1.3.0` 与容器加固（**M25**）。
-4. **P3（架构减债与文档对齐）**：
+4. **P3（架构减债与文档对齐，已提交修复）**。实施和验收见 [P3 修复记录](#p3-修复记录)。原始清单如下。
    - 拆分 `terminal_ui.rs`（移除 `include!()`）、`daemon/session.rs`、`session_wire.rs`、`connection_broker.rs`，收敛重复帧读取与邮箱轮询；修复 `ansi_presenter` 增量模式差量（**M15**）与 `history_epoch` 误失效（**M16**）；同步文档并清理 18 处历史死链与残留文件。
