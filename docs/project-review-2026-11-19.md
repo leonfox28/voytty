@@ -107,6 +107,20 @@ Windows x64 在 `5956410` 通过全工作区及测试目标的 `cargo xwin check
 
 验收使用提交 `a24a296`。macOS 通过 `just check-changes origin/main`，工作区 872 项、noq-proto 441 项、Iroh 165 项测试通过，合计 1,478 项通过，17 项按原有标记忽略。Clippy、依赖审计和两个架构的 Relay 制品校验通过。Windows x64 和 ARM64 均通过守护进程及其测试目标的 `cargo xwin check --locked -p voytty-daemon --all-targets`。ARM64 交叉编译使用 Clang 驱动及其配套的 NEON 头文件。本轮 Windows 验证范围为交叉编译，原生运行仍待托管 CI。
 
+## 会话管理后续修复
+
+2026-11-20，分支 `fix/project-review-session-followup` 接续守护进程修复。代码提交 `9aaac17`。
+
+| 编号 | 修复结果 |
+| --- | --- |
+| M5 | 同一守护进程内的租约序号不重复。最多保留 64 个租约，满额时回收没有未完成操作的旧租约。已淘汰租约不能在原设备或新的授权代次下重新执行。测试覆盖 64 个同时在途的租约和随后 129 次授权代次切换。[重放登记](../crates/daemon/src/session.rs) |
+| M11 | 接管前先检查终端状态。在同一次终端更新中切换配色、画面基线和通知接收者，成功后才交出旧控制权。回归测试模拟通知接收者无法切换，确认旧控制端仍能输入、原配色保留，之后可以正常接管。[会话接管](../crates/daemon/src/session/attachments.rs) |
+| M12 | 重复操作按各自请求的截止时间等待。会话开始关闭后，清理任务保存最终结果。即使首个调用和重复调用均已超时，在租约和结果的保留期内，用原操作 ID 仍可取回结果。[会话服务](../crates/daemon/src/session/service.rs) · [实现约定](persistent-sessions.md) |
+
+提交 `9aaac17` 在 macOS 上通过 `just check-changes origin/main`。工作区 873 项、noq-proto 441 项、Iroh 165 项测试通过，合计 1,479 项通过，17 项按已有标记忽略。Clippy 和两个架构的 Relay 制品校验通过。Windows x64、ARM64 均通过守护进程及其测试目标的交叉编译检查，Windows 原生运行仍待托管 CI 验证。
+
+上轮列出的中危问题中，M8、M9、M13、M17、M18、M19、M20 仍待修复。M21 的 Linux 目录权限已修复，Windows 自动启动程序校验和交互终端的崩溃日志仍待处理。
+
 ---
 
 ## 一、总体评估与本地基线验证
@@ -318,6 +332,7 @@ Windows x64 在 `5956410` 通过全工作区及测试目标的 `cargo xwin check
 ### 守护进程与协议细节
 
 #### M5. `ReplayRegistry`（上限 64 主体）永不清理或淘汰
+- **当前状态**　已修复，见[会话管理后续修复](#会话管理后续修复)。
 - **位置**：[`crates/daemon/src/session.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L53) / [`session.rs#L2414-L2447`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L2414-L2447)
 - **说明**：按 `(device_id, auth_generation)` 建键但设备撤销或重新配对后从不回收，长驻守护进程累计超过 64 次配对/轮换后将永久返回 `ResourceExhausted`。
 
@@ -345,10 +360,12 @@ Windows x64 在 `5956410` 通过全工作区及测试目标的 `cargo xwin check
 - **说明**：同 UID 挂死客户端停止读取即可永久占住 `max_local_connections`；`LocalConnectionProgress` 的 `write_all` 被超时取消留下半帧后，外层继续往同一流写入 `ServiceReply::error` 破坏线缆 framing。
 
 #### M11. `SessionRuntime::takeover()` 失败时状态非原子变更，旧控制者失联且未收到 `LeaseLost`
+- **当前状态**　已修复，见[会话管理后续修复](#会话管理后续修复)。
 - **位置**：[`crates/daemon/src/session.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L4162-L4225)
 - **说明**：在可能失败的 `full_sync` / `reconcile_effect_target` 之前就替换了 `runtime.controller`，出错返回时旧控制者已被丢弃且未发送 `LeaseLost`，缓存摘要也与内存不一致。
 
 #### M12. `OperationCell::wait` 与 `SessionService::close_inner` 忽略调用方 `deadline`
+- **当前状态**　已修复，见[会话管理后续修复](#会话管理后续修复)。
 - **位置**：[`crates/daemon/src/session.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L690-L706) / [`session.rs#L1337-L1348`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L1337-L1348) / [`session.rs#L2533-L2544`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/session.rs#L2533-L2544)
 - **说明**：重放等待无界调用 `Condvar::wait`；`close_inner` 丢弃传入 `deadline` 并硬编码等待 5 秒。
 
@@ -373,9 +390,10 @@ Windows x64 在 `5956410` 通过全工作区及测试目标的 `cargo xwin check
 - **位置**：[`crates/terminal/src/colors.rs`](../crates/terminal/src/colors.rs#L72-L73) / [`colors.rs#L123-L135`](../crates/terminal/src/colors.rs#L123-L135)
 - **说明**：压栈保存了展平后的快照而非 `overrides`，出栈后永久阻断系统深浅色切换并迫使桌面端退化为 500 ms 定时器软件光标。
 
-#### M18. `user_state::open_read` 请求 `O_RDWR`（破坏 `0o400` 文件）且 Windows 缺 `FILE_SHARE_DELETE` 阻塞日志轮转；每条日志均归一化 4 个文件
+#### M18. `user_state::open_read` 读取时申请写权限，每写一条日志均重复整理 4 个文件
+- **复核修订**　读取文件时仍申请写权限，写日志时也仍会重复整理四个文件。原文关于缺少 `FILE_SHARE_DELETE` 的归因已撤回。Rust 1.98 在 Windows 上默认设置该共享标志，项目使用的 `configure_secure_open` 只设置自定义打开标志。Windows 上并发读取和轮转的实际行为仍待原生验证。[文件打开逻辑](../crates/platform/src/user_state.rs)
 - **位置**：[`crates/platform/src/user_state.rs`](../crates/platform/src/user_state.rs#L432-L434) / [`user_state.rs#L932-L943`](../crates/platform/src/user_state.rs#L932-L943)、[`crates/platform/src/diagnostics.rs`](../crates/platform/src/diagnostics.rs#L227-L251) / [`diagnostics.rs#L313-L328`](../crates/platform/src/diagnostics.rs#L313-L328)
-- **说明**：`open_read` 对合法 `0o400` 文件报 `EACCES`；Windows 下 `voytty logs` 读取时阻断并发日志轮转报 `ERROR_SHARING_VIOLATION`；`Store::append` 每写一条日志就对 4 个文件执行 `normalize()`（约 12+ 次系统调用/条）。
+- **说明**　`open_read` 可能因此无法读取属主只读（`0o400`）的文件。`Store::append` 每写一条日志就对 4 个文件执行 `normalize()`，增加了每次写入的系统调用次数。
 
 #### M19. 移动端 `IrohController` 存在 `open_bi` 零退避忙旋与 1 秒周期唤醒/分配及 1 ms RTT 抖动重绘
 - **位置**：[`crates/client/src/iroh_controller.rs`](../crates/client/src/iroh_controller.rs#L583-L605) / [`iroh_controller.rs#L992-L1068`](../crates/client/src/iroh_controller.rs#L992-L1068)
