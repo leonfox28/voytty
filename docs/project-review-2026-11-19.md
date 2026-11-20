@@ -93,6 +93,20 @@ Windows x64 在 `5956410` 通过全工作区及测试目标的 `cargo xwin check
 
 移动端分支 `fix/project-review-p3` 的 `df286c0` 固定共享提交 `5cd5ba5`，在独立检出通过 `just check-changes origin/main`。Android Lint、单测与 Debug、Release 构建通过。iOS 设备构建通过，模拟器 XCTest 共 115 项，114 项通过，1 项需要一次性配对票据的远端验收按配置跳过。
 
+## P3 后续修复记录
+
+2026-11-20，分支 `fix/project-review-daemon-followup` 接续 P3。提交 `df27983` 处理守护进程的三项遗留问题。
+
+| 编号 | 修复结果 |
+| --- | --- |
+| M6 | 授权持久化、配对票据提交和内存授权发布完成后，立即释放该设备的写锁。对端接收配对确认的速度不再影响同一设备的握手或撤权。[入站配对](../crates/daemon/src/pairing_service.rs) |
+| M7 | 关停与登记新的配对任务共用一把锁。关停前登记的任务由守护进程等候，之后到达的任务在启动前收到取消结果。[配对任务管理](../crates/daemon/src/pairing_service.rs) |
+| M10 | 本机错误回包的写入和关闭沿用本次请求的截止时间。单次请求和远端隧道只有在进度消息完整写出后才能继续使用连接。进度写入中断时立即关闭连接，已提交的操作仍可完成。[本机 IPC](../crates/daemon/src/local_ipc.rs) · [进度消息](../crates/daemon/src/connection_progress.rs) · [远端隧道](../crates/daemon/src/remote_tunnel.rs) |
+
+本轮全分支检查还发现，终端自然退出时偶尔只收到断线。提交 `a24a296` 修复了两个已用回归测试单独确认的条件。会话工作线程退出时会释放队列中未执行请求的回复端，唤醒等候者。过时的屏幕更新通知遇到会话已结束时，写入任务继续交付最后的屏幕变化和退出原因。[会话队列](../crates/daemon/src/session.rs) · [终端事件写入](../crates/daemon/src/session_wire/attachment_io.rs)
+
+验收使用提交 `a24a296`。macOS 通过 `just check-changes origin/main`，工作区 872 项、noq-proto 441 项、Iroh 165 项测试通过，合计 1,478 项通过，17 项按原有标记忽略。Clippy、依赖审计和两个架构的 Relay 制品校验通过。Windows x64 和 ARM64 均通过守护进程及其测试目标的 `cargo xwin check --locked -p voytty-daemon --all-targets`。ARM64 交叉编译使用 Clang 驱动及其配套的 NEON 头文件。本轮 Windows 验证范围为交叉编译，原生运行仍待托管 CI。
+
 ---
 
 ## 一、总体评估与本地基线验证
@@ -308,10 +322,12 @@ Windows x64 在 `5956410` 通过全工作区及测试目标的 `cargo xwin check
 - **说明**：按 `(device_id, auth_generation)` 建键但设备撤销或重新配对后从不回收，长驻守护进程累计超过 64 次配对/轮换后将永久返回 `ResourceExhausted`。
 
 #### M6. 入站配对持 `AuthorizationWriteGuard` 跨网络发送 `PairAccepted` 与 `shutdown`
+- **当前状态**　已修复，见 [P3 后续修复记录](#p3-后续修复记录)。
 - **位置**：[`crates/daemon/src/pairing_service.rs`](../crates/daemon/src/pairing_service.rs#L853-L872)
 - **说明**：`guard.publish(durable)` 后未立即 `drop(guard)`，慢速配对流会阻塞同设备的即时普通握手或本地 `device revoke` 最长 15 秒。
 
 #### M7. `PairingService::shutdown_until` 与 `accept_until` 竞态泄漏后台任务
+- **当前状态**　已修复，见 [P3 后续修复记录](#p3-后续修复记录)。
 - **位置**：[`crates/daemon/src/pairing_service.rs`](../crates/daemon/src/pairing_service.rs#L291-L314) / [`pairing_service.rs#L453-L491`](../crates/daemon/src/pairing_service.rs#L453-L491)
 - **说明**：检查 `shutdown` 与加锁插入 `self.tasks` 非原子，停机瞬间可能漏掉新 spawn 的任务。
 
@@ -324,7 +340,7 @@ Windows x64 在 `5956410` 通过全工作区及测试目标的 `cargo xwin check
 - **说明**：`quiesce_until` 不等待已脱离的拨号/连接/持久化任务；每次 `PathEvent` 都新起 `tokio::spawn` 写 SQLite，网络抖动易打满 `STORE_COMMAND_CAPACITY`（64）；空闲/撤销对端的 `PeerSlot` 永不回收。
 
 #### M10. `local_ipc.rs` 回包无写超时（可耗尽连接槽位），进度帧写超时后继续写错包破坏帧边界
-- **P0 后续状态**　C3 已给普通单次请求的最终回复写入和关闭设置截止时间。早期错误回包的写入期限、进度帧写到一半时的处理仍待修复。[最终回复路径](../crates/daemon/src/local_ipc.rs#L548)
+- **当前状态**　P0 已处理普通单次请求的最终回复。其余早期错误回包和进度消息半帧问题已在 [P3 后续修复](#p3-后续修复记录) 中完成。
 - **位置**：[`crates/daemon/src/local_ipc.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/local_ipc.rs#L539-L544) / [`local_ipc.rs#L575-L584`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/local_ipc.rs#L575-L584)、[`crates/daemon/src/connection_progress.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/daemon/src/connection_progress.rs#L106-L119)
 - **说明**：同 UID 挂死客户端停止读取即可永久占住 `max_local_connections`；`LocalConnectionProgress` 的 `write_all` 被超时取消留下半帧后，外层继续往同一流写入 `ServiceReply::error` 破坏线缆 framing。
 
