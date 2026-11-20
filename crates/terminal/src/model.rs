@@ -282,7 +282,7 @@ impl TerminalModel {
             return self.ingest(&[]);
         }
         let next = self.next_revision()?;
-        self.engine.colors.base = base;
+        self.engine.colors.update_base(base);
         self.engine.colors.commit(next);
         self.revision = next;
         Ok(TerminalUpdate {

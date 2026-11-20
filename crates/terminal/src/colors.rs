@@ -5,22 +5,40 @@ use std::fmt::Write as _;
 use voytty_core::Revision;
 use voytty_core::terminal::*;
 
+#[derive(Clone, Copy)]
+enum PaletteColor {
+    Explicit(TerminalColorValue),
+    Inherited {
+        source: u16,
+        observed: TerminalColorValue,
+    },
+}
+
+impl PaletteColor {
+    fn value(self) -> TerminalColorValue {
+        match self {
+            Self::Explicit(value)
+            | Self::Inherited {
+                observed: value, ..
+            } => value,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct VoyttyColorState {
     pub(crate) base: TerminalColorProfile,
-    overrides: Vec<Option<TerminalColorValue>>,
+    slots: Vec<Option<PaletteColor>>,
     pub(crate) snapshot: TerminalColorSnapshot,
     pub(crate) subscribed: bool,
     pub(crate) reverse: bool,
-    saved: [Option<TerminalColorSnapshot>; 10],
-    inherited_sources: Vec<Option<u16>>,
+    saved: [Option<Box<[PaletteColor; TERMINAL_COLOR_SLOTS]>>; 10],
     depth: usize,
     stored: usize,
 }
 impl VoyttyColorState {
     pub(crate) fn reset(&mut self) {
-        self.overrides.clear();
-        self.inherited_sources.clear();
+        self.slots.clear();
         self.subscribed = false;
         self.reverse = false;
         self.saved = Default::default();
@@ -41,23 +59,36 @@ impl VoyttyColorState {
             _ => slot,
         }
     }
-    fn value(&self, slot: usize) -> TerminalColorValue {
+    fn binding(&self, slot: usize) -> PaletteColor {
         let source = self.source(slot);
-        self.overrides
+        self.slots
             .get(source)
             .copied()
             .flatten()
-            .unwrap_or(self.base.values[source])
+            .unwrap_or_else(|| PaletteColor::Inherited {
+                source: u16::try_from(source).expect("bounded color source"),
+                observed: self.base.values[source],
+            })
+    }
+    fn value(&self, slot: usize) -> TerminalColorValue {
+        self.binding(slot).value()
+    }
+    pub(crate) fn update_base(&mut self, base: TerminalColorProfile) {
+        // Pop restores the observation at push time. A later controller
+        // update refreshes only inherited slots, using their saved sources.
+        for binding in self.slots.iter_mut().flatten() {
+            if let PaletteColor::Inherited { source, observed } = binding {
+                *observed = base.values[usize::from(*source)];
+            }
+        }
+        self.base = base;
     }
     fn set(&mut self, slot: usize, value: Option<TerminalColorValue>) {
-        if self.overrides.is_empty() {
-            self.overrides.resize(TERMINAL_COLOR_SLOTS, None);
+        if self.slots.is_empty() {
+            self.slots.resize(TERMINAL_COLOR_SLOTS, None);
         }
         let source = self.source(slot);
-        self.overrides[source] = value;
-        if let Some(inherited) = self.inherited_sources.get_mut(source) {
-            *inherited = None;
-        }
+        self.slots[source] = value.map(PaletteColor::Explicit);
     }
     fn effective(&self) -> TerminalColorProfile {
         TerminalColorProfile {
@@ -70,15 +101,13 @@ impl VoyttyColorState {
             profile: self.effective(),
             reverse: self.reverse,
             custom_cursor: (COLOR_CURSOR..=COLOR_CURSOR_TEXT)
-                .any(|slot| self.overrides.get(slot).is_some_and(Option::is_some)),
+                .any(|slot| matches!(self.binding(slot), PaletteColor::Explicit(_))),
             changed_at: self.snapshot.changed_at,
-            inherited_sources: Box::new(std::array::from_fn(|slot| {
-                let source = self.source(slot);
-                self.inherited_sources
-                    .get(source)
-                    .copied()
-                    .flatten()
-                    .unwrap_or_else(|| u16::try_from(source).expect("bounded color source"))
+            inherited_sources: Box::new(std::array::from_fn(|slot| match self.binding(slot) {
+                PaletteColor::Inherited { source, .. } => source,
+                PaletteColor::Explicit(_) => {
+                    u16::try_from(self.source(slot)).expect("bounded color source")
+                }
             })),
         }
     }
@@ -111,24 +140,21 @@ impl VoyttyColorState {
         } else {
             index - 1
         };
-        if slot >= 10 {
+        if slot >= self.saved.len() {
             return;
         }
         if store {
-            self.saved[slot] = Some(self.effective_snapshot());
+            self.saved[slot] = Some(Box::new(std::array::from_fn(|i| self.binding(i))));
             self.stored = self.stored.max(slot + 1);
             if index == 0 {
                 self.depth += 1;
             }
-        } else if let Some(saved) = self.saved[slot].clone() {
-            self.inherited_sources.resize(TERMINAL_COLOR_SLOTS, None);
-            for (slot, value) in saved.profile.values.into_iter().enumerate() {
-                self.set(slot, Some(value));
-                if value == TerminalColorValue::Unknown {
-                    let source = self.source(slot);
-                    self.inherited_sources[source] = Some(saved.inherited_sources[slot]);
-                }
-            }
+        } else if let Some(saved) = &self.saved[slot] {
+            // The swap performed by source() is its own inverse. Keep the
+            // current reverse mode while restoring the saved logical palette.
+            self.slots = (0..TERMINAL_COLOR_SLOTS)
+                .map(|physical| Some(saved[self.source(physical)]))
+                .collect();
             if index == 0 {
                 self.depth -= 1;
             }

@@ -246,6 +246,56 @@ fn stack_aliases_share_ten_slots_and_retain_unobserved_sources() {
     );
 }
 #[test]
+fn popped_colors_follow_their_original_sources_and_only_explicit_cursor_uses_software() {
+    let mut m = model();
+    let mut original = base();
+    original.values[COLOR_CURSOR] = rgb(1, 2, 3);
+    m.update_base_colors(original.clone())
+        .expect("initial theme");
+    let untouched = m.snapshot().surface.colors;
+    send(&mut m, b"\x1b[#P\x1b[#Q");
+    assert_eq!(m.snapshot().surface.colors, untouched);
+    // Slot 1 is explicitly set to exactly its inherited RGB.
+    send(&mut m, b"\x1b]4;1;#78141e\x07\x1b[?5h\x1b[#P\x1b[?5l");
+    send(&mut m, b"\x1b]21;cursor=;cursor_text=#123456\x07\x1b[9#P");
+    send(&mut m, b"\x1b[#Q");
+    let popped = m.snapshot().surface.colors;
+    assert!(!popped.custom_cursor);
+    assert_eq!(popped.source(COLOR_FOREGROUND), COLOR_BACKGROUND);
+    assert_eq!(
+        popped.profile.values[COLOR_FOREGROUND],
+        original.values[COLOR_BACKGROUND]
+    );
+
+    let mut next = original.clone();
+    next.appearance = TerminalAppearance::Dark;
+    next.values[COLOR_BACKGROUND] = rgb(5, 6, 7);
+    next.values[COLOR_CURSOR] = TerminalColorValue::Dynamic;
+    next.values[1] = rgb(21, 22, 23);
+    m.update_base_colors(next.clone()).expect("theme change");
+    let changed = m.snapshot().surface.colors;
+    assert_eq!(changed.profile.values[1], original.values[1]);
+    assert_eq!(
+        changed.profile.values[COLOR_FOREGROUND],
+        next.values[COLOR_BACKGROUND]
+    );
+    assert_eq!(
+        changed.profile.values[COLOR_CURSOR],
+        TerminalColorValue::Dynamic
+    );
+    assert!(!changed.custom_cursor);
+    send(&mut m, b"\x1b[9#Q");
+    let cursor = m.snapshot().surface.colors;
+    assert!(cursor.custom_cursor);
+    assert_eq!(
+        cursor.profile.values[COLOR_CURSOR],
+        TerminalColorValue::Dynamic
+    );
+    assert_eq!(cursor.profile.values[COLOR_CURSOR_TEXT], rgb(18, 52, 86));
+    send(&mut m, b"\x1b]21;cursor;cursor_text\x07");
+    assert!(!m.snapshot().surface.colors.custom_cursor);
+}
+#[test]
 fn reset_and_alternate_screen_lifetimes_preserve_the_controller_base() {
     let mut m = model();
     m.update_base_colors(base())
