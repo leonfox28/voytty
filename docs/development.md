@@ -12,7 +12,7 @@ verified on 2026-08-21 with:
 | Rustup | 1.29.0 |
 | Rust / Cargo | 1.98.0 |
 | Rust components | rustfmt, Clippy, rust-src |
-| Rust targets | `aarch64-apple-darwin`, `aarch64-apple-ios`, `aarch64-apple-ios-sim`, `aarch64-linux-android` |
+| Required Rust targets today | `aarch64-apple-darwin`, `aarch64-apple-ios`, `aarch64-apple-ios-sim`, `aarch64-linux-android` |
 | Preserved user toolchain | `1.95.0-aarch64-apple-darwin` |
 | Docker CLI | 29.7.2 |
 | Docker Engine in Colima | 29.5.2 |
@@ -86,6 +86,7 @@ changing the default toolchain:
 rustup target add \
   aarch64-apple-darwin \
   aarch64-apple-ios \
+  aarch64-apple-ios-sim \
   aarch64-linux-android \
   --toolchain 1.98.0-aarch64-apple-darwin
 ```
