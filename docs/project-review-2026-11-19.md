@@ -199,6 +199,14 @@ macOS 上，平台和终端模块的 Clippy 通过，模块测试 119 项通过�
 
 重构后在 macOS 上通过 `cargo +1.98.0 fmt --all -- --check`、全工作区 Clippy（零警告）、`RUSTDOCFLAGS="-D warnings" cargo +1.98.0 doc --workspace --no-deps`（零警告）、全工作区测试 **898 项通过 / 0 失败 / 17 项忽略**、`just mobile-core-check android`、`just mobile-core-check ios`、`sh tests/source-policy.sh`、`just ci-policy`，以及 Windows x64 全工作区 `cargo +1.98.0 xwin clippy --locked --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings`（零警告）。三个本地 vendored 补丁分叉仍按长期上游合入节奏跟进；`voytty-app` 私有端联调与 Windows 原生运行仍待对应环境验证。
 
+## 依赖安全更新与移动端联调验收
+
+2026-11-23，在 `fix/project-review-remaining-medium` 的提交 `9c011b7` 中将 `url` 由 `2.5.8` 升级至 `2.5.9`（连带 `form_urlencoded 1.2.2 -> 1.2.3`），同步更新根工作区、[Cargo.toml](../Cargo.toml#L72)、`vendor/iroh/Cargo.lock` 与 `tests/relay/handshake-probe/Cargo.lock`，消除 `RUSTSEC-2026-0592` 依赖告警。
+
+- **公开仓库（`9c011b7`）**：在 macOS 上通过完整 `just check-changes origin/main`，涵盖源码与策略门禁、四份锁文件的 `just ci-dependencies`（`advisories`/`bans`/`licenses`/`sources` 全部通过）、全工作区 Clippy（零警告）与测试 **898 项通过 / 17 项忽略**、`noq-proto` **441 项通过**、`vendor/iroh` **165 项通过 / 1 项沿用上游忽略**（合计 **1,504 项通过 / 18 项忽略**，先前本机观测异常的 `voytty_direct_path_request_keeps_an_existing_direct_connection` 本轮通过），以及 `just relay-static`（探针 Clippy 与双架构 Relay 制品校验）。另通过 `vendor/iroh --all-features` 编译检查与 Windows x64 全工作区 `cargo +1.98.0 xwin clippy --locked --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings`（零警告）。
+- **私有移动端（`voytty-app` 分支 `fix/project-review-remaining-medium` 提交 `32371e6`）**：固定共享子模块 `core` 至 `9c011b7` 并同步升级 `Cargo.lock` 的 `url` 至 `2.5.9`。在独立干净检出上通过完整 `just check-changes origin/main`：策略与边界检查（含 3 项 Android 发布单测、55 项离线 E2E 协调测试、13 项 CI 策略单测）、`just ci-dependencies`、`just ci-rust`（Clippy 零警告，桥接 25 项 + `askama_derive` 45 项通过）、Android Debug/Release APK 构建、Lint、JVM 单测与 16 KB ELF/Zip 对齐校验、iOS 设备目标无签名构建，以及 iOS 模拟器 XCTest 共 **115 项（114 项通过、1 项按配置跳过、0 失败）**。
+- **剩余边界**：`C1` 按维护者要求继续跳过；3 个本地 vendored 补丁分叉按长期上游节奏跟进；Windows 原生运行（命名管道 ACL、PowerShell 5.1 真实 HTTPS 安装夹具、控制台与日志快照轮转、Windows 自动启动及 ARM64）、Linux 实际登录自启与 Docker/QEMU Relay 握手烟测仍由 GitHub Actions 托管 CI 覆盖；移动端真机与视觉验收另行开展。
+
 ---
 
 ## 一、总体评估与本地基线验证
