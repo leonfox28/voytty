@@ -113,15 +113,15 @@ ci-relay:
     sh tests/relay/build-platforms.sh
     sh tests/relay/smoke.sh
 
-# Prepare the version in the current feature PR, or open a standalone release PR from main.
+# Prepare the version commit directly on main, or append it to an existing feature PR.
 release-prepare version:
     sh tools/release/operator.sh prepare {{ quote(version) }}
 
-# Tag exact protected green main and watch the formal release workflow.
+# Tag exact protected green main (running full-check first if needed) and watch the formal release workflow.
 release-publish version:
     sh tools/release/operator.sh publish {{ quote(version) }}
 
-# Finish a reviewed release PR: wait, merge exact head, wait main, tag, and publish.
+# Finish an optional reviewed release PR: wait, merge exact head, run full-check on main, tag, and publish.
 release version pr:
     sh tools/release/operator.sh finish {{ quote(version) }} {{ quote(pr) }}
 

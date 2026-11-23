@@ -103,12 +103,13 @@ underprivileged API call and does not request a PAT. The environment reviewer
 must confirm that immutable Releases remain enabled before approving the sole
 seed-bearing signing job.
 
-CI never creates a tag. `release-prepare` prepares the version in the feature
-PR, or creates a standalone version PR from main. `release-publish` tags only
-after exact main CI and its retained candidate pass; `just release VERSION PR`
-coordinates the required waits and merge. The tag workflow reuses that candidate,
-tests the signed installers on all five targets, round-trips one late draft, emits provenance
-attestations, and requires immutable publication. Relay images are not published.
+CI never creates a tag. `release-prepare` commits and pushes the version directly
+on `main` (or appends it to an optional feature PR). `release-publish` runs or
+rejoins exact-SHA `full-check` on `main` and tags only after its retained
+candidate passes; `just release VERSION PR` coordinates optional PR merges. The
+tag workflow reuses that candidate, tests the signed installers on all five
+targets, round-trips one late draft, emits provenance attestations, and requires
+immutable publication. Relay images are not published.
 
 A normal key rotation first ships a binary that trusts the next reviewed key
 through a manifest signed by the current key. If the current private key may be

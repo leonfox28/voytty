@@ -300,23 +300,25 @@ grep -Fq 'could not prove GitHub Release v0.1.10 is vacant' "$case_root/stderr" 
     || fail "Release API failure did not fail closed at vacancy"
 assert_no_remote_tag release-api-failure
 
-new_case existing-local-branch
-git -C "$case_worktree" branch release/v0.1.10
+new_case unprotected-main-prepare
 operator_command=prepare
 operator_version=0.1.10
-if run_operator >"$case_root/stdout" 2>"$case_root/stderr"; then
-    fail "existing local release branch was accepted"
+if run_operator FAKE_PROTECTION=false >"$case_root/stdout" 2>"$case_root/stderr"; then
+    fail "unprotected main was accepted during prepare"
 fi
-assert_no_remote_tag existing-local-branch
+grep -Fq 'disable force pushes and deletion' "$case_root/stderr" \
+    || fail "unprotected main prepare failed for an unexpected reason"
+assert_no_remote_tag unprotected-main-prepare
 
-new_case existing-remote-branch
-git -C "$case_worktree" push --quiet origin HEAD:refs/heads/release/v0.1.10
-operator_command=prepare
-operator_version=0.1.10
-if run_operator >"$case_root/stdout" 2>"$case_root/stderr"; then
-    fail "existing remote release branch was accepted"
+new_case unprotected-main-publish
+operator_command=publish
+operator_version=0.1.9
+if run_operator FAKE_PROTECTION=false >"$case_root/stdout" 2>"$case_root/stderr"; then
+    fail "unprotected main was accepted during publish"
 fi
-assert_no_remote_tag existing-remote-branch
+grep -Fq 'disable force pushes and deletion' "$case_root/stderr" \
+    || fail "unprotected main publish failed for an unexpected reason"
+assert_no_remote_tag unprotected-main-publish
 
 new_case existing-local-tag
 git -C "$case_worktree" tag -a v0.1.10 -m 'existing fixture tag'
@@ -340,13 +342,14 @@ fi
     || fail "existing annotated tag fixture was not preserved"
 
 new_case partial-inventory
+baseline_main=$(git --git-dir="$case_remote" rev-parse refs/heads/main)
 operator_command=prepare
 operator_version=0.1.10
 if run_operator FIXTURE_VERSION_EXTRA=1 >"$case_root/stdout" 2>"$case_root/stderr"; then
     fail "unexpected release inventory was accepted"
 fi
-[ "$(git -C "$case_worktree" branch --show-current)" = release/v0.1.10 ] \
-    || fail "inventory failure did not retain the local release branch"
+[ "$(git -C "$case_worktree" branch --show-current)" = main ] \
+    || fail "inventory failure switched away from main"
 [ -n "$(git -C "$case_worktree" status --porcelain)" ] \
     || fail "inventory failure did not retain the partial version diff"
 inventory_diagnostic='release operator failed: release preparation inventory mismatch
@@ -359,33 +362,33 @@ Cargo.toml
 unexpected-version-output'
 grep -Fq "$inventory_diagnostic" "$case_root/stderr" \
     || fail "inventory failure did not print stable expected and actual sets"
-if git --git-dir="$case_remote" show-ref --verify --quiet refs/heads/release/v0.1.10; then
-    fail "inventory failure pushed the release branch"
-fi
+[ "$(git --git-dir="$case_remote" rev-parse refs/heads/main)" = "$baseline_main" ] \
+    || fail "inventory failure pushed main"
 updates_before_resume=$(grep -Fc 'cargo +1.98.0 update --workspace' "$case_trace" || true)
 if run_operator >"$case_root/resume-stdout" 2>"$case_root/resume-stderr"; then
-    fail "dirty partial release branch was auto-resumed"
+    fail "dirty partial main checkout was auto-resumed"
 fi
 [ "$(grep -Fc 'cargo +1.98.0 update --workspace' "$case_trace" || true)" \
     -eq "$updates_before_resume" ] \
     || fail "dirty partial resume reran Cargo generation"
 assert_no_remote_tag partial-inventory
 
-new_case prepare-success
+new_case prepare-main-success
 operator_command=prepare
 operator_version=0.1.10
 if ! run_operator >"$case_root/stdout" 2>"$case_root/stderr"; then
     cat "$case_root/stderr" >&2
-    fail "valid release preparation failed"
+    fail "valid main release preparation failed"
 fi
-git --git-dir="$case_remote" show-ref --verify --quiet refs/heads/release/v0.1.10 \
-    || fail "prepare did not push the release branch"
+[ "$(git -C "$case_worktree" branch --show-current)" = main ] \
+    || fail "main prepare switched away from main"
+[ "$(git --git-dir="$case_remote" rev-parse refs/heads/main)" = "$(git -C "$case_worktree" rev-parse HEAD)" ] \
+    || fail "prepare did not push the release commit to main"
 changed_files=$(git --git-dir="$case_remote" diff-tree --no-commit-id --name-only -r \
-    refs/heads/release/v0.1.10 | LC_ALL=C sort)
+    refs/heads/main | LC_ALL=C sort)
 [ "$changed_files" = "Cargo.lock
 Cargo.toml" ] || fail "release commit changed files outside Cargo.toml and Cargo.lock"
-lock_contents=$(git --git-dir="$case_remote" \
-    show refs/heads/release/v0.1.10:Cargo.lock)
+lock_contents=$(git --git-dir="$case_remote" show refs/heads/main:Cargo.lock)
 lock_version=$(printf '%s\n' "$lock_contents" \
     | sed -n '/^name = "voytty-cli"$/{n;s/^version = "\([^"]*\)"/\1/p;}')
 [ "$lock_version" = 0.1.10 ] \
@@ -395,12 +398,104 @@ grep -Fxq 'cargo +1.98.0 update --workspace' "$case_trace" \
 grep -Fxq 'cargo +1.98.0 metadata --locked --format-version 1 --no-deps' \
     "$case_trace" || fail "prepare did not perform locked metadata validation"
 if grep -Fq 'just check' "$case_trace"; then
-    fail "prepare duplicated the release PR full quality gate"
+    fail "prepare duplicated the full quality gate"
 fi
-grep -Fq 'gh pr create ' "$case_trace" || fail "prepare did not open a PR"
-assert_no_remote_tag prepare-success
+if grep -Fq 'gh pr create ' "$case_trace"; then
+    fail "main prepare unexpectedly created a release PR"
+fi
+grep -Fq 'Next step: just release-publish 0.1.10' "$case_root/stdout" \
+    || fail "main prepare did not print the next publish step"
+if ! run_operator >"$case_root/idempotent-stdout" 2>"$case_root/idempotent-stderr"; then
+    cat "$case_root/idempotent-stderr" >&2
+    fail "already-pushed main release commit did not resume idempotently"
+fi
+[ "$(grep -Fc 'cargo +1.98.0 update --workspace' "$case_trace")" -eq 1 ] \
+    || fail "idempotent main prepare regenerated the release lockfile"
+assert_no_remote_tag prepare-main-success
+
+new_case resume-main-push
+operator_command=prepare
+operator_version=0.1.10
+if ! run_operator >"$case_root/seed-stdout" 2>"$case_root/seed-stderr"; then
+    cat "$case_root/seed-stderr" >&2
+    fail "could not create seed main release commit"
+fi
+release_sha=$(git -C "$case_worktree" rev-parse HEAD)
+parent_sha=$(git -C "$case_worktree" rev-parse HEAD^)
+git --git-dir="$case_remote" update-ref refs/heads/main "$parent_sha"
+git -C "$case_worktree" update-ref refs/remotes/origin/main "$parent_sha"
+: >"$case_trace"
+if ! run_operator >"$case_root/resume-stdout" 2>"$case_root/resume-stderr"; then
+    cat "$case_root/resume-stderr" >&2
+    fail "exact unpushed main release commit did not resume push"
+fi
+[ "$(git --git-dir="$case_remote" rev-parse refs/heads/main)" = "$release_sha" ] \
+    || fail "main push resume did not publish the exact release commit"
+[ "$(grep -Fc 'cargo +1.98.0 update --workspace' "$case_trace" || true)" -eq 0 ] \
+    || fail "main push resume regenerated the release lockfile"
+assert_no_remote_tag resume-main-push
+
+new_case extra-unpushed-main-commit
+printf '%s\n' extra >"$case_worktree/extra.txt"
+git -C "$case_worktree" add extra.txt
+git -C "$case_worktree" commit --quiet -m 'unpushed product change'
+extra_parent=$(git -C "$case_worktree" rev-parse HEAD)
+sed 's/version = "0.1.9"/version = "0.1.10"/' "$case_worktree/Cargo.toml" >"$case_worktree/Cargo.toml.next"
+mv "$case_worktree/Cargo.toml.next" "$case_worktree/Cargo.toml"
+"$real_cargo" +1.98.0 update --workspace --manifest-path "$case_worktree/Cargo.toml"
+git -C "$case_worktree" add Cargo.toml Cargo.lock
+git -C "$case_worktree" commit --quiet -m 'chore: prepare v0.1.10 release'
+operator_command=prepare
+operator_version=0.1.10
+if run_operator >"$case_root/stdout" 2>"$case_root/stderr"; then
+    fail "prepare pushed an unrelated unpushed main commit"
+fi
+grep -Fq "expected $(git -C "$case_worktree" rev-parse HEAD) or its parent $extra_parent" "$case_root/stderr" \
+    || fail "extra unpushed main commit failed for an unexpected reason"
+assert_no_remote_tag extra-unpushed-main-commit
+
+new_case divergent-main-remote
+operator_command=prepare
+operator_version=0.1.10
+run_operator >"$case_root/seed-stdout" 2>"$case_root/seed-stderr" \
+    || fail "could not seed main release commit"
+parent_sha=$(git -C "$case_worktree" rev-parse HEAD^)
+git --git-dir="$case_remote" update-ref refs/heads/main "$parent_sha"
+git -C "$case_worktree" update-ref refs/remotes/origin/main "$parent_sha"
+diverter="$case_root/diverter"
+git clone --quiet "$case_remote" "$diverter"
+git -C "$diverter" config user.name 'Operator Fixture'
+git -C "$diverter" config user.email fixture@example.invalid
+printf '%s\n' divergent >"$diverter/divergent-change"
+git -C "$diverter" add divergent-change
+git -C "$diverter" commit --quiet -m 'diverge main'
+git -C "$diverter" push --quiet origin main
+divergent_sha=$(git -C "$diverter" rev-parse HEAD)
+if run_operator >"$case_root/resume-stdout" 2>"$case_root/resume-stderr"; then
+    fail "divergent remote main was accepted"
+fi
+[ "$(git --git-dir="$case_remote" rev-parse refs/heads/main)" = "$divergent_sha" ] \
+    || fail "operator overwrote divergent remote main"
+assert_no_remote_tag divergent-main-remote
+
+new_case wrong-release-subject
+sed 's/version = "0.1.9"/version = "0.1.10"/' "$case_worktree/Cargo.toml" >"$case_worktree/Cargo.toml.next"
+mv "$case_worktree/Cargo.toml.next" "$case_worktree/Cargo.toml"
+"$real_cargo" +1.98.0 update --workspace --manifest-path "$case_worktree/Cargo.toml"
+git -C "$case_worktree" add Cargo.toml Cargo.lock
+git -C "$case_worktree" commit --quiet -m 'wrong release subject'
+operator_command=prepare
+operator_version=0.1.10
+if run_operator >"$case_root/resume-stdout" 2>"$case_root/resume-stderr"; then
+    fail "release commit with the wrong subject was accepted"
+fi
+grep -Fq "release commit subject is 'wrong release subject'" \
+    "$case_root/resume-stderr" \
+    || fail "wrong release subject failed for an unexpected reason"
+assert_no_remote_tag wrong-release-subject
 
 new_case created-pr-sha-mismatch
+git -C "$case_worktree" switch --quiet -c release/v0.1.10
 operator_command=prepare
 operator_version=0.1.10
 mismatched_pr_sha=0000000000000000000000000000000000000000
@@ -417,6 +512,7 @@ grep -Fq "existing PR head is $mismatched_pr_sha" "$case_root/stderr" \
 assert_no_remote_tag created-pr-sha-mismatch
 
 new_case resume-existing-pr
+git -C "$case_worktree" switch --quiet -c release/v0.1.10
 operator_command=prepare
 operator_version=0.1.10
 if run_operator FAKE_PR_AMBIGUOUS=1 \
@@ -447,6 +543,7 @@ grep -Fq 'Release PR: https://example.invalid/pull/1' "$case_root/resume-stdout"
 assert_no_remote_tag resume-existing-pr
 
 new_case divergent-remote
+git -C "$case_worktree" switch --quiet -c release/v0.1.10
 operator_command=prepare
 operator_version=0.1.10
 if run_operator FAKE_PR_FAIL=1 >"$case_root/first-stdout" 2>"$case_root/first-stderr"; then
@@ -472,22 +569,8 @@ grep -Fq "remote branch release/v0.1.10 points to $divergent_sha" \
     = "$divergent_sha" ] || fail "operator overwrote the divergent remote branch"
 assert_no_remote_tag divergent-remote
 
-new_case wrong-release-subject
-operator_command=prepare
-operator_version=0.1.10
-if run_operator FAKE_PR_FAIL=1 >"$case_root/first-stdout" 2>"$case_root/first-stderr"; then
-    fail "fixture PR failure unexpectedly succeeded"
-fi
-git -C "$case_worktree" commit --quiet --amend -m 'wrong release subject'
-if run_operator >"$case_root/resume-stdout" 2>"$case_root/resume-stderr"; then
-    fail "release commit with the wrong subject was accepted"
-fi
-grep -Fq "release commit subject is 'wrong release subject'" \
-    "$case_root/resume-stderr" \
-    || fail "wrong release subject failed for an unexpected reason"
-assert_no_remote_tag wrong-release-subject
-
 new_case closed-release-pr
+git -C "$case_worktree" switch --quiet -c release/v0.1.10
 operator_command=prepare
 operator_version=0.1.10
 if run_operator FAKE_PR_AMBIGUOUS=1 \

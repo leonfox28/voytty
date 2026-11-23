@@ -8,9 +8,8 @@ and validate only their own target entry in the authenticated manifest; they
 do not enforce the presence, number, or support policy of other platforms.
 
 ```text
-reviewed feature branch + version commit in one PR
-  -> PR CI -> merge the exact reviewed head
-  -> explicit exact-SHA full main CI + cold native builds + unsigned candidate
+reviewed commits on main + version commit (`just release-prepare VERSION`)
+  -> explicit exact-SHA full main CI + cold native builds + unsigned candidate (`just release-publish VERSION`)
   -> annotated vVERSION tag -> select that main candidate by artifact ID
   -> protected signing -> five final installer proofs -> immutable Release
 ```
@@ -23,86 +22,87 @@ paginated vacancy check. The read-only tag validation checks the releases it
 can see. The publish job repeats the check with its write-scoped token immediately
 before creating the draft. [GitHub release visibility](https://docs.github.com/en/rest/releases/releases#list-releases)
 
-## Prepare one reviewable PR
+## Prepare the release version commit
 
-For an immediately released fix, commit the reviewed product changes on a clean
-feature branch that contains current `origin/main`, then run (preferably before
-the first PR push, or on an already open feature PR):
+In the standard solo-maintainer flow, run from clean, exact `main` (`HEAD == origin/main`):
 
 ```bash
 just release-prepare 0.2.0
 ```
 
-This keeps the current feature branch, updates only the workspace version and
-Cargo-generated lockfile, adds one version commit, pushes the same branch, and
-creates or reuses its PR. New feature PRs derive their title/body from the
-product commits. An existing PR keeps its description. Code and version are
-reviewed together, so no second version PR/CI cycle is needed.
+This checks `main` protection (no force pushes or deletion), validates the next
+version, updates only `[workspace.package].version` in `Cargo.toml` and refreshes
+`Cargo.lock`, commits `chore: prepare v0.2.0 release` directly on `main`, and
+pushes fast-forward to `origin/main` without opening a redundant release PR.
 
-When accumulating changes for a later release, the same command from clean,
-exact `origin/main` creates a standalone `release/v0.2.0` branch and version PR.
+When working on an optional feature branch/PR instead of `main`, the same command
+appends the exact two-file version commit to that feature branch, pushes it, and
+creates or reuses its PR so code and version can be reviewed together.
 
 Cargo's `semver` owner validates the next version. `cargo +1.98.0 update
 --workspace` owns lockfile generation; locked metadata, workspace-version checks,
 and the exact two-file version-commit inventory validate it. Preparation does
-not repeat `just check`; the required PR `CI gate` owns the full remote gate.
+not repeat `just check`; `just release-publish` enforces the full remote gate.
 
 If generation fails, inspect the retained dirty diff. Resume after a push/PR
-network ambiguity is accepted only from the exact clean version commit on the
-same branch, still containing current main. Remote branch and open-PR identities
-must agree; divergence, a moved main, or closed/ambiguous PR state is rejected.
+network ambiguity is accepted only from the exact clean release commit (matching
+`origin/main` or exactly one version commit ahead on `main`, or matching the
+feature branch containing current `main`). Divergence, extra unpushed commits on
+`main`, or closed/ambiguous PR state is rejected.
 
-## Finish an authorized release
+## Publish an authorized release
 
-Once the PR is reviewed and publication is authorized:
-
-```bash
-just release 0.2.0 42
-```
-
-This command is an explicit request to merge and publish PR 42. It requires the
-local clean HEAD to equal the open PR head and contain the requested version,
-waits for required PR checks, merges with `--match-head-commit`, and uses a
-private detached worktree to request/rejoin full validation for that exact main
-merge SHA before publishing. It
-preserves the caller's branch and removes only its own clean temporary worktree.
-The normal repository PR/protection rules still apply; no admin bypass is used.
-
-The PR, merge SHA, Actions run and annotated tag are the recovery record. Rerun
-the same command after an interrupted wait; an already merged PR is not merged
-again, and an already pushed matching tag rejoins its original workflow. There
-is no parallel local release database. Watchers use GitHub CLI's compact view.
-
-Publication remains available independently from a clean checkout of exact
-`origin/main`:
+Once the version commit is on `main` and publication is authorized:
 
 ```bash
 just release-publish 0.2.0
 ```
 
-Before a new tag is pushed, this checks version, enforced main protection,
-Release vacancy, completed successful exact-SHA full `ci.yml` evidence on main,
-and an unexpired candidate with a server digest. It requests or rejoins that full
-validation before tagging; the routine quick main check is insufficient. If main has advanced beyond the
-reviewed merge, it stops before tagging instead of including unreviewed changes.
+Before a new tag is pushed, this checks version, non-destructive `main`
+protection, Release vacancy, completed successful exact-SHA full `ci.yml`
+evidence on `main`, and an unexpired candidate with a server digest. It requests
+or rejoins that exact-SHA `full-check` before tagging; ordinary asynchronous
+`push` runs on `main` are insufficient. If `main` has advanced beyond the
+checkout, it stops before tagging instead of including unreviewed changes.
 A retained local annotated tag may be pushed only if it already names that exact
 source; remote tags and Release assets are never replaced.
 
+When publishing from an optional feature PR instead of direct `main`, the
+combined helper remains available:
+
+```bash
+just release 0.2.0 42
+```
+
+This requires the local clean HEAD to equal the open PR head and contain the
+requested version, waits for PR checks, merges with `--match-head-commit`, and
+uses a private detached worktree to run `release-publish` for that exact merge
+SHA. It preserves the caller's branch and removes only its own clean temporary
+worktree.
+
+The main commit/PR, Actions run and annotated tag are the recovery record. Rerun
+the same command after an interrupted wait; an already pushed matching tag
+rejoins its original workflow. There is no parallel local release database.
+Watchers use GitHub CLI's compact view.
+
 ## Build once, publish the verified bytes
 
-Ordinary PRs run affected owners; routine main pushes do not build candidates.
-`just full-check` explicitly dispatches the complete graph on clean exact main,
-without publishing. The dispatch carries the expected SHA and rejects a moved
-main. Release commands reuse an existing full run for that SHA or request one;
-a failed run stops publication and is never automatically retried.
+Direct pushes to `main` and optional PRs run affected owners asynchronously
+without uploading candidates. `just full-check` explicitly dispatches the
+complete graph on clean exact main, without publishing. The dispatch carries the
+expected SHA and rejects a moved main. Release commands reuse an existing full
+run for that SHA or request one; a failed run stops publication and is never
+automatically retried.
 
 The full run builds all five shipped native binaries: Linux uses the pinned
 glibc 2.28 builder and macOS declares the 13.0 deployment floor. These jobs embed
-the exact source SHA, self-check and run the CLI without arguments. PRs changing
-build/release inputs also run those packaging checks, but never upload binaries.
-Main full-validation candidates remain cold builds; PR packaging checks may use
-trimmed dependency caches. The Rust suite retains synthetic unsigned assembly,
-reproducibility, mixed-source and tampered-input tests.
+the exact source SHA, self-check and run the CLI without arguments. Ordinary
+pushes and PRs changing build/release inputs also run those packaging checks
+(restoring trimmed third-party caches for speed), but never upload binaries.
+Explicit `workflow_dispatch` full-validation candidates remain cold builds;
+successful full runs save trimmed dependency caches for later non-candidate
+checks. The Rust suite retains synthetic unsigned assembly, reproducibility,
+mixed-source and tampered-input tests.
 
 One Ubuntu job creates deterministic archives, the manifest, installer and Rust SBOM,
 verifies the unsigned inventory, and ShellChecks the generated installer. The

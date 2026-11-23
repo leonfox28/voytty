@@ -15,8 +15,9 @@ on:
 permissions:
   contents: read
 
-# PRs check affected code; ordinary main pushes are quick. Explicit full runs
-# retain exact-SHA candidates and are never cancelled by a later PR or push.
+# Direct main pushes and optional PRs check affected code asynchronously without
+# uploading candidates. Explicit full runs retain exact-SHA candidates and are
+# never cancelled by a later PR or push.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -27,7 +28,7 @@ env:
 
 jobs:
   changes:
-    name: Classify the exact PR changes
+    name: Classify the exact changes
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -42,11 +43,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 0
       - name: Select affected checks, defaulting to full on unknown inputs
         id: scope
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: python3 tools/ci/workflow-policy.py classify
 
@@ -209,7 +211,7 @@ jobs:
         run: just ci-unix "${{ matrix.docs }}" "${{ needs.changes.outputs.transport }}"
       - name: Bound the main compiled dependency cache
         id: trim
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.compiled.outputs.cache-hit != 'true'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && steps.compiled.outputs.cache-hit != 'true'
         run: sh tools/ci/trim-rust-cache.sh
       - name: Save main compiled dependencies
         if: steps.trim.outputs.cacheable == 'true'
@@ -222,7 +224,7 @@ jobs:
           key: ${{ steps.compiled.outputs.cache-primary-key }}
       - name: Bound the main noq test dependency cache
         id: trim-noq
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.compiled-noq.outputs.cache-hit != 'true'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && needs.changes.outputs.transport == 'true' && steps.compiled-noq.outputs.cache-hit != 'true'
         env:
           VOYTTY_CACHE_MANIFEST_PATH: vendor/noq-proto/Cargo.toml
           VOYTTY_CACHE_TARGET_DIR: target/noq-tests
@@ -238,7 +240,7 @@ jobs:
           key: ${{ steps.compiled-noq.outputs.cache-primary-key }}
       - name: Bound the main iroh test dependency cache
         id: trim-iroh
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.compiled-iroh.outputs.cache-hit != 'true'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && needs.changes.outputs.transport == 'true' && steps.compiled-iroh.outputs.cache-hit != 'true'
         env:
           VOYTTY_CACHE_MANIFEST_PATH: vendor/iroh/Cargo.toml
           VOYTTY_CACHE_TARGET_DIR: target/iroh-tests
@@ -253,7 +255,7 @@ jobs:
             target/iroh-tests/debug/.fingerprint
           key: ${{ steps.compiled-iroh.outputs.cache-primary-key }}
       - name: Save main dependency downloads for this platform
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.downloads.outputs.cache-hit != 'true'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && steps.downloads.outputs.cache-hit != 'true'
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
@@ -286,11 +288,11 @@ jobs:
         run: sh tests/source-policy.sh
       - name: Install exact Rust toolchain
         run: rustup toolchain install 1.98.0 --profile minimal
-      - name: Restore native dependencies only for PR checks
+      - name: Restore native dependencies only for non-candidate checks
         id: compiled-native
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
-          lookup-only: ${{ github.event_name != 'pull_request' }}
+          lookup-only: ${{ github.event_name == 'workflow_dispatch' }}
           path: |
             target/release/deps
             target/release/build
@@ -372,11 +374,11 @@ jobs:
           sh tests/source-policy.sh
       - name: Prepare the pinned glibc builder
         run: sh tools/release/setup-glibc-builder.sh
-      - name: Restore native dependencies only for PR checks
+      - name: Restore native dependencies only for non-candidate checks
         id: compiled-native
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
-          lookup-only: ${{ github.event_name != 'pull_request' }}
+          lookup-only: ${{ github.event_name == 'workflow_dispatch' }}
           path: |
             target/release/deps
             target/release/build

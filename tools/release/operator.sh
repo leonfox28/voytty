@@ -37,7 +37,7 @@ on_exit() {
     [ "$status" -ne 0 ] || return 0
     case "$phase" in
         prepare-branch)
-            echo 'Recovery: the local release branch state was retained for diagnosis. Inspect and finish dirty or invalid state manually; release-prepare resumes only an exact clean release commit.' >&2
+            echo 'Recovery: the local release diff was retained for diagnosis. Inspect and finish dirty or invalid state manually; release-prepare resumes only an exact clean release commit.' >&2
             ;;
         prepare-commit)
             echo "Recovery: the exact clean release commit was retained. If push or PR creation had an ambiguous network result, rerun: just release-prepare $version" >&2
@@ -150,15 +150,6 @@ require_release_vacancy() {
         *) fail "the release operator needs repository write access to check existing drafts" ;;
     esac
     sh "$script_dir/require-vacant-release.sh" "$repository" "$tag"
-}
-
-require_prepare_branch_vacancy() {
-    if git show-ref --verify --quiet "refs/heads/$release_branch"; then
-        fail "local branch $release_branch already exists"
-    fi
-    if remote_ref_state heads "refs/heads/$release_branch"; then
-        fail "remote branch $release_branch already exists"
-    fi
 }
 
 workspace_version() {
@@ -385,6 +376,22 @@ EOF
     [ -n "$release_pr_url" ] || fail "GitHub returned an empty release PR URL"
 }
 
+reconcile_main_release() {
+    local_release_sha=$(git rev-parse HEAD)
+    remote_main_sha=$(git rev-parse refs/remotes/origin/main)
+    if [ "$remote_main_sha" != "$local_release_sha" ]; then
+        parent_sha=$(git rev-parse "${local_release_sha}^")
+        if [ "$parent_sha" != "$remote_main_sha" ]; then
+            fail "remote main points to $remote_main_sha, expected $local_release_sha or its parent $parent_sha"
+        fi
+        git push origin "HEAD:refs/heads/main"
+        fetch_main
+        remote_main_sha=$(git rev-parse refs/remotes/origin/main)
+    fi
+    [ "$remote_main_sha" = "$local_release_sha" ] \
+        || fail "remote main points to $remote_main_sha, expected $local_release_sha"
+}
+
 prepare_release() {
     current_branch=$(git branch --show-current)
     [ -n "$current_branch" ] || fail "prepare requires a named branch"
@@ -394,8 +401,29 @@ prepare_release() {
     require_tag_and_release_vacancy
     case "$current_branch" in
         main)
-            require_clean_main
-            require_prepare_branch_vacancy
+            require_protected_main
+            if [ "$(workspace_version)" = "$version" ]; then
+                phase=prepare-commit
+                require_exact_release_commit
+            else
+                require_clean_main
+                cargo +1.98.0 run --quiet --locked --package voytty-release-tool -- \
+                    validate-next-version "$version"
+                phase=prepare-branch
+                update_workspace_version
+                git add Cargo.toml Cargo.lock
+                staged_files=$(git diff --cached --name-only | LC_ALL=C sort -u)
+                require_exact_release_inventory 'staged release commit' "$staged_files"
+                git commit -m "chore: prepare $tag release"
+                require_exact_release_commit
+                phase=prepare-commit
+            fi
+            reconcile_main_release
+            phase=complete
+            printf '%s\n' \
+                "Prepared release commit on main: $(git rev-parse HEAD)" \
+                "Next step: just release-publish $version"
+            return
             ;;
         *)
             release_branch=$current_branch
@@ -404,15 +432,12 @@ prepare_release() {
             ;;
     esac
 
-    if [ "$(workspace_version)" = "$version" ] && [ "$current_branch" != main ]; then
+    if [ "$(workspace_version)" = "$version" ]; then
         phase=prepare-branch
         require_exact_release_commit
     else
         cargo +1.98.0 run --quiet --locked --package voytty-release-tool -- \
             validate-next-version "$version"
-        if [ "$current_branch" = main ]; then
-            git switch -c "$release_branch"
-        fi
         phase=prepare-branch
         update_workspace_version
         git add Cargo.toml Cargo.lock
@@ -433,14 +458,12 @@ prepare_release() {
 
 require_protected_main() {
     protection=$(github_api "repos/$repository/branches/main/protection" \
-        --jq '((.required_status_checks.contexts // []) | index("CI gate") != null)
-            and (.required_pull_request_reviews != null)
-            and ((.enforce_admins.enabled // false) == true)
+        --jq '((.enforce_admins.enabled // false) == true)
             and ((.allow_force_pushes.enabled // false) == false)
             and ((.allow_deletions.enabled // false) == false)') \
         || fail "could not read main branch protection; an administrator must apply docs/development.md"
     [ "$protection" = true ] \
-        || fail "main protection must require PRs and CI gate and disable force pushes/deletion"
+        || fail "main protection must disable force pushes and deletion, including for administrators"
 }
 
 discover_run() {

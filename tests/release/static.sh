@@ -87,9 +87,6 @@ for forbidden_operation in 'git push --force' 'git push -f' \
         fail "release automation contains a destructive replacement operation: $forbidden_operation"
     fi
 done
-if grep -Eq 'git push[^#]*(^|[[:space:]])main([[:space:]]|$)' "$operator"; then
-    fail "release operator must never push directly to main"
-fi
 if grep -Fq 'self-hosted' "$workflow"; then
     fail "release workflow must use only GitHub-hosted runners"
 fi
@@ -225,8 +222,8 @@ for native_job in "$macos_build_job" "$linux_build_job"; do
     if printf '%s\n' "$native_job" | grep -Fq 'voytty-release-tool'; then
         fail "native jobs must not build the private release tool"
     fi
-    printf '%s\n' "$native_job" | grep -Fq "lookup-only: \${{ github.event_name != 'pull_request' }}" \
-        || fail "main native candidates must never restore compiled dependencies"
+    printf '%s\n' "$native_job" | grep -Fq "lookup-only: \${{ github.event_name == 'workflow_dispatch' }}" \
+        || fail "explicit full main candidates must never restore compiled dependencies"
     printf '%s\n' "$native_job" | grep -A2 -F -- '- name: Bound the cold main native dependency cache' \
         | grep -Fq "if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'" \
         || fail "only cold main native dependencies may become shared caches"

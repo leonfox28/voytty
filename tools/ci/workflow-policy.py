@@ -24,7 +24,7 @@ def full_plan(candidate: bool = False) -> dict[str, bool]:
 
 
 def changed_paths(base: str, head: str) -> list[str]:
-    if not all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (base, head)):
+    if not all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (base, head)) or base == "0" * 40 or head == "0" * 40:
         raise ValueError("missing or invalid exact revisions")
     # Compare the whole tested merge tree, including deletions and both rename ends.
     diff = subprocess.run(
@@ -66,15 +66,15 @@ def select_plan(event: str, ref: str, base: str, head: str, expected: str = "") 
         if expected and expected != head:
             raise ValueError("main moved before the requested full check started; refusing a different source")
         return full_plan(candidate=ref == "refs/heads/main")
-    if event == "push" and ref == "refs/heads/main":
-        # PR checks already gate merges. Publication has a separate exact-SHA full run.
-        return dict.fromkeys(SCOPES, False)
-    if event != "pull_request":
+    if event == "push":
+        if ref != "refs/heads/main":
+            raise ValueError(f"unsupported CI event/ref: {event}/{ref}")
+    elif event != "pull_request":
         raise ValueError(f"unsupported CI event/ref: {event}/{ref}")
     try:
         return path_plan(changed_paths(base, head))
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
-        print(f"::warning::Cannot classify the complete PR; running all checks ({error})", file=sys.stderr)
+        print(f"::warning::Cannot classify the complete change set; running all checks ({error})", file=sys.stderr)
         return full_plan()
 
 
@@ -92,8 +92,8 @@ def gate_errors(event: str, ref: str, needs: dict) -> list[str]:
     except (KeyError, TypeError, ValueError):
         return [*errors, "missing or invalid check plan"]
     if event == "push":
-        if ref != "refs/heads/main" or any(plan.values()):
-            errors.append("ordinary main pushes must use the quick plan")
+        if ref != "refs/heads/main" or plan["candidate"]:
+            errors.append("ordinary main pushes must target main and cannot assemble candidates")
     elif event == "workflow_dispatch":
         if plan != full_plan(candidate=ref == "refs/heads/main"):
             errors.append("manual validation must run the entire graph")
@@ -137,7 +137,8 @@ def main() -> None:
     event = os.environ["GITHUB_EVENT_NAME"]
     ref = os.environ["GITHUB_REF"]
     if args == ["classify"]:
-        plan = select_plan(event, ref, os.environ.get("PR_BASE_SHA", ""), os.environ["GITHUB_SHA"],
+        base = os.environ.get("PR_BASE_SHA", "") if event == "pull_request" else os.environ.get("PUSH_BEFORE_SHA", "")
+        plan = select_plan(event, ref, base, os.environ["GITHUB_SHA"],
                            os.environ.get("EXPECTED_SHA", ""))
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
             output.write("plan=" + json.dumps(plan, separators=(",", ":")) + "\n")

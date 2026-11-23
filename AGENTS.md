@@ -10,15 +10,17 @@
 - Read `docs/development.md` for development commands and platform boundaries;
   read `docs/releasing.md` before release work. `docs/ci-release-optimization.md`
   records the measurements and rationale.
-- Start substantive changes on a branch from current `origin/main`. Preserve
-  unrelated work. Keep fixes scoped to the requested task.
+- Start substantive work from current `origin/main` (directly on `main` or on a
+  short-lived local branch for the solo-maintainer workflow). Preserve unrelated
+  work. Keep fixes scoped to the requested task.
 - During editing, run targeted Clippy/tests for the affected crate. Before an
   ordinary push, run `just check-changes` against current `origin/main`; it includes
   uncommitted and untracked changes. `just check` remains a full local checkpoint.
-- PR CI selects affected owners: Unix Rust, patched transport, shared mobile
-  targets, Relay, and native packaging. Unknown inputs run all owners. Shared
-  public changes must also be integrated and tested with the pinned private app.
-  Report unavailable local platform checks accurately; hosted CI owns other OSes.
+- Push-to-`main` (and optional PR) CI asynchronously selects affected owners:
+  Unix/Windows Rust, patched transport, shared mobile targets, Relay, and native
+  packaging. Unknown inputs run all owners. Shared public changes must also be
+  integrated and tested with the pinned private app. Report unavailable local
+  platform checks accurately; hosted CI owns other OSes.
 - Prefer a visible foreground simulator for interactive review (Xcode 27 uses
   Device Hub). Command-line, XCTest and XCUITest debugging may also run headlessly,
   including while the Mac is locked, as authorized by the user. Record runtime
@@ -28,12 +30,16 @@
   to obtain a green run.
   Fix asynchronous tests by waiting for the state they assert, within their
   existing bounded deadline.
-- Keep lightweight PRs and the required `CI gate`; ordinary main pushes run only
-  quick policy/dependency checks. `just full-check` explicitly runs the entire
-  graph and cold-builds unsigned candidates on exact main without publishing.
-- Only reviewed main saves compiled dependency caches; PRs may restore them.
-  Keep path-package outputs and native PR binaries out of uploaded caches/artifacts.
-- Release preparation uses `just release-prepare VERSION`. Only when publication
-  is requested, use `just release VERSION PR` or `just release-publish VERSION`.
-  Preserve exact-SHA candidate selection, protected signing, installer checks,
-  immutable assets, and the documented recovery path.
+- Keep `main` protected against force pushes and deletion (enforced for
+  administrators) while allowing fast-forward pushes without mandatory PR waits.
+  `just full-check` explicitly runs the entire graph and cold-builds unsigned
+  candidates on exact `main` without publishing.
+- Only `main` saves compiled dependency caches; PRs may restore them. Explicit
+  `full-check` native candidates always start cold. Keep path-package outputs
+  and non-candidate native binaries out of uploaded caches/artifacts.
+- Release preparation uses `just release-prepare VERSION` (commits and pushes
+  fast-forward on `main`, or appends to an existing feature PR). Only when
+  publication is requested, use `just release-publish VERSION` (or
+  `just release VERSION PR` for an optional PR). Preserve exact-SHA candidate
+  selection, protected signing, installer checks, immutable assets, and the
+  documented recovery path.

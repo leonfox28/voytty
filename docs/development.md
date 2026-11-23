@@ -116,24 +116,25 @@ and the daemon for attachments and renders them in the outer terminal. Hosted Li
 remote-runtime evidence remains a separate acceptance gate; see
 [Remote-session implementation contracts](remote-cli.md).
 
-## Local commands and lightweight PRs
+## Local commands and asynchronous main CI
 
 ```bash
 just doctor
-just check-changes                 # complete branch diff plus local edits
-just check-changes <base-commit>   # explicit reviewed comparison base
+just check-changes                 # complete local diff plus uncommitted edits
+just check-changes <base-commit>   # explicit comparison base
 just check                         # optional full current-host checkpoint
 ```
 
-Start substantive work from current `origin/main`, run targeted checks while
-editing, then use `just check-changes` before pushing a PR. This command uses the
-same classifier and recipes as CI. It always runs policy/dependency checks and
-selects native workspace or Relay checks from the complete branch diff, including
+Start substantive work from current `origin/main` (either directly on `main` or
+on a short-lived local branch fast-forwarded into `main`), run targeted checks
+while editing, then use `just check-changes` before pushing. This command uses
+the same classifier and recipes as CI. It always runs policy/dependency checks
+and selects native workspace or Relay checks from the complete diff, including
 uncommitted/untracked files. It does not require another full `just check` or
 mobile build after those selected checks pass. Hosted CI owns other OS/CPU,
 Android/iOS cross targets, Docker and the glibc/macOS packaging floors.
 
-| Changed inputs | PR checks in addition to policy/dependencies |
+| Changed inputs | Hosted CI checks in addition to policy/dependencies |
 | --- | --- |
 | README, AGENTS, Markdown under docs or wiki (except executable `docs/relay.md`) | None |
 | CLI, daemon, platform, terminal Rust | Three supported Unix Rust hosts and both Windows architectures |
@@ -148,16 +149,20 @@ and existing suites remain enabled whenever their owner is selected. Native jobs
 also smoke-test the debug CLI with the state-free `--help` and `--version` flags;
 the release-mode CLI smoke remains part of native packaging checks.
 
-PR CI runs once per PR revision; newer revisions supersede older runs. The stable
-`CI gate` verifies the exact selected job inventory and rejects failures, missing
-results and unexpected skips. Selection compares the entire tested merge tree to
-its base, including deletions and both rename ends. Workflow-level path filters
-are not used, so the required gate is always reported.
+Direct fast-forward pushes to `main` (and optional PRs) run affected owners
+asynchronously without blocking subsequent commits or uploading release
+candidates. Each `push` run keeps its own concurrency group so a follow-up docs
+commit never cancels an in-flight cross-platform check; optional PR runs cancel
+superseded revisions. The stable `CI gate` verifies the exact selected job
+inventory and rejects failures, missing results and unexpected skips. Selection
+compares the entire pushed or PR range to its base (`github.event.before` or PR
+base), including deletions and both rename ends; missing, initial, or unreadable
+history falls back to all owners. Workflow-level path filters are not used, so
+the gate always reports a complete verdict.
 
-Merge after the PR gate passes; no outside review is required for the solo
-maintainer. Ordinary `main` pushes run policy/dependencies and the gate without
-repeating platform builds or generating release candidates. The branch must
-remain PR-protected. Full/manual and PR runs have separate concurrency groups.
+Formal releases do not rely on ordinary push or PR runs: `just release-publish`
+always requires an explicit, exact-SHA `workflow_dispatch` (`just full-check`)
+on `main` with cold native builds and verified unsigned candidate assembly.
 
 ## Explicit full validation and release candidates
 
@@ -170,8 +175,8 @@ SHA, watches that exact new run, and runs every owner, including cold native
 builds and unsigned candidate assembly. It does not tag, sign or publish. A main
 movement during dispatch fails instead of substituting another source. Existing
 failed runs are never automatically retried. When publication is requested,
-`just release` / `just release-publish` rejoin an existing exact full run or start
-one before tagging; see [release operations](releasing.md).
+`just release-publish` (or `just release` for an optional PR) rejoins an existing
+exact full run or starts one before tagging; see [release operations](releasing.md).
 
 Full validation covers three Unix hosts, native Windows x86-64/ARM64, Android/iOS shared compilation,
 patched transport suites, dependency policy, Relay runtime, native packaging
@@ -184,13 +189,14 @@ runtime compatibility. See [the split boundary](mobile-repository.md).
 
 ## Cache ownership
 
-PR checks may restore third-party compiled dependencies. Only reviewed main
-writes them, after removing all path-package and test outputs. Explicit native
-candidate builds always start without compiled caches; successful full runs save
-trimmed dependencies for later PRs. Cargo downloads and command tools have
-separate versioned caches. The 2.5 GiB compiled-cache limit, exact tool versions,
-no incremental CI builds and exclusion of product binaries remain unchanged.
-Do not weaken tests or introduce automatic retries to obtain a green run.
+Ordinary `main` pushes and optional PRs may restore third-party compiled
+dependencies. Only `main` writes them, after removing all path-package and test
+outputs. Explicit `workflow_dispatch` native candidate builds always start cold
+(`lookup-only: true`); successful full runs save trimmed dependencies for later
+non-candidate checks. Cargo downloads and command tools have separate versioned
+caches. The 2.5 GiB compiled-cache limit, exact tool versions, no incremental CI
+builds and exclusion of product binaries remain unchanged. Do not weaken tests
+or introduce automatic retries to obtain a green run.
 
 Local/hosted owners remain shared `justfile` recipes: `ci-policy`,
 `ci-dependencies`, `ci-unix <docs> <transport>`, `ci-windows <transport>`, `ci-relay`, and
@@ -206,15 +212,16 @@ Never use real `~/.voytty` for mutation tests; use explicitly disposable fixture
 
 ## Branch protection and ongoing checks
 
-Repository administrators own the following `main` protection settings.
-The release operator checks them and does not mutate them:
+Repository administrators own the following `main` protection settings for the
+solo-maintainer direct-push workflow. The release operator checks them and does
+not mutate them:
 
-1. require changes through a pull request, with zero mandatory outside
-   approvals for the solo-maintainer repository;
-2. require the exact status check `CI gate` before merge;
-3. apply the rules to administrators/no bypass so direct pushes are not the
-   normal path;
-4. disable force pushes and branch deletion.
+1. disable force pushes (`allow_force_pushes: false`);
+2. disable branch deletion (`allow_deletions: false`);
+3. enforce those non-destructive history rules for administrators (`enforce_admins: true`);
+4. do not require pull-request reviews or blocking status checks on ordinary
+   fast-forward pushes (publication remains gated by exact-SHA `full-check` and
+   the protected `release` Environment).
 
 Apply protection only after `CI gate` exists on the default branch. Review critical path, cache hit rate, flaky failures and unique platform catches
 after enough scoped PR/full runs to measure steady-state behavior. Weekly `dependencies.yml` also runs both

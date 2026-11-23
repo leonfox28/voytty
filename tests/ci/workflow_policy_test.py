@@ -53,14 +53,22 @@ class ClassificationTests(unittest.TestCase):
                 self.assertEqual(policy.path_plan(["docs/development.md", path]), policy.full_plan())
         self.assertEqual(policy.path_plan([]), policy.full_plan())
 
-    def test_main_quick_manual_full_and_exact_dispatch_source(self):
-        self.assertFalse(any(policy.select_plan("push", "refs/heads/main", "", "a" * 40).values()))
+    def test_main_push_manual_full_and_exact_dispatch_source(self):
+        with patch.object(policy, "changed_paths", return_value=["README.md"]):
+            self.assertFalse(any(policy.select_plan("push", "refs/heads/main", "a" * 40, "b" * 40).values()))
+        with patch.object(policy, "changed_paths", return_value=["crates/cli/src/main.rs"]):
+            self.assertEqual(
+                {k for k, v in policy.select_plan("push", "refs/heads/main", "a" * 40, "b" * 40).items() if v},
+                {"rust"},
+            )
+        self.assertEqual(policy.select_plan("push", "refs/heads/main", "0" * 40, "b" * 40), policy.full_plan())
+        self.assertEqual(policy.select_plan("push", "refs/heads/main", "", "b" * 40), policy.full_plan())
         self.assertEqual(policy.select_plan("workflow_dispatch", "refs/heads/main", "", "a" * 40), policy.full_plan(True))
         self.assertEqual(policy.select_plan("workflow_dispatch", "refs/heads/topic", "", "a" * 40), policy.full_plan())
         with self.assertRaises(ValueError):
             policy.select_plan("workflow_dispatch", "refs/heads/main", "", "a" * 40, "b" * 40)
         with self.assertRaises(ValueError):
-            policy.select_plan("push", "refs/heads/topic", "", "a" * 40)
+            policy.select_plan("push", "refs/heads/topic", "a" * 40, "b" * 40)
 
     def test_missing_history_or_invalid_encoding_runs_full_checks(self):
         def select():
@@ -117,9 +125,9 @@ class GateTests(unittest.TestCase):
         return needs
 
     def scenarios(self):
-        return [("pull_request", "refs/pull/1/merge", policy.path_plan(paths))
+        return [(event, ref, policy.path_plan(paths))
+                for event, ref in (("pull_request", "refs/pull/1/merge"), ("push", "refs/heads/main"))
                 for paths in (["README.md"], ["wiki/install.md"], ["crates/cli/src/main.rs"], ["docs/relay.md"], ["Cargo.lock"])] + [
-                    ("push", "refs/heads/main", dict.fromkeys(policy.SCOPES, False)),
                     ("workflow_dispatch", "refs/heads/main", policy.full_plan(True)),
                     ("workflow_dispatch", "refs/heads/topic", policy.full_plan())]
 
@@ -149,6 +157,7 @@ class GateTests(unittest.TestCase):
             self.assertTrue(policy.gate_errors("pull_request", "refs/pull/1/merge", broken))
         self.assertTrue(policy.gate_errors("workflow_dispatch", "refs/heads/main", self.needs(policy.path_plan(["README.md"]))))
         self.assertTrue(policy.gate_errors("pull_request", "refs/pull/1/merge", self.needs(policy.full_plan(True))))
+        self.assertTrue(policy.gate_errors("push", "refs/heads/main", self.needs(policy.full_plan(True))))
         broken = self.needs(policy.full_plan())
         broken["unreviewed"] = {"result": "success"}
         self.assertTrue(policy.gate_errors("pull_request", "refs/pull/1/merge", broken))
