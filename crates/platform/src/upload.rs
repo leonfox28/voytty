@@ -3,9 +3,15 @@
 #[path = "upload_quota.rs"]
 mod quota;
 
+#[cfg(unix)]
+use crate::user_state::PathError;
 use crate::user_state::{create_new_file, create_or_validate_directory, validate_directory};
 #[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
+#[cfg(unix)]
+use std::path::Path;
+#[cfg(unix)]
+use std::sync::OnceLock;
 use std::{
     fs::{self, File},
     io::{self, Write},
@@ -15,6 +21,9 @@ use voytty_core::{
     SessionId,
     upload::{TransferId, UploadMetadata, UploadedFile},
 };
+
+#[cfg(unix)]
+static UNIX_FALLBACK_ROOT: OnceLock<(PathBuf, String)> = OnceLock::new();
 
 /// One unique staging directory. Drop removes only an incomplete attempt.
 pub struct StagedUpload {
@@ -49,6 +58,14 @@ impl StagedUpload {
         }
         #[cfg(unix)]
         {
+            if let Some((fallback_root, _)) = UNIX_FALLBACK_ROOT.get()
+                && fallback_root != &root
+                && fallback_root.try_exists()?
+            {
+                validate_directory(fallback_root, uid).map_err(private_path_error)?;
+                let _lock = quota::lock(fallback_root, uid)?;
+                quota::scan(fallback_root, uid, None, false)?;
+            }
             // Older daemons used the fallback runtime directory. Only collect
             // canonical transfer names after the retention period on that tree.
             let legacy = fs::canonicalize("/tmp")?.join(format!("voytty-{uid}"));
@@ -73,12 +90,9 @@ impl StagedUpload {
         #[cfg(unix)]
         {
             let uid = nix::unistd::geteuid().as_raw();
-            let name = format!("voytty-upload-{uid}");
-            Ok((
-                fs::canonicalize("/tmp")?.join(&name),
-                format!("/tmp/{name}"),
-                uid,
-            ))
+            let base = fs::canonicalize("/tmp")?;
+            let (root, public) = resolve_unix_root(&base, "/tmp", uid, &UNIX_FALLBACK_ROOT)?;
+            Ok((root, public, uid))
         }
     }
 
@@ -199,6 +213,61 @@ impl Drop for StagedUpload {
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn resolve_unix_root(
+    base_dir: &Path,
+    public_base: &str,
+    uid: u32,
+    fallback_cache: &OnceLock<(PathBuf, String)>,
+) -> io::Result<(PathBuf, String)> {
+    let primary_name = format!("voytty-upload-{uid}");
+    let primary = base_dir.join(&primary_name);
+    match create_or_validate_directory(&primary, uid) {
+        Ok(()) => Ok((primary, format!("{public_base}/{primary_name}"))),
+        Err(
+            PathError::WrongOwner { .. }
+            | PathError::WrongType(_)
+            | PathError::Symlink(_)
+            | PathError::WrongMode { .. },
+        ) => {
+            if let Some((cached, public)) = fallback_cache.get()
+                && create_or_validate_directory(cached, uid).is_ok()
+            {
+                return Ok((cached.clone(), public.clone()));
+            }
+            for _ in 0..8 {
+                let name = format!("{primary_name}-{}", unix_root_nonce()?);
+                let candidate = base_dir.join(&name);
+                match fs::DirBuilder::new().mode(0o700).create(&candidate) {
+                    Ok(()) => {
+                        validate_directory(&candidate, uid).map_err(private_path_error)?;
+                        let public = format!("{public_base}/{name}");
+                        let _ = fallback_cache.set((candidate.clone(), public.clone()));
+                        return Ok((candidate, public));
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unable to allocate private upload directory",
+            ))
+        }
+        Err(error) => Err(private_path_error(error)),
+    }
+}
+
+#[cfg(unix)]
+fn unix_root_nonce() -> io::Result<String> {
+    use ring::rand::{SecureRandom, SystemRandom};
+    let mut bytes = [0_u8; 8];
+    SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| io::Error::other("OS randomness unavailable"))?;
+    Ok(format!("{:016x}", u64::from_be_bytes(bytes)))
 }
 
 fn invalid_bytes() -> io::Error {
@@ -339,5 +408,30 @@ mod tests {
         let root = tmp.path().join("uploads");
         symlink(tmp.path(), &root).expect("upload fixture");
         assert!(create(root, 1, 1).is_err());
+    }
+
+    #[test]
+    fn squatted_primary_unix_upload_root_falls_back_to_private_random_directory() {
+        let tmp = tempfile::tempdir().expect("upload fixture");
+        let uid = nix::unistd::geteuid().as_raw();
+        let squatted = tmp.path().join(format!("voytty-upload-{uid}"));
+        fs::write(&squatted, b"squatter").expect("squat file");
+        let cache = OnceLock::new();
+        let (fallback, public) =
+            resolve_unix_root(tmp.path(), "/tmp", uid, &cache).expect("fallback root");
+        assert_ne!(fallback, squatted);
+        assert!(public.starts_with(&format!("/tmp/voytty-upload-{uid}-")));
+        assert_eq!(
+            fs::metadata(&fallback).expect("fallback meta").mode() & 0o777,
+            0o700
+        );
+        let (reused, reused_public) =
+            resolve_unix_root(tmp.path(), "/tmp", uid, &cache).expect("reused fallback root");
+        assert_eq!(reused, fallback);
+        assert_eq!(reused_public, public);
+        assert!(
+            UploadedFile::new(format!("{public}/abcd/ef01/file.pdf"), 1).is_ok(),
+            "fallback upload path stays compatible with UploadedFile validation"
+        );
     }
 }

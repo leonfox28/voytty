@@ -6,7 +6,7 @@ use crate::{
     model::ResolvedSessionTarget,
     protocol::{
         DEFAULT_DEADLINE, is_attachment_command_stream_closed, malformed, protocol_error,
-        service_error,
+        service_error, startup_budget,
     },
     transport::TransportFuture,
 };
@@ -170,6 +170,8 @@ pub async fn upload<R: AsyncRead + Unpin + Send>(
     result
 }
 
+const UPLOAD_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+
 async fn upload_inner<R: AsyncRead + Unpin + Send>(
     connector: &dyn UploadConnector,
     target: ResolvedSessionTarget,
@@ -182,7 +184,7 @@ async fn upload_inner<R: AsyncRead + Unpin + Send>(
     let mut connection = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(cancelled()),
-        result = timeout(DEFAULT_DEADLINE, connector.open_upload(target)) => result.map_err(|_| timed_out())??,
+        result = timeout(startup_budget(target), connector.open_upload(target)) => result.map_err(|_| timed_out())??,
     };
     if !connection
         .capabilities
@@ -215,20 +217,31 @@ async fn upload_inner<R: AsyncRead + Unpin + Send>(
         _ = cancel.cancelled() => return Err(cancelled()),
         result = timeout(DEFAULT_DEADLINE, ready) => result.map_err(|_| timed_out())??,
     };
-    let operation = transfer(&mut connection, id, metadata.size(), source, progress);
-    let result = tokio::select! {
-        biased;
-        _ = cancel.cancelled() => Err(cancelled()),
-        result = operation => result,
+    let mut writer_clean = true;
+    let result = {
+        let operation = transfer(
+            &mut connection,
+            &mut writer_clean,
+            id,
+            metadata.size(),
+            source,
+            progress,
+        );
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(cancelled()),
+            result = operation => result,
+        }
     };
-    if result
-        .as_ref()
-        .is_err_and(|error| error.kind() == DomainErrorKind::Cancelled)
+    if writer_clean
+        && result
+            .as_ref()
+            .is_err_and(|error| error.kind() == DomainErrorKind::Cancelled)
     {
-        // Best effort only. Stream retirement also removes staging; a committed
-        // file is deliberately retained even if cancellation raced publication.
+        // Best effort only when no prior write was interrupted mid-frame.
+        // Dropping the stream also retires staging if the link is stalled.
         let _ = timeout(
-            DEFAULT_DEADLINE,
+            UPLOAD_CANCEL_TIMEOUT,
             send(&mut *connection.writer, UploadMessage::Cancel { id }),
         )
         .await;
@@ -238,6 +251,7 @@ async fn upload_inner<R: AsyncRead + Unpin + Send>(
 
 async fn transfer<R: AsyncRead + Unpin + Send>(
     connection: &mut UploadConnection,
+    writer_clean: &mut bool,
     id: TransferId,
     size: u64,
     mut source: R,
@@ -273,6 +287,7 @@ async fn transfer<R: AsyncRead + Unpin + Send>(
                 return Err(source_invalid());
             }
             sent.store(offset + length as u64, Ordering::Release);
+            *writer_clean = false;
             timeout(
                 UPLOAD_IDLE_TIMEOUT,
                 send(
@@ -286,6 +301,7 @@ async fn transfer<R: AsyncRead + Unpin + Send>(
             )
             .await
             .map_err(|_| timed_out())??;
+            *writer_clean = true;
             offset += length as u64;
         }
         let length = timeout(UPLOAD_IDLE_TIMEOUT, source.read(&mut bytes[..1]))
@@ -353,6 +369,9 @@ async fn transfer<R: AsyncRead + Unpin + Send>(
         }?;
     }
     report(progress, UploadPhase::Finishing, size, size);
+    // Once Finish begins, the host either commits or closes the ordered stream;
+    // a subsequent Cancel could either split Finish or never be read.
+    *writer_clean = false;
     let finish = async {
         send(&mut *connection.writer, UploadMessage::Finish { id, size }).await?;
         match receive(&mut *connection.reader)
@@ -799,5 +818,329 @@ mod tests {
         assert_eq!(error.kind(), DomainErrorKind::UploadOutcomeUnknown);
         assert_eq!(progress.borrow().phase, UploadPhase::Finishing);
         host.await.expect("upload fixture");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn remote_open_upload_uses_remote_startup_deadline_while_local_keeps_control_deadline() {
+        struct DelayedConnector {
+            delay: std::time::Duration,
+            connection: Mutex<Option<UploadConnection>>,
+        }
+        impl UploadConnector for DelayedConnector {
+            fn open_upload(
+                &self,
+                _: ResolvedSessionTarget,
+            ) -> TransportFuture<'_, Result<UploadConnection, ClientError>> {
+                let delay = self.delay;
+                Box::pin(async move {
+                    tokio::time::sleep(delay).await;
+                    Ok(self
+                        .connection
+                        .lock()
+                        .expect("delayed upload fixture")
+                        .take()
+                        .expect("single upload connection"))
+                })
+            }
+        }
+
+        let remote_target =
+            ResolvedSessionTarget::device(voytty_core::DeviceId::from_array([9; 32]));
+        let (client, server) = tokio::io::duplex(1024);
+        let (reader, writer) = tokio::io::split(client);
+        let connector = DelayedConnector {
+            delay: DEFAULT_DEADLINE + std::time::Duration::from_secs(1),
+            connection: Mutex::new(Some(UploadConnection {
+                capabilities: Capabilities::from_bits_retain(Capabilities::FILE_UPLOAD_SERVICE),
+                reader: Box::new(FramedUploadReader::new(reader, ())),
+                writer: Box::new(AsyncUploadWriter(writer)),
+            })),
+        };
+        let host = tokio::spawn(async move {
+            let (reader, mut writer) = tokio::io::split(server);
+            let mut reader = FrameReader::new(reader);
+            assert!(matches!(
+                UploadMessage::decode(&reader.read().await.expect("begin")).expect("decode begin"),
+                UploadMessage::Begin { .. }
+            ));
+            let id = TransferId::from_array([4; 16]);
+            writer
+                .write_all(
+                    &UploadMessage::Ready { id, size: 0 }
+                        .encode(1)
+                        .expect("ready"),
+                )
+                .await
+                .expect("write ready");
+            assert!(matches!(
+                UploadMessage::decode(&reader.read().await.expect("finish"))
+                    .expect("decode finish"),
+                UploadMessage::Finish { size: 0, .. }
+            ));
+            let file = UploadedFile::new("/tmp/voytty-upload-1/s/t/file".into(), 0)
+                .expect("uploaded file");
+            writer
+                .write_all(
+                    &UploadMessage::Completed { id, file }
+                        .encode(1)
+                        .expect("completed"),
+                )
+                .await
+                .expect("write completed");
+        });
+        let (progress, _) = watch::channel(preparing());
+        let file = upload(
+            &connector,
+            remote_target,
+            binding(),
+            UploadMetadata::new(0, "").expect("metadata"),
+            [].as_slice(),
+            &progress,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("remote cold open within 15s budget must succeed");
+        assert_eq!(file.size(), 0);
+        host.await.expect("host task");
+
+        for (target, expected) in [
+            (ResolvedSessionTarget::local(), DEFAULT_DEADLINE),
+            (remote_target, crate::protocol::REMOTE_STARTUP_DEADLINE),
+        ] {
+            let connector = DelayedConnector {
+                delay: expected + std::time::Duration::from_secs(1),
+                connection: Mutex::new(None),
+            };
+            let started = Instant::now();
+            let error = upload(
+                &connector,
+                target,
+                binding(),
+                UploadMetadata::new(0, "").expect("metadata"),
+                [].as_slice(),
+                &progress,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("open exceeding budget must time out");
+            assert_eq!(error.kind(), DomainErrorKind::DeadlineExceeded);
+            assert_eq!(Instant::now() - started, expected);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_mid_chunk_write_drops_stream_without_sending_cancel_or_blocking() {
+        struct StallingChunkWriter {
+            inner: AsyncUploadWriter<tokio::io::WriteHalf<tokio::io::DuplexStream>>,
+            writes: Arc<std::sync::atomic::AtomicUsize>,
+            chunk_started: Option<tokio::sync::oneshot::Sender<()>>,
+        }
+        impl UploadWriter for StallingChunkWriter {
+            fn write<'a>(
+                &'a mut self,
+                bytes: &'a [u8],
+            ) -> TransportFuture<'a, Result<(), ClientError>> {
+                let count = self.writes.fetch_add(1, Ordering::SeqCst);
+                if count == 0 {
+                    self.inner.write(bytes)
+                } else if count == 1 {
+                    let started = self.chunk_started.take();
+                    Box::pin(async move {
+                        if let Some(tx) = started {
+                            let _ = tx.send(());
+                        }
+                        // Simulate a partial frame write stalled mid-flight.
+                        std::future::pending::<Result<(), ClientError>>().await
+                    })
+                } else {
+                    panic!("must not write Cancel after cancelling a mid-frame chunk write");
+                }
+            }
+        }
+
+        let (client, server) = tokio::io::duplex(1024);
+        let (reader, writer) = tokio::io::split(client);
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (chunk_started_tx, chunk_started_rx) = tokio::sync::oneshot::channel();
+        let connector = Connector(Mutex::new(Some(UploadConnection {
+            capabilities: Capabilities::from_bits_retain(Capabilities::FILE_UPLOAD_SERVICE),
+            reader: Box::new(FramedUploadReader::new(reader, ())),
+            writer: Box::new(StallingChunkWriter {
+                inner: AsyncUploadWriter(writer),
+                writes: Arc::clone(&writes),
+                chunk_started: Some(chunk_started_tx),
+            }),
+        })));
+        let host = tokio::spawn(async move {
+            let (reader, mut writer) = tokio::io::split(server);
+            let mut reader = FrameReader::new(reader);
+            assert!(matches!(
+                UploadMessage::decode(&reader.read().await.expect("begin")).expect("decode begin"),
+                UploadMessage::Begin { .. }
+            ));
+            writer
+                .write_all(
+                    &UploadMessage::Ready {
+                        id: TransferId::from_array([5; 16]),
+                        size: 3,
+                    }
+                    .encode(1)
+                    .expect("ready"),
+                )
+                .await
+                .expect("write ready");
+            (reader, writer)
+        });
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let canceller = tokio::spawn(async move {
+            chunk_started_rx.await.expect("chunk write began");
+            trigger.cancel();
+        });
+        let (progress, _) = watch::channel(preparing());
+        let started = Instant::now();
+        let error = upload(
+            &connector,
+            ResolvedSessionTarget::local(),
+            binding(),
+            UploadMetadata::new(3, "").expect("metadata"),
+            b"abc".as_slice(),
+            &progress,
+            &cancel,
+        )
+        .await
+        .expect_err("cancelled upload must fail");
+        assert_eq!(error.kind(), DomainErrorKind::Cancelled);
+        assert_eq!(Instant::now() - started, std::time::Duration::ZERO);
+        assert_eq!(writes.load(Ordering::SeqCst), 2);
+        canceller.await.expect("canceller");
+        let _ = host.await.expect("host");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_at_frame_boundary_sends_cancel_with_short_timeout() {
+        // Case 1: healthy writer delivers clean UploadMessage::Cancel at a frame boundary.
+        let (connector, server) = connection(Capabilities::FILE_UPLOAD_SERVICE);
+        let id = TransferId::from_array([6; 16]);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let host = tokio::spawn(async move {
+            let (reader, mut writer) = tokio::io::split(server);
+            let mut reader = FrameReader::new(reader);
+            assert!(matches!(
+                UploadMessage::decode(&reader.read().await.expect("begin")).expect("decode begin"),
+                UploadMessage::Begin { .. }
+            ));
+            writer
+                .write_all(
+                    &UploadMessage::Ready { id, size: 3 }
+                        .encode(1)
+                        .expect("ready"),
+                )
+                .await
+                .expect("write ready");
+            let _ = ready_tx.send(());
+            assert!(matches!(
+                UploadMessage::decode(&reader.read().await.expect("cancel"))
+                    .expect("decode cancel"),
+                UploadMessage::Cancel { id: cancelled } if cancelled == id
+            ));
+        });
+        let (source_writer, source_reader) = tokio::io::duplex(64);
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let canceller = tokio::spawn(async move {
+            ready_rx.await.expect("ready sent");
+            tokio::task::yield_now().await;
+            trigger.cancel();
+        });
+        let (progress, _) = watch::channel(preparing());
+        let error = upload(
+            &connector,
+            ResolvedSessionTarget::local(),
+            binding(),
+            UploadMetadata::new(3, "").expect("metadata"),
+            source_reader,
+            &progress,
+            &cancel,
+        )
+        .await
+        .expect_err("cancelled upload must fail");
+        assert_eq!(error.kind(), DomainErrorKind::Cancelled);
+        drop(source_writer);
+        canceller.await.expect("canceller");
+        host.await.expect("host must observe clean Cancel");
+
+        // Case 2: stalled writer between frames bounds best-effort Cancel to UPLOAD_CANCEL_TIMEOUT.
+        struct StallingCancelWriter {
+            inner: AsyncUploadWriter<tokio::io::WriteHalf<tokio::io::DuplexStream>>,
+            writes: usize,
+        }
+        impl UploadWriter for StallingCancelWriter {
+            fn write<'a>(
+                &'a mut self,
+                bytes: &'a [u8],
+            ) -> TransportFuture<'a, Result<(), ClientError>> {
+                self.writes += 1;
+                if self.writes == 1 {
+                    self.inner.write(bytes)
+                } else {
+                    Box::pin(std::future::pending())
+                }
+            }
+        }
+        let (client, server) = tokio::io::duplex(1024);
+        let (reader, writer) = tokio::io::split(client);
+        let connector = Connector(Mutex::new(Some(UploadConnection {
+            capabilities: Capabilities::from_bits_retain(Capabilities::FILE_UPLOAD_SERVICE),
+            reader: Box::new(FramedUploadReader::new(reader, ())),
+            writer: Box::new(StallingCancelWriter {
+                inner: AsyncUploadWriter(writer),
+                writes: 0,
+            }),
+        })));
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let host = tokio::spawn(async move {
+            let (reader, mut writer) = tokio::io::split(server);
+            let mut reader = FrameReader::new(reader);
+            assert!(matches!(
+                UploadMessage::decode(&reader.read().await.expect("begin")).expect("decode begin"),
+                UploadMessage::Begin { .. }
+            ));
+            writer
+                .write_all(
+                    &UploadMessage::Ready { id, size: 3 }
+                        .encode(1)
+                        .expect("ready"),
+                )
+                .await
+                .expect("write ready");
+            let _ = ready_tx.send(());
+            (reader, writer)
+        });
+        let (source_writer, source_reader) = tokio::io::duplex(64);
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let canceller = tokio::spawn(async move {
+            ready_rx.await.expect("ready sent");
+            tokio::task::yield_now().await;
+            trigger.cancel();
+        });
+        let started = Instant::now();
+        let error = upload(
+            &connector,
+            ResolvedSessionTarget::local(),
+            binding(),
+            UploadMetadata::new(3, "").expect("metadata"),
+            source_reader,
+            &progress,
+            &cancel,
+        )
+        .await
+        .expect_err("cancelled upload must fail");
+        assert_eq!(error.kind(), DomainErrorKind::Cancelled);
+        assert_eq!(Instant::now() - started, UPLOAD_CANCEL_TIMEOUT);
+        drop(source_writer);
+        canceller.await.expect("canceller");
+        let _ = host.await.expect("host");
     }
 }

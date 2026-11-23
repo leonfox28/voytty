@@ -138,7 +138,7 @@ pub(crate) fn remove_retired_executable(path: &Path) -> io::Result<()> {
     let powershell =
         std::path::PathBuf::from(winsafe::GetSystemDirectory().map_err(io::Error::other)?)
             .join("WindowsPowerShell/v1.0/powershell.exe");
-    let script = "$p = $env:VOYTTY_RETIRED_EXECUTABLE; $end = [DateTime]::UtcNow.AddMinutes(2); do { try { [IO.File]::Delete($p); exit 0 } catch [IO.IOException] { Start-Sleep -Milliseconds 100 } catch [UnauthorizedAccessException] { Start-Sleep -Milliseconds 100 } } while ([DateTime]::UtcNow -lt $end); exit 1";
+    let script = "$p = $env:VOYTTY_RETIRED_EXECUTABLE; $end = [DateTime]::UtcNow.AddMinutes(2); do { try { $attr = [IO.File]::GetAttributes($p); if (($attr -band ([IO.FileAttributes]::ReparsePoint -bor [IO.FileAttributes]::Directory)) -ne 0) { exit 1 }; [IO.File]::Delete($p); exit 0 } catch [IO.FileNotFoundException] { exit 0 } catch [IO.IOException] { Start-Sleep -Milliseconds 100 } catch [UnauthorizedAccessException] { Start-Sleep -Milliseconds 100 } } while ([DateTime]::UtcNow -lt $end); exit 1";
     let child = std::process::Command::new(powershell)
         .args([
             "-NoLogo",

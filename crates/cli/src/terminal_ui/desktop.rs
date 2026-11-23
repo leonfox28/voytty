@@ -228,6 +228,8 @@ async fn run_guarded_terminal(
         mut interrupt,
         mut terminate,
         mut hangup,
+        #[cfg(unix)]
+        mut suspend,
     } = TerminalSignals::install()?;
     let (cancellation_sender, mut cancellation_receiver) = watch::channel(None);
     let stdin = io::stdin();
@@ -248,6 +250,8 @@ async fn run_guarded_terminal(
         &mut interrupt,
         &mut terminate,
         &mut hangup,
+        #[cfg(unix)]
+        &mut suspend,
         cancellation_sender,
     )
     .await;
@@ -264,9 +268,20 @@ async fn select_terminal_termination(
     interrupt: &mut Signal,
     terminate: &mut Signal,
     hangup: &mut Signal,
+    #[cfg(unix)] suspend: &mut Signal,
     cancellation_sender: watch::Sender<Option<TerminalSignalCancellation>>,
 ) -> Result<TerminalCompletion, CliError> {
     tokio::pin!(view);
+    #[cfg(unix)]
+    let cancellation = tokio::select! {
+        biased;
+        signal = interrupt.recv() => TerminalSignalCancellation::new("SIGINT", signal),
+        signal = terminate.recv() => TerminalSignalCancellation::new("SIGTERM", signal),
+        signal = hangup.recv() => TerminalSignalCancellation::new("SIGHUP", signal),
+        signal = suspend.recv() => TerminalSignalCancellation::new("SIGTSTP", signal),
+        result = &mut view => return result,
+    };
+    #[cfg(not(unix))]
     let cancellation = tokio::select! {
         biased;
         signal = interrupt.recv() => TerminalSignalCancellation::new("SIGINT", signal),
@@ -306,7 +321,11 @@ async fn run_view(
     );
     let input_epoch = InputEpoch::new();
     let current_input_epoch = input_epoch.current();
+    #[cfg(unix)]
     let mut stdin_pump = StdinPump::start(stdin, input_epoch.clone())?;
+    #[cfg(windows)]
+    let mut stdin_pump =
+        StdinPump::start_with_resize(stdin, input_epoch.clone(), resize_signal.resize_notifier())?;
     let mut prefix = CommandMode::new();
     let mut input_codec = HostInputCodec::new();
     let mut presenter = DesktopPresenter::default();
@@ -811,6 +830,8 @@ struct TerminalSignals {
     interrupt: Signal,
     terminate: Signal,
     hangup: Signal,
+    #[cfg(unix)]
+    suspend: Signal,
 }
 
 #[cfg(unix)]
@@ -825,6 +846,8 @@ impl TerminalSignals {
                 .map_err(|error| terminal_io("install SIGTERM handler", error))?,
             hangup: signal(SignalKind::hangup())
                 .map_err(|error| terminal_io("install SIGHUP handler", error))?,
+            suspend: signal(SignalKind::from_raw(nix::libc::SIGTSTP))
+                .map_err(|error| terminal_io("install SIGTSTP handler", error))?,
         })
     }
 }
@@ -994,7 +1017,13 @@ struct ScopedPanicHook {
 impl ScopedPanicHook {
     fn suppress() -> Self {
         let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
+        std::panic::set_hook(Box::new(|_| {
+            voytty_diagnostics::record(
+                voytty_diagnostics::Event::new(voytty_diagnostics::Kind::ProcessPanicked)
+                    .level(voytty_diagnostics::Level::Error),
+            );
+            let _ = voytty_diagnostics::flush(Duration::from_millis(250));
+        }));
         Self {
             previous: Some(previous),
         }

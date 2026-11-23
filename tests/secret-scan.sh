@@ -19,7 +19,7 @@ scan_unapproved() {
 }
 
 found=0
-if scan '(BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|ssh-(rsa|ed25519) [A-Za-z0-9+/]{40,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36,})'; then
+if scan '(BEGIN (RSA |EC |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY|ssh-(rsa|ed25519) [A-Za-z0-9+/]{40,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{20,})'; then
     found=1
 fi
 # Bare assignments in configuration and shell inputs may embed credentials,

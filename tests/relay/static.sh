@@ -37,6 +37,7 @@ fi
 test_dir=$(mktemp -d)
 trap 'rm -rf "$test_dir"' EXIT HUP INT TERM
 printf 'tampered relay archive\n' >"$test_dir/tampered.tar.gz"
+# shellcheck disable=SC2034
 IROH_RELAY_SHA256="0000000000000000000000000000000000000000000000000000000000000000"
 if iroh_relay_verify "$test_dir/tampered.tar.gz" >/dev/null 2>&1; then
     fail "tampered archive passed checksum verification"

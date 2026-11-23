@@ -17,6 +17,7 @@ use voytty_proto::{
     DecodedFrame, FrameDecoder, LOCAL_SESSION_TUNNEL_VERSION, MAX_LOCAL_SESSION_TUNNEL_DATA_BYTES,
     WireKind, encode_message, v2,
 };
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::connection_broker::{
     AuthenticatedBiStream, ConnectionBroker, SelectedPathObservation, StreamPurpose,
@@ -137,7 +138,7 @@ where
 
     let mut local_half_closed = false;
     let mut local_read_closed = false;
-    let mut remote_buffer = vec![0_u8; MAX_LOCAL_SESSION_TUNNEL_DATA_BYTES];
+    let mut remote_buffer = Zeroizing::new(vec![0_u8; MAX_LOCAL_SESSION_TUNNEL_DATA_BYTES]);
     loop {
         tokio::select! {
             local = local_reader.read_frame(), if !local_read_closed => {
@@ -182,7 +183,7 @@ where
                 }
                 match frame.kind {
                     WireKind::LocalSessionTunnelData => {
-                        let data: v2::LocalSessionTunnelData = match frame
+                        let mut data: v2::LocalSessionTunnelData = match frame
                             .decode_message(WireKind::LocalSessionTunnelData)
                             .map_err(protocol_error)
                         {
@@ -198,6 +199,7 @@ where
                             }
                         };
                         if let Err(error) = require_data_chunk(&data.bytes) {
+                            data.bytes.zeroize();
                             write_closed_best_effort(
                                 &mut local_writer,
                                 v2::LocalSessionTunnelCloseReason::ProtocolError,
@@ -206,13 +208,14 @@ where
                             .await;
                             return Err(error);
                         }
-                        if let Err(error) = write_remote(
+                        let written = write_remote(
                             &mut remote_writer,
                             &data.bytes,
                             limits.operation_timeout(),
                         )
-                        .await
-                        {
+                        .await;
+                        data.bytes.zeroize();
+                        if let Err(error) = written {
                             write_closed_best_effort(
                                 &mut local_writer,
                                 v2::LocalSessionTunnelCloseReason::TransportLost,
@@ -273,15 +276,19 @@ where
                         return Ok(());
                     }
                     Ok(read) => {
-                        write_outer_with_timeout(
+                        let mut message = v2::LocalSessionTunnelData {
+                            bytes: remote_buffer[..read].to_vec(),
+                        };
+                        remote_buffer[..read].zeroize();
+                        let written = write_outer_with_timeout(
                             &mut local_writer,
                             WireKind::LocalSessionTunnelData,
-                            &v2::LocalSessionTunnelData {
-                                bytes: remote_buffer[..read].to_vec(),
-                            },
+                            &message,
                             limits.operation_timeout(),
                         )
-                        .await?;
+                        .await;
+                        message.bytes.zeroize();
+                        written?;
                     }
                     Err(_) => {
                         write_closed_best_effort(

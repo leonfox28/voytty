@@ -78,14 +78,27 @@ download() {
         [ "$download_remaining" -gt 0 ] || break
         download_attempt=$((download_attempt + 1))
         download_status=0
+        download_status_file="$2.status"
+        rm -f "$download_status_file"
         download_http=$(
-            ulimit -f "$((($3 + 511) / 512))"
-            curl --disable --proto '=https' --proto-redir '=https' --tlsv1.2 \
-                --fail --location --max-redirs 5 --silent --show-error \
-                --connect-timeout 10 --max-time "$download_remaining" \
-                --speed-limit 1024 --speed-time 30 --max-filesize "$3" \
-                --write-out '%{http_code}' --output "$2" "$1"
-        ) || download_status=$?
+            exec 3>&1
+            (
+                ulimit -f "$((($3 + 511) / 512))"
+                sub_status=0
+                curl --disable --proto '=https' --proto-redir '=https' --tlsv1.2 \
+                    --fail --location --max-redirs 5 --silent --show-error \
+                    --connect-timeout 10 --max-time "$download_remaining" \
+                    --speed-limit 1024 --speed-time 30 --max-filesize "$3" \
+                    --write-out '%{http_code}' --output "$2" "$1" 2>&1 1>&3 || sub_status=$?
+                printf '%s\n' "$sub_status" > "$download_status_file"
+            ) | while IFS= read -r download_err || [ -n "$download_err" ]; do
+                printf '%s\n' "$download_err" >&2
+            done
+        )
+        if ! IFS= read -r download_status < "$download_status_file" 2>/dev/null; then
+            download_status=1
+        fi
+        rm -f "$download_status_file"
         if [ "$download_status" -eq 0 ]; then return 0; fi
         case "$download_status:$download_http" in
             5:*|6:*|7:*|18:*|28:*|52:*|55:*|56:*|22:408|22:429|22:500|22:502|22:503|22:504) ;;

@@ -406,7 +406,9 @@ impl SessionAttachment {
 
     /// Releases only this attachment; the session and PTY continue running.
     pub fn detach(&self) {
-        self.detached.store(true, Ordering::Release);
+        if !self.detached.swap(true, Ordering::AcqRel) {
+            self.actor.wake();
+        }
     }
 
     /// Moves an active authenticated remote controller checkpoint into the

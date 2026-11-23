@@ -34,8 +34,18 @@ key_marker=KEY
 assert_secret_rejected private-key \
     sh -c 'printf "%s %s %s\n" "$1" "$2" "$3"' \
     sh "$begin_marker" "$private_marker" "$key_marker"
+# shellcheck disable=SC2016
+assert_secret_rejected encrypted-private-key \
+    sh -c 'printf "%s ENCRYPTED %s %s\n" "$1" "$2" "$3"' \
+    sh "$begin_marker" "$private_marker" "$key_marker"
+# shellcheck disable=SC2016
+assert_secret_rejected pgp-private-key \
+    sh -c 'printf "%s PGP %s %s BLOCK\n" "$1" "$2" "$3"' \
+    sh "$begin_marker" "$private_marker" "$key_marker"
 assert_secret_rejected github-token \
     sh -c 'printf "ghp_%040d\n" 0'
+assert_secret_rejected github-fine-grained-pat \
+    sh -c 'printf "github_pat_%022d_%059d\n" 0 0'
 assert_secret_rejected aws-access-key \
     sh -c 'printf "AKIA%016d\n" 0'
 

@@ -67,7 +67,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let cli =
                 voytty_cli::Cli::try_parse_from(std::iter::once("voytty".to_owned()).chain(args))?;
             match voytty_cli::execute(cli, &local, voytty_cli::InteractionMode::detect()).await? {
-                voytty_cli::CommandOutcome::Text(text) => print!("{text}"),
+                voytty_cli::CommandOutcome::Text(text)
+                | voytty_cli::CommandOutcome::FailedText(text) => print!("{text}"),
                 voytty_cli::CommandOutcome::Terminal(request) => {
                     voytty_cli::run_terminal(request, &local).await?;
                 }

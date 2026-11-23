@@ -224,7 +224,11 @@ pub fn export(
     let header = ExportHeader::new(
         include_debug,
         omitted,
-        snapshots.iter().map(|s| s.start).sum(),
+        snapshots
+            .iter()
+            .filter(|s| include_debug || !s.detail)
+            .map(|s| s.start)
+            .sum(),
         pending_lost,
     );
     output.write_all(&header.encode()?)?;

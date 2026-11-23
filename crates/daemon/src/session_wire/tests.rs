@@ -900,6 +900,27 @@ async fn generic_first_read_retains_leftovers_and_strict_unary_rejects_them() {
         .await
         .expect_err("a second frame must not pass strict unary EOF");
     assert_eq!(error.kind(), DomainErrorKind::MalformedFrame);
+
+    // Trailing raw bytes arriving after the first unary frame must be rejected
+    // immediately without waiting for another full frame to decode.
+    let single = encode_message(
+        WireKind::SessionListRequest,
+        43,
+        0,
+        &v2::SessionListRequest { target: None },
+    )
+    .expect("encode single frame");
+    let (mut client, mut server) = tokio::io::duplex(4 * 1024);
+    client.write_all(&single).await.expect("write single frame");
+    let first = read_first(&mut server).await.expect("read single frame");
+    client
+        .write_all(&[0x7f])
+        .await
+        .expect("write trailing byte");
+    let error = finish_unary(&mut server, first)
+        .await
+        .expect_err("any trailing byte must fail strict unary EOF immediately");
+    assert_eq!(error.kind(), DomainErrorKind::MalformedFrame);
 }
 
 #[test]
@@ -3341,6 +3362,94 @@ async fn legacy_attachments_stay_unnumbered_and_reject_surface_receipts() {
         DomainErrorKind::from_code(&error.code),
         Some(DomainErrorKind::MalformedFrame)
     );
+    drop(peer);
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+    sessions.shutdown().expect("fixture cleanup");
+}
+
+#[tokio::test]
+async fn stale_color_sequence_returns_error_without_closing_attachment() {
+    use voytty_core::terminal::{COLOR_BACKGROUND, TerminalColorProfile, TerminalColorValue};
+    let temporary = tempfile::tempdir().expect("stale color fixture");
+    let own = device(0x88);
+    let remote = device(0x89);
+    let accepted = generation(1);
+    let sessions = unix_wire_service(own, temporary.path().to_path_buf());
+    let local = sessions.local_principal(AttachmentId::from_array([0x8a; 16]));
+    let lease = sessions.issue_operation_lease(local).expect("create lease");
+    let summary = sessions
+        .create(
+            local,
+            OperationId { lease, sequence: 1 },
+            SessionName::new("stale-color").expect("name"),
+            None,
+            None,
+        )
+        .expect("session");
+    let server = SessionWireServer::new(sessions.clone());
+    let context = remote_context(own, remote, accepted, authorized_registry(remote, accepted));
+    let (mut peer, task) = start_remote_attachment(
+        server,
+        context,
+        remote_attach_request(
+            own,
+            summary.session_id,
+            ResumeViewId::from_array([0x8b; 16]),
+            None,
+        ),
+    )
+    .await;
+    let initial = peer.next().await;
+    let initial: v2::TerminalSemanticSnapshot = initial
+        .decode_message(WireKind::TerminalSemanticSnapshot)
+        .expect("initial snapshot");
+    let attachment =
+        AttachmentId::try_from(initial.attachment_id.expect("attachment")).expect("id");
+    acknowledge_and_observe_semantic_state(&mut peer, attachment, Revision::new(initial.revision))
+        .await;
+
+    let mut profile = TerminalColorProfile::default();
+    profile.values[COLOR_BACKGROUND] = TerminalColorValue::Rgb(1, 2, 3);
+    peer.send(
+        WireKind::TerminalBaseColors,
+        10,
+        &v2::TerminalBaseColors {
+            attachment_id: Some(attachment.into()),
+            profile: Some(profile.clone().into()),
+            sequence: 2,
+        },
+    )
+    .await;
+    assert_eq!(peer.next().await.kind, WireKind::TerminalSemanticDelta);
+
+    // Repeating an older sequence sends ServiceErrorResponse while keeping the stream usable.
+    peer.send(
+        WireKind::TerminalBaseColors,
+        11,
+        &v2::TerminalBaseColors {
+            attachment_id: Some(attachment.into()),
+            profile: Some(profile.clone().into()),
+            sequence: 1,
+        },
+    )
+    .await;
+    let error_frame = peer.next().await;
+    assert_eq!(error_frame.kind, WireKind::ServiceErrorResponse);
+    assert_eq!(error_frame.request_id, 11);
+
+    profile.values[COLOR_BACKGROUND] = TerminalColorValue::Rgb(4, 5, 6);
+    peer.send(
+        WireKind::TerminalBaseColors,
+        12,
+        &v2::TerminalBaseColors {
+            attachment_id: Some(attachment.into()),
+            profile: Some(profile.into()),
+            sequence: 3,
+        },
+    )
+    .await;
+    assert_eq!(peer.next().await.kind, WireKind::TerminalSemanticDelta);
+
     drop(peer);
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
     sessions.shutdown().expect("fixture cleanup");

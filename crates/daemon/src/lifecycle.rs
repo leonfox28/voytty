@@ -125,24 +125,37 @@ pub async fn ensure_daemon_with(
     if let Some(readiness) = probe_readiness(paths).await? {
         return Ok(readiness);
     }
-    paths
-        .prepare_state_directories()
-        .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?;
+    let prepare_paths = paths.clone();
+    run_blocking(move || {
+        prepare_paths
+            .prepare_state_directories()
+            .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))
+    })
+    .await?;
     let started = Instant::now();
     let _lifecycle = acquire_lifecycle_lock(paths, started).await?;
     if let Some(readiness) = probe_readiness(paths).await? {
         return Ok(readiness);
     }
 
-    let mut command =
-        voytty_platform::local::detached_command(executable, paths, internal_argument)
-            .map_err(platform_error)?;
-    let mut child = command.spawn().map_err(|error| {
-        DaemonError::new(
-            DomainErrorKind::DaemonStartTimeout,
-            format!("unable to spawn detached daemon: {error}"),
+    let spawn_executable = executable.to_path_buf();
+    let spawn_paths = paths.clone();
+    let spawn_argument = internal_argument.to_owned();
+    let mut child = run_blocking(move || {
+        let mut command = voytty_platform::local::detached_command(
+            &spawn_executable,
+            &spawn_paths,
+            &spawn_argument,
         )
-    })?;
+        .map_err(platform_error)?;
+        command.spawn().map_err(|error| {
+            DaemonError::new(
+                DomainErrorKind::DaemonStartTimeout,
+                format!("unable to spawn detached daemon: {error}"),
+            )
+        })
+    })
+    .await?;
 
     loop {
         // The spawned daemon binds its socket before it can answer. On a
@@ -650,14 +663,30 @@ pub(crate) async fn probe_readiness(
     }
 }
 
+pub(crate) async fn run_blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, DaemonError> + Send + 'static,
+) -> Result<T, DaemonError> {
+    tokio::task::spawn_blocking(work).await.map_err(|_| {
+        DaemonError::new(
+            DomainErrorKind::OperationOutcomeUnknown,
+            "background daemon lifecycle task terminated unexpectedly",
+        )
+    })?
+}
+
 #[cfg(any(unix, windows))]
 pub(crate) async fn acquire_lifecycle_lock(
     paths: &UserPaths,
     started: Instant,
 ) -> Result<FileLock, DaemonError> {
     loop {
-        if let Some(lock) = FileLock::try_acquire(paths.lifecycle_lock(), paths.uid())
-            .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?
+        let lock_path = paths.lifecycle_lock().to_path_buf();
+        let uid = paths.uid();
+        if let Some(lock) = run_blocking(move || {
+            FileLock::try_acquire(&lock_path, uid)
+                .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))
+        })
+        .await?
         {
             return Ok(lock);
         }

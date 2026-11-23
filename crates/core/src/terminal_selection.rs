@@ -111,20 +111,42 @@ impl TerminalTextRange {
                     .map_err(|_| TerminalTextSelectionError::InvalidSurface)?
             };
 
-            for column in first_column..=last_column {
-                let selected = row
-                    .cells
-                    .get(usize::from(column))
-                    .ok_or(TerminalTextSelectionError::InvalidRange)?;
-                if selected.wide_continuation {
-                    continue;
+            let mut row_end = Some(last_column);
+            if !row.wrapped {
+                let mut trimmed = last_column;
+                loop {
+                    let selected = row
+                        .cells
+                        .get(usize::from(trimmed))
+                        .ok_or(TerminalTextSelectionError::InvalidRange)?;
+                    if !selected.contents.is_empty() || selected.wide_continuation {
+                        row_end = Some(trimmed);
+                        break;
+                    }
+                    if trimmed == first_column {
+                        row_end = (range.start.row == range.end.row).then_some(last_column);
+                        break;
+                    }
+                    trimmed -= 1;
                 }
-                let contents = if selected.contents.is_empty() {
-                    " "
-                } else {
-                    selected.contents.as_str()
-                };
-                append_bounded(&mut text, contents)?;
+            }
+
+            if let Some(row_end) = row_end {
+                for column in first_column..=row_end {
+                    let selected = row
+                        .cells
+                        .get(usize::from(column))
+                        .ok_or(TerminalTextSelectionError::InvalidRange)?;
+                    if selected.wide_continuation {
+                        continue;
+                    }
+                    let contents = if selected.contents.is_empty() {
+                        " "
+                    } else {
+                        selected.contents.as_str()
+                    };
+                    append_bounded(&mut text, contents)?;
+                }
             }
 
             if row_index < range.end.row && !row.wrapped {
@@ -292,5 +314,66 @@ mod tests {
                 TerminalClipboardError::TooLarge
             ))
         );
+    }
+
+    #[test]
+    fn non_wrapped_selection_trims_trailing_blanks_without_affecting_wrapped_or_interior_spaces() {
+        let rows = vec![
+            TerminalSurfaceRow {
+                cells: vec![
+                    cell_with("h"),
+                    cell_with("i"),
+                    TerminalCell::default(),
+                    TerminalCell::default(),
+                ],
+                wrapped: false,
+            },
+            TerminalSurfaceRow {
+                cells: vec![TerminalCell::default(); 4],
+                wrapped: false,
+            },
+            TerminalSurfaceRow {
+                cells: vec![
+                    cell_with("a"),
+                    TerminalCell::default(),
+                    cell_with("b"),
+                    TerminalCell::default(),
+                ],
+                wrapped: false,
+            },
+            TerminalSurfaceRow {
+                cells: vec![
+                    cell_with("w"),
+                    TerminalCell::default(),
+                    TerminalCell::default(),
+                    TerminalCell::default(),
+                ],
+                wrapped: true,
+            },
+            TerminalSurfaceRow {
+                cells: vec![
+                    cell_with("x"),
+                    TerminalCell::default(),
+                    TerminalCell::default(),
+                    TerminalCell::default(),
+                ],
+                wrapped: false,
+            },
+        ];
+        let multi =
+            TerminalTextRange::new(TerminalTextPoint::new(0, 0), TerminalTextPoint::new(2, 3));
+        assert_eq!(multi.extract(&rows).expect("multi").as_str(), "hi\n\na b");
+
+        let single_line =
+            TerminalTextRange::new(TerminalTextPoint::new(0, 0), TerminalTextPoint::new(0, 3));
+        assert_eq!(single_line.extract(&rows).expect("single").as_str(), "hi");
+
+        let wrapped =
+            TerminalTextRange::new(TerminalTextPoint::new(3, 0), TerminalTextPoint::new(4, 3));
+        assert_eq!(wrapped.extract(&rows).expect("wrapped").as_str(), "w   x");
+
+        let only_blanks =
+            TerminalTextRange::new(TerminalTextPoint::new(1, 0), TerminalTextPoint::new(1, 2));
+        assert_eq!(only_blanks.extract(&rows).expect("blanks").as_str(), "   ");
     }
 }

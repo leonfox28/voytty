@@ -484,15 +484,18 @@ impl IrohController {
         deadline: Instant,
     ) -> Result<IrohSessionIo, ClientError> {
         let (normal, permit, send, recv) = self.admitted_stream(remote, peer, deadline).await?;
+        let path_events = Some(normal.connection.path_events());
         Ok(IrohSessionIo {
             diagnostic: normal.diagnostic,
             connection: normal.connection,
+            path_events,
             last_stream_sample: None,
             read_bytes: 0,
             decoded_frames: 0,
             last_path: None,
             send,
             recv,
+            read_buffer: Zeroizing::new(vec![0_u8; 16 * 1024]),
             decoder: FrameDecoder::new(),
             queued: VecDeque::new(),
             _permit: permit,
@@ -566,6 +569,28 @@ impl IrohController {
         }
     }
 
+    async fn retire_connection_if_current(
+        &self,
+        peer: &Peer,
+        failed: usize,
+        reason: &'static [u8],
+    ) {
+        let mut slot = peer.normal.lock().await;
+        if slot
+            .as_ref()
+            .is_some_and(|normal| normal.connection.stable_id() == failed)
+            && let Some(normal) = slot.take()
+        {
+            record_transport_observation(
+                &normal.diagnostic,
+                &normal.connection,
+                voytty_diagnostics::Stage::RetiringTransport,
+                None,
+            );
+            normal.connection.close(VarInt::from_u32(0), reason);
+        }
+    }
+
     async fn admitted_stream(
         &self,
         remote: DeviceId,
@@ -580,6 +605,8 @@ impl IrohController {
         ),
         ClientError,
     > {
+        let mut backoff = OPEN_BI_RETRY_INITIAL;
+        let mut retries: usize = 0;
         loop {
             let normal = self.normal(remote, peer, deadline).await?;
             let permit = timeout_until(deadline, Arc::clone(&peer.streams).acquire_owned())
@@ -591,16 +618,40 @@ impl IrohController {
             // An idle failed connection may have been retired while this
             // opener waited for admission. No application bytes were sent.
             if normal.connection.close_reason().is_some() {
+                drop(permit);
+                if retries > 0 {
+                    wait_retry_backoff(&peer.cancelled, deadline, &mut backoff).await?;
+                }
+                retries = retries.saturating_add(1);
                 continue;
             }
-            let Ok((send, recv)) = timeout_until(deadline, normal.connection.open_bi()).await?
-            else {
-                continue;
-            };
-            if peer.cancelled.is_cancelled() {
-                return Err(attachment_cancelled());
+            match timeout_until(deadline, normal.connection.open_bi()).await? {
+                Ok((send, recv)) => {
+                    if peer.cancelled.is_cancelled() {
+                        return Err(attachment_cancelled());
+                    }
+                    return Ok((normal, permit, send, recv));
+                }
+                Err(_) => {
+                    drop(permit);
+                    let still_open = normal.connection.close_reason().is_none();
+                    if still_open {
+                        timeout_until(
+                            deadline,
+                            self.retire_connection_if_current(
+                                peer,
+                                normal.connection.stable_id(),
+                                b"open_bi failed",
+                            ),
+                        )
+                        .await?;
+                    }
+                    if still_open || retries > 0 {
+                        wait_retry_backoff(&peer.cancelled, deadline, &mut backoff).await?;
+                    }
+                    retries = retries.saturating_add(1);
+                }
             }
-            return Ok((normal, permit, send, recv));
         }
     }
     /// Pairs a validated one-time ticket and resolves ambiguity on the normal ALPN.
@@ -888,15 +939,95 @@ impl RemoteUnaryDemand for IrohDemand {
         })
     }
 }
+const OPEN_BI_RETRY_INITIAL: std::time::Duration = std::time::Duration::from_millis(20);
+const OPEN_BI_RETRY_MAX: std::time::Duration = std::time::Duration::from_millis(500);
+const DETAIL_SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+const MIN_RTT_REPORT_DELTA_MS: u32 = 5;
+
+async fn wait_retry_backoff(
+    cancelled: &CancellationToken,
+    deadline: Instant,
+    backoff: &mut std::time::Duration,
+) -> Result<(), ClientError> {
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|duration| !duration.is_zero())
+        .ok_or_else(crate::protocol::control_timeout)?;
+    let hit_deadline = *backoff >= remaining;
+    let delay = (*backoff).min(remaining);
+    *backoff = (*backoff).saturating_mul(2).min(OPEN_BI_RETRY_MAX);
+    tokio::select! {
+        biased;
+        _ = cancelled.cancelled() => Err(attachment_cancelled()),
+        () = tokio::time::sleep(delay) => {
+            if hit_deadline {
+                Err(crate::protocol::control_timeout())
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+fn sample_selected_path(connection: &Connection) -> (i32, Option<u32>) {
+    connection
+        .paths()
+        .iter()
+        .find(|path| path.is_selected())
+        .map_or((v2::TerminalConnectionPath::Unknown as i32, None), |path| {
+            let kind = match path.remote_addr() {
+                TransportAddr::Ip(_) => v2::TerminalConnectionPath::Direct,
+                TransportAddr::Relay(_) => v2::TerminalConnectionPath::Relay,
+                _ => v2::TerminalConnectionPath::Unknown,
+            };
+            (
+                kind as i32,
+                Some(
+                    u32::try_from((path.rtt().as_nanos() + 500_000) / 1_000_000)
+                        .unwrap_or(u32::MAX),
+                ),
+            )
+        })
+}
+
+fn should_emit_path_sample(last: Option<(i32, Option<u32>)>, current: (i32, Option<u32>)) -> bool {
+    let Some((prev_path, prev_rtt)) = last else {
+        return true;
+    };
+    if prev_path != current.0 {
+        return true;
+    }
+    match (prev_rtt, current.1) {
+        (None, None) => false,
+        (Some(prev), Some(curr)) => {
+            let threshold = (prev / 10).max(MIN_RTT_REPORT_DELTA_MS);
+            curr.abs_diff(prev) >= threshold
+        }
+        (None, Some(_)) | (Some(_), None) => true,
+    }
+}
+
+async fn next_path_event(
+    events: &mut Option<iroh::endpoint::PathEventStream>,
+) -> Option<iroh::endpoint::PathEvent> {
+    use futures_util::StreamExt;
+    match events {
+        Some(stream) => stream.next().await,
+        None => None,
+    }
+}
+
 struct IrohSessionIo {
     diagnostic: voytty_diagnostics::Operation,
     connection: Connection,
+    path_events: Option<iroh::endpoint::PathEventStream>,
     last_stream_sample: Option<Instant>,
     read_bytes: u64,
     decoded_frames: u64,
     last_path: Option<(i32, Option<u32>)>,
     send: SendStream,
     recv: RecvStream,
+    read_buffer: Zeroizing<Vec<u8>>,
     decoder: FrameDecoder,
     queued: VecDeque<DecodedFrame>,
     _permit: OwnedSemaphorePermit,
@@ -921,14 +1052,14 @@ impl IrohSessionIo {
             return;
         }
         let now = Instant::now();
-        if self.last_stream_sample.is_some_and(|last| {
-            now.saturating_duration_since(last) < std::time::Duration::from_secs(1)
-        }) {
+        if self
+            .last_stream_sample
+            .is_some_and(|last| now.saturating_duration_since(last) < DETAIL_SAMPLE_INTERVAL)
+        {
             return;
         }
         self.last_stream_sample = Some(now);
-        // Sample only while the existing reader is polled. Its one-second quiet
-        // read wakeup also samples a stall; no task, probe or deadline is added.
+        // Sample only while the existing reader is polled and detail logging is enabled.
         voytty_diagnostics::record(crate::handshake::with_transport_state(
             voytty_diagnostics::Event::new(voytty_diagnostics::Kind::StreamObserved)
                 .level(voytty_diagnostics::Level::Debug)
@@ -951,7 +1082,7 @@ impl crate::upload::UploadConnector for IrohController {
                 .admitted_stream(
                     remote,
                     &peer,
-                    Instant::now() + crate::protocol::DEFAULT_DEADLINE,
+                    Instant::now() + crate::protocol::startup_budget(target),
                 )
                 .await?;
             Ok(crate::upload::UploadConnection {
@@ -992,26 +1123,8 @@ impl AttachmentIo for IrohSessionIo {
         Box::pin(async move {
             loop {
                 self.record_stream_progress();
-                let sample = self
-                    .connection
-                    .paths()
-                    .iter()
-                    .find(|path| path.is_selected())
-                    .map_or((v2::TerminalConnectionPath::Unknown as i32, None), |path| {
-                        let kind = match path.remote_addr() {
-                            TransportAddr::Ip(_) => v2::TerminalConnectionPath::Direct,
-                            TransportAddr::Relay(_) => v2::TerminalConnectionPath::Relay,
-                            _ => v2::TerminalConnectionPath::Unknown,
-                        };
-                        (
-                            kind as i32,
-                            Some(
-                                u32::try_from((path.rtt().as_nanos() + 500_000) / 1_000_000)
-                                    .unwrap_or(u32::MAX),
-                            ),
-                        )
-                    });
-                if self.last_path != Some(sample) {
+                let sample = sample_selected_path(&self.connection);
+                if should_emit_path_sample(self.last_path, sample) {
                     self.last_path = Some(sample);
                     return Ok(AttachmentTransportItem::Path(v2::LocalSessionTunnelPath {
                         path: sample.0,
@@ -1039,15 +1152,19 @@ impl AttachmentIo for IrohSessionIo {
                     }
                     return Ok(AttachmentTransportItem::Session(frame));
                 }
-                let mut buffer = Zeroizing::new([0_u8; 16 * 1024]);
-                // A quiet shell must still expose path upgrades and new RTT
-                // estimates. This only observes QUIC; it sends no terminal input.
-                let read = tokio::time::timeout(
-                    std::time::Duration::from_secs(1),
-                    self.recv.read(&mut *buffer),
-                )
-                .await;
-                let Ok(read) = read else {
+                let detail_enabled = voytty_diagnostics::detail_enabled();
+                // Wake on stream traffic or QUIC path transitions instead of polling every second.
+                let read = tokio::select! {
+                    read = self.recv.read(&mut self.read_buffer) => Some(read),
+                    event = next_path_event(&mut self.path_events), if self.path_events.is_some() => {
+                        if event.is_none() {
+                            self.path_events = None;
+                        }
+                        None
+                    }
+                    () = tokio::time::sleep(DETAIL_SAMPLE_INTERVAL), if detail_enabled => None,
+                };
+                let Some(read) = read else {
                     continue;
                 };
                 let count = read
@@ -1062,8 +1179,10 @@ impl AttachmentIo for IrohSessionIo {
                 self.read_bytes = self.read_bytes.saturating_add(count as u64);
                 let frames = self
                     .decoder
-                    .feed(&buffer[..count])
-                    .map_err(protocol_error)?;
+                    .feed(&self.read_buffer[..count])
+                    .map_err(protocol_error);
+                self.read_buffer[..count].fill(0);
+                let frames = frames?;
                 self.decoded_frames = self.decoded_frames.saturating_add(frames.len() as u64);
                 self.queued.extend(frames);
             }
@@ -1855,5 +1974,110 @@ mod tests {
                 kind
             );
         }
+    }
+
+    #[test]
+    fn path_sample_hysteresis_suppresses_small_rtt_jitter_and_emits_real_changes() {
+        let direct = v2::TerminalConnectionPath::Direct as i32;
+        let relay = v2::TerminalConnectionPath::Relay as i32;
+
+        // Initial observation always emits.
+        assert!(should_emit_path_sample(None, (relay, Some(10))));
+
+        // Low-RTT jitter below 5 ms is suppressed; >= 5 ms emits.
+        assert!(!should_emit_path_sample(
+            Some((direct, Some(10))),
+            (direct, Some(11))
+        ));
+        assert!(!should_emit_path_sample(
+            Some((direct, Some(10))),
+            (direct, Some(14))
+        ));
+        assert!(!should_emit_path_sample(
+            Some((direct, Some(10))),
+            (direct, Some(6))
+        ));
+        assert!(should_emit_path_sample(
+            Some((direct, Some(10))),
+            (direct, Some(15))
+        ));
+        assert!(should_emit_path_sample(
+            Some((direct, Some(10))),
+            (direct, Some(5))
+        ));
+
+        // High-RTT jitter below 10% is suppressed; >= 10% emits.
+        assert!(!should_emit_path_sample(
+            Some((relay, Some(200))),
+            (relay, Some(219))
+        ));
+        assert!(should_emit_path_sample(
+            Some((relay, Some(200))),
+            (relay, Some(220))
+        ));
+
+        // Path class transitions and RTT availability transitions always emit.
+        assert!(should_emit_path_sample(
+            Some((relay, Some(10))),
+            (direct, Some(10))
+        ));
+        assert!(should_emit_path_sample(
+            Some((direct, None)),
+            (direct, Some(10))
+        ));
+        assert!(should_emit_path_sample(
+            Some((direct, Some(10))),
+            (direct, None)
+        ));
+        assert!(!should_emit_path_sample(
+            Some((direct, None)),
+            (direct, None)
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_backoff_doubles_to_cap_and_stops_on_cancel_or_deadline() {
+        use std::time::Duration;
+
+        let cancelled = CancellationToken::new();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut backoff = OPEN_BI_RETRY_INITIAL;
+        let expected_delays = [20_u64, 40, 80, 160, 320, 500, 500];
+        for expected_ms in expected_delays {
+            let before = tokio::time::Instant::now();
+            wait_retry_backoff(&cancelled, deadline, &mut backoff)
+                .await
+                .expect("backoff step completes before deadline");
+            assert_eq!(
+                tokio::time::Instant::now() - before,
+                Duration::from_millis(expected_ms)
+            );
+        }
+
+        // Cancellation interrupts backoff immediately.
+        let trigger = cancelled.clone();
+        let stopper = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            trigger.cancel();
+        });
+        let before = tokio::time::Instant::now();
+        let error = wait_retry_backoff(&cancelled, deadline, &mut backoff)
+            .await
+            .expect_err("cancelled backoff must stop");
+        assert_eq!(error.kind(), DomainErrorKind::Cancelled);
+        assert_eq!(
+            tokio::time::Instant::now() - before,
+            Duration::from_millis(5)
+        );
+        stopper.await.expect("stopper");
+
+        // Reaching deadline returns DeadlineExceeded without further retries.
+        let active = CancellationToken::new();
+        let short_deadline = Instant::now() + Duration::from_millis(10);
+        let mut large_backoff = OPEN_BI_RETRY_MAX;
+        let error = wait_retry_backoff(&active, short_deadline, &mut large_backoff)
+            .await
+            .expect_err("expired backoff must time out");
+        assert_eq!(error.kind(), DomainErrorKind::DeadlineExceeded);
     }
 }

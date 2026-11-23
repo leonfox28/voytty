@@ -232,7 +232,11 @@ impl Autostart {
                 // enabling linger, or activating a target. No bus means no
                 // running user manager to clear; next login reads the disk state.
                 if Path::new("/run/systemd/system").is_dir() {
-                    let result = std::process::Command::new("systemctl")
+                    let systemctl = resolve_systemctl().ok_or_else(|| {
+                        "unable to locate trusted systemctl executable; retry reset/uninstall"
+                            .to_owned()
+                    })?;
+                    let result = std::process::Command::new(systemctl)
                         .args(["--user", "daemon-reload"])
                         .output()
                         .map_err(|_| "unable to run systemctl; retry reset/uninstall".to_owned())?;
@@ -379,6 +383,24 @@ fn metadata(path: &Path) -> Result<Option<fs::Metadata>, String> {
         Err(error) => Err(detail(error)),
     }
 }
+fn resolve_systemctl() -> Option<&'static Path> {
+    resolve_trusted_system_executable(&[
+        Path::new("/usr/bin/systemctl"),
+        Path::new("/bin/systemctl"),
+    ])
+}
+
+fn resolve_trusted_system_executable<'a>(candidates: &[&'a Path]) -> Option<&'a Path> {
+    candidates.iter().copied().find(|candidate| {
+        fs::metadata(candidate).is_ok_and(|meta| {
+            meta.is_file()
+                && meta.uid() == 0
+                && meta.mode() & 0o022 == 0
+                && meta.mode() & 0o111 != 0
+        })
+    })
+}
+
 // With an extended POSIX ACL, group mode bits describe the ACL mask and
 // can grant write access to named users outside the directory's owning group.
 #[cfg(target_os = "linux")]

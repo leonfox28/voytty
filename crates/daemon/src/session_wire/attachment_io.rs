@@ -80,12 +80,24 @@ where
 pub(super) fn finish_history_task(
     result: Result<Result<(), DaemonError>, tokio::task::JoinError>,
 ) -> Result<(), DaemonError> {
-    result.map_err(|_| {
-        DaemonError::new(
+    match result {
+        Ok(Ok(())) => Ok(()),
+        // Recoverable history-window errors already flushed their correlated
+        // ServiceErrorResponse; keep the live terminal attachment open.
+        Ok(Err(error))
+            if matches!(
+                error.kind(),
+                DomainErrorKind::ResourceExhausted | DomainErrorKind::DeadlineExceeded
+            ) =>
+        {
+            Ok(())
+        }
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(DaemonError::new(
             DomainErrorKind::StoreUnavailable,
             "terminal history worker failed",
-        )
-    })?
+        )),
+    }
 }
 
 async fn flush_attachment_error(
@@ -160,10 +172,18 @@ pub(super) async fn process_attachment_frame(
         }
         WireKind::TerminalHistoryWindowRequest => {
             if !history_tasks.is_empty() {
-                return Err(DaemonError::new(
+                let error = DaemonError::new(
                     DomainErrorKind::ResourceExhausted,
                     "terminal history read already pending",
-                ));
+                );
+                flush_attachment_error(
+                    outbound,
+                    frame.request_id,
+                    &error,
+                    limits.operation_timeout,
+                )
+                .await;
+                return Ok(false);
             }
             let request: v2::TerminalHistoryWindowRequest = frame
                 .decode_message(WireKind::TerminalHistoryWindowRequest)
@@ -253,12 +273,30 @@ pub(super) async fn process_attachment_frame(
                 .try_into()
                 .map_err(protocol_error)?;
             let worker = Arc::clone(attachment);
-            request_context
+            match request_context
                 .run_effect(&server.sessions, deadline, move |_, _| {
                     worker.update_colors_until(request.sequence, base, deadline)
                 })
-                .await?;
-            Ok(false)
+                .await
+            {
+                Ok(()) => Ok(false),
+                // Stale color observation sequences are recoverable per-request
+                // rejections and must not tear down an active attachment.
+                Err(error)
+                    if error.kind() == DomainErrorKind::SessionNotFound
+                        && error.detail() == "stale color observation sequence" =>
+                {
+                    flush_attachment_error(
+                        outbound,
+                        frame.request_id,
+                        &error,
+                        limits.operation_timeout,
+                    )
+                    .await;
+                    Ok(false)
+                }
+                Err(error) => Err(error),
+            }
         }
         WireKind::TerminalResize => {
             let request: v2::TerminalResize = frame
@@ -462,8 +500,12 @@ where
                 }
             }
             effect = next_host_effect(&attachment, &mut effects), if !yield_after_effect => {
-                write_host_effect(&mut writer, attachment.attachment_id(), effect?,
-                    Instant::now() + operation_timeout).await?;
+                let deadline = Instant::now() + operation_timeout;
+                let effect = effect?;
+                request_context
+                    .run_effect(&server.sessions, deadline, |_, _| Ok(()))
+                    .await?;
+                write_host_effect(&mut writer, attachment.attachment_id(), effect, deadline).await?;
                 yield_after_effect = true;
             }
             changed = revisions.changed(), if revisions_open && surface_room => {

@@ -179,7 +179,7 @@ fn fixture_process() {
             });
         }
         "foreground" => {
-            let result = update(
+            let result = block_on(update(
                 &root.join("voytty"),
                 &paths(&root),
                 None,
@@ -189,7 +189,7 @@ fn fixture_process() {
                     Ok(())
                 },
                 |_| {},
-            );
+            ));
 
             fs::write(root.join("foreground-result"), format!("{result:?}"))
                 .expect("result marker");
@@ -595,14 +595,14 @@ fn assert_unchanged(root: &Path, original: &[u8]) {
 }
 
 fn direct_update(root: &Path) -> Result<UpdateResult, DaemonError> {
-    update(
+    block_on(update(
         &root.join("voytty"),
         &paths(root),
         Some("v9.1.0"),
         false,
         |_| panic!("idle update must not prompt"),
         |_| {},
-    )
+    ))
 }
 
 #[test]
@@ -634,7 +634,7 @@ fn cancelled_confirmation_preserves_sessions_and_installation() {
     let root = fixture.root.path();
     hold_session(root);
     let original = fs::read(root.join("voytty")).expect("old binary");
-    let error = update(
+    let error = block_on(update(
         &root.join("voytty"),
         &paths(root),
         None,
@@ -644,7 +644,7 @@ fn cancelled_confirmation_preserves_sessions_and_installation() {
             Err(cancelled())
         },
         |_| {},
-    )
+    ))
     .expect_err("cancel update");
     assert_eq!(error.kind(), DomainErrorKind::Cancelled);
     assert_unchanged(root, &original);
@@ -727,9 +727,23 @@ fn cancelled_stop_and_restart_confirmation_preserves_sessions() {
             Err(cancelled())
         };
         let result = if restarting {
-            restart(&root.join("voytty"), &paths(root), false, confirm, |_| {}).map(|_| ())
+            block_on(restart(
+                &root.join("voytty"),
+                &paths(root),
+                false,
+                confirm,
+                |_| {},
+            ))
+            .map(|_| ())
         } else {
-            stop(&root.join("voytty"), &paths(root), false, confirm, |_| {}).map(|_| ())
+            block_on(stop(
+                &root.join("voytty"),
+                &paths(root),
+                false,
+                confirm,
+                |_| {},
+            ))
+            .map(|_| ())
         };
         assert_eq!(
             result.expect_err("cancel lifecycle command").kind(),
@@ -759,13 +773,13 @@ fn external_restart_reports_actual_stages_and_replacement_readiness() {
         ),
     ] {
         let mut stages = Vec::new();
-        let ready = restart(
+        let ready = block_on(restart(
             &root.join("voytty"),
             &paths(root),
             false,
             |_| panic!("idle restart must not prompt"),
             |stage| stages.push(stage),
-        )
+        ))
         .expect("restart");
         assert_eq!(ready.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(stages, expected);
@@ -860,7 +874,7 @@ fn superseded_updater_cannot_replace_a_newer_activation() {
     let fixture = Fixture::new();
     let root = fixture.root.path();
     let replacement = executable_script(root, true);
-    let error = update(
+    let error = block_on(update(
         &root.join("voytty"),
         &paths(root),
         None,
@@ -875,7 +889,7 @@ fn superseded_updater_cannot_replace_a_newer_activation() {
                     .expect("competing commit");
             }
         },
-    )
+    ))
     .expect_err("stale updater rejected");
     assert_eq!(error.kind(), DomainErrorKind::UpdateRejected);
     assert_eq!(
@@ -910,14 +924,14 @@ fn failed_child_launch_leaves_daemon_and_sessions_untouched() {
     let root = fixture.root.path();
     hold_session(root);
     let original = fs::read(root.join("voytty")).expect("old binary");
-    update(
+    block_on(update(
         &root.join("missing-updater"),
         &paths(root),
         None,
         true,
         |_| panic!("no confirmation"),
         |_| {},
-    )
+    ))
     .expect_err("spawn failure");
     assert_unchanged(root, &original);
 }
@@ -967,14 +981,14 @@ fn yes_approval_ends_sessions_without_reading_input() {
     let fixture = Fixture::new();
     let root = fixture.root.path();
     hold_session(root);
-    let result = update(
+    let result = block_on(update(
         &root.join("voytty"),
         &paths(root),
         None,
         true,
         |_| panic!("-y must not read confirmation"),
         |_| {},
-    )
+    ))
     .expect("approved update");
     assert_eq!(result.ended_session_names, ["retained-work"]);
     assert!(result.daemon_started);
@@ -1019,4 +1033,91 @@ fn preparation_failure_is_persisted_before_update_handoff() {
     );
     assert!(!log.contains("SENTINEL"));
     assert!(!paths(root).socket().exists());
+}
+
+#[test]
+fn async_handoff_channel_and_durable_log_do_not_block_single_threaded_runtime() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use voytty_diagnostics::{Control, Sink};
+
+    // 1. AsyncChannel send/receive timeout & cancellation keep a single-threaded reactor responsive.
+    block_on(async {
+        let (stream, _stalled_peer) = UnixStream::pair().expect("channel pair");
+        let mut channel = AsyncChannel::from_std(stream).expect("async channel");
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&ticks);
+        let ticker = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(10));
+            for _ in 0..8 {
+                interval.tick().await;
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let timed_out =
+            tokio::time::timeout(Duration::from_millis(60), channel.receive::<Request>()).await;
+        assert!(
+            timed_out.is_err(),
+            "receive must be cancellable by Tokio timeout"
+        );
+        assert!(
+            ticks.load(Ordering::SeqCst) >= 2,
+            "single-threaded reactor must keep ticking while AsyncChannel awaits receive"
+        );
+        // After a cancelled receive, reads fail closed while writes remain usable.
+        assert!(channel.receive::<Request>().await.is_err());
+        channel
+            .send(&Event::Accepted)
+            .await
+            .expect("cancelled receive must not poison clean write half");
+        ticker.await.expect("ticker");
+    });
+
+    // 2. Durable Worker::log offloads diagnostics flush off the single-threaded reactor.
+    struct SlowFlushSink;
+    impl Sink for SlowFlushSink {
+        fn append(&self, _: bool, _: &[u8]) -> std::io::Result<()> {
+            std::thread::sleep(Duration::from_millis(120));
+            Ok(())
+        }
+        fn control(&self) -> std::io::Result<Control> {
+            Ok(Control::disabled())
+        }
+    }
+
+    let tmp = tempfile::tempdir().expect("worker fixture");
+    let user_paths = paths(tmp.path());
+    block_on(async {
+        let (stream, _peer) = UnixStream::pair().expect("worker channel");
+        let worker = Worker {
+            channel: AsyncChannel::from_std(stream).expect("async channel"),
+            paths: &user_paths,
+            version: None,
+            log_enabled: true,
+            diagnostics: Recorder::new(Arc::new(SlowFlushSink)).expect("slow sink recorder"),
+            operation: Operation::default(),
+            accepted: false,
+            committed: false,
+        };
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&ticks);
+        let ticker = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(10));
+            for _ in 0..10 {
+                interval.tick().await;
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        worker
+            .log(
+                DiagnosticEvent::new(Kind::UpdateStage).stage(Stage::Committed),
+                true,
+            )
+            .await
+            .expect("durable flush completes");
+        assert!(
+            ticks.load(Ordering::SeqCst) >= 3,
+            "single-threaded reactor must keep ticking during durable diagnostics flush"
+        );
+        ticker.await.expect("ticker");
+    });
 }

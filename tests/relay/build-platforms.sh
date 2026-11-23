@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 relay_context="$repo_root/deploy/relay"
 
 for relay_arch in amd64 arm64; do

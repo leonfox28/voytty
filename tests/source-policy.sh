@@ -28,12 +28,12 @@ if [ -n "$crlf_sources" ]; then
     exit 1
 fi
 
-manifest_files="Cargo.toml $(find crates tools -mindepth 2 -maxdepth 2 -name Cargo.toml -print)"
-if grep -nE '^[[:space:]]*vt100[[:space:]]*=' $manifest_files; then
+set -- Cargo.toml crates/*/Cargo.toml tools/*/Cargo.toml
+if grep -nE '^[[:space:]]*vt100[[:space:]]*=' "$@"; then
     echo "vt100 must not be present in the workspace dependency graph" >&2
     exit 1
 fi
-if grep -niE '^[[:space:]]*([[:alnum:]_-]*ghostty[[:alnum:]_-]*|vte)[[:space:]]*=|git[[:space:]]*=' $manifest_files; then
+if grep -niE '^[[:space:]]*([[:alnum:]_-]*ghostty[[:alnum:]_-]*|vte)[[:space:]]*=|git[[:space:]]*=' "$@"; then
     echo "terminal dependencies must use the pinned official Alacritty crates.io boundary" >&2
     exit 1
 fi

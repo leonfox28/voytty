@@ -431,37 +431,28 @@ impl RemoteServiceHandler for RemoteSessionServiceHandler {
 #[cfg(any(unix, windows))]
 pub(crate) async fn finish_unary<Reader>(
     reader: &mut Reader,
-    mut first: FirstFrame,
+    first: FirstFrame,
 ) -> Result<DecodedFrame, DaemonError>
 where
     Reader: AsyncRead + Unpin,
 {
-    if !first.queued.is_empty() {
+    if !first.queued.is_empty() || first.decoder.buffered_len() > 0 {
         return Err(malformed(
             "one unary connection may contain only one request",
         ));
     }
-    let mut buffer = Zeroizing::new([0_u8; 16 * 1024]);
-    loop {
-        let read = reader
-            .read(&mut *buffer)
-            .await
-            .map_err(|error| daemon_io("finish Session unary request", error))?;
-        if read == 0 {
-            first.decoder.finish().map_err(protocol_error)?;
-            return Ok(first.frame);
-        }
-        if !first
-            .decoder
-            .feed(&buffer[..read])
-            .map_err(protocol_error)?
-            .is_empty()
-        {
-            return Err(malformed(
-                "one unary connection may contain only one request",
-            ));
-        }
+    let mut trailing = Zeroizing::new([0_u8; 1]);
+    let read = reader
+        .read(&mut *trailing)
+        .await
+        .map_err(|error| daemon_io("finish Session unary request", error))?;
+    if read != 0 {
+        return Err(malformed(
+            "one unary connection may contain only one request",
+        ));
     }
+    first.decoder.finish().map_err(protocol_error)?;
+    Ok(first.frame)
 }
 
 /// The single wire adapter around the daemon's transport-independent SessionService.

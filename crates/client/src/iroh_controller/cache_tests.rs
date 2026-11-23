@@ -420,3 +420,21 @@ async fn failed_query_preserves_another_live_stream_until_it_is_released() {
     next.expect("a failed idle connection is retired after the other stream is released");
     assert_eq!(connections, 2);
 }
+
+#[tokio::test]
+async fn open_upload_uses_remote_startup_budget_across_six_second_handshake() {
+    use crate::upload::UploadConnector;
+    let fixture = Fixture::with_handshake_delay(Duration::from_secs(6)).await;
+    let target = ResolvedSessionTarget::device(fixture.remote);
+    let started = Instant::now();
+    let opened = fixture.controller.open_upload(target).await.map(|_| ());
+    let elapsed = started.elapsed();
+    let connections = fixture.connections.load(Ordering::SeqCst);
+    fixture.close().await;
+    opened.expect("cold remote upload open within 15s budget must succeed");
+    assert!(
+        elapsed >= Duration::from_secs(6) && elapsed < Duration::from_secs(15),
+        "cold upload handshake elapsed {elapsed:?}"
+    );
+    assert_eq!(connections, 1);
+}

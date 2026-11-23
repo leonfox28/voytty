@@ -218,9 +218,34 @@ impl Default for DownloadPolicy {
     }
 }
 
+enum FetchRuntime {
+    Handle(tokio::runtime::Handle),
+    Owned(tokio::runtime::Runtime),
+}
+
+impl FetchRuntime {
+    fn current_or_new() -> Result<Self, DistributionError> {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            return Ok(Self::Handle(handle));
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| DistributionError::Fetch)?;
+        Ok(Self::Owned(runtime))
+    }
+
+    fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        match self {
+            Self::Handle(handle) => handle.block_on(future),
+            Self::Owned(runtime) => runtime.block_on(future),
+        }
+    }
+}
+
 struct HttpReleaseFetcher {
     client: reqwest::Client,
-    runtime: tokio::runtime::Runtime,
+    runtime: FetchRuntime,
     policy: DownloadPolicy,
 }
 
@@ -250,13 +275,9 @@ impl HttpReleaseFetcher {
         client: reqwest::Client,
         policy: DownloadPolicy,
     ) -> Result<Self, DistributionError> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|_| DistributionError::Fetch)?;
         Ok(Self {
             client,
-            runtime,
+            runtime: FetchRuntime::current_or_new()?,
             policy,
         })
     }

@@ -697,6 +697,8 @@ impl fmt::Debug for TerminalRequest {
 pub enum CommandOutcome {
     /// Ordinary non-secret command output.
     Text(String),
+    /// Ordinary non-secret command output that must exit non-zero (for example, failing doctor checks).
+    FailedText(String),
     /// The only secret-bearing stdout projection, zeroized after it is written.
     PairTicket(Zeroizing<String>),
     /// Deferred raw-terminal operation containing no attachment or transport owner.
@@ -711,6 +713,11 @@ impl fmt::Debug for CommandOutcome {
                 .field("text", &"[REDACTED]")
                 .field("text_len", &text.len())
                 .finish(),
+            Self::FailedText(text) => formatter
+                .debug_struct("FailedText")
+                .field("text", &"[REDACTED]")
+                .field("text_len", &text.len())
+                .finish(),
             Self::PairTicket(_) => formatter.write_str("PairTicket([REDACTED])"),
             Self::Terminal(request) => formatter.debug_tuple("Terminal").field(request).finish(),
         }
@@ -718,10 +725,16 @@ impl fmt::Debug for CommandOutcome {
 }
 
 impl CommandOutcome {
+    /// Whether this command outcome should exit successfully.
+    #[must_use]
+    pub const fn is_success(&self) -> bool {
+        !matches!(self, Self::FailedText(_))
+    }
+
     /// Extracts ordinary text for deterministic command tests.
     pub fn into_text(self) -> Result<String, CliError> {
         match self {
-            Self::Text(text) => Ok(text),
+            Self::Text(text) | Self::FailedText(text) => Ok(text),
             Self::PairTicket(_) => Err(CliError::Usage(
                 "pair-ticket output must be written through its zeroizing owner".to_owned(),
             )),
@@ -748,7 +761,7 @@ pub async fn execute(
             .await
             .map(CommandOutcome::Text),
         Some(Command::Status) => status(runtime).await.map(CommandOutcome::Text),
-        Some(Command::Doctor) => doctor(runtime).await.map(CommandOutcome::Text),
+        Some(Command::Doctor) => doctor(runtime).await,
         Some(Command::Pair { command }) => pair(runtime, command, interaction).await,
         Some(Command::Device { command }) => device(runtime, command, interaction).await,
         Some(Command::Connect(arguments)) => connect(arguments).await,
@@ -757,7 +770,12 @@ pub async fn execute(
             DaemonCommand::Autostart { command } => Ok(CommandOutcome::Text(match command {
                 AutostartCommand::Enable => runtime.autostart_enable().await?,
                 AutostartCommand::Disable => runtime.autostart_disable().await?,
-                AutostartCommand::Status => runtime.autostart_status()?,
+                AutostartCommand::Status => {
+                    let runtime = runtime.clone();
+                    tokio::task::spawn_blocking(move || runtime.autostart_status())
+                        .await
+                        .map_err(|_| CliError::Io("autostart status task terminated".into()))??
+                }
             })),
             DaemonCommand::Stop(arguments) => stop(runtime, arguments.yes, interaction)
                 .await
@@ -766,7 +784,13 @@ pub async fn execute(
                 .await
                 .map(CommandOutcome::Text),
         },
-        Some(Command::Logs(arguments)) => logs(runtime, arguments).map(CommandOutcome::Text),
+        Some(Command::Logs(arguments)) => {
+            let runtime = runtime.clone();
+            let text = tokio::task::spawn_blocking(move || logs(&runtime, arguments))
+                .await
+                .map_err(|_| CliError::Io("logs command task terminated".into()))??;
+            Ok(CommandOutcome::Text(text))
+        }
         Some(Command::Reset(arguments)) => reset(runtime, arguments, interaction).await,
         Some(Command::Update(arguments)) => update(runtime, arguments, interaction).await,
         Some(Command::Uninstall(arguments)) => uninstall(runtime, arguments, interaction).await,
@@ -1620,17 +1644,25 @@ async fn status(runtime: &LocalRuntime) -> Result<String, CliError> {
     Ok(StatusView::from_observed(runtime.observe().await?).human())
 }
 
-async fn doctor(runtime: &LocalRuntime) -> Result<String, CliError> {
+async fn doctor(runtime: &LocalRuntime) -> Result<CommandOutcome, CliError> {
     let report = runtime.doctor().await;
     let mut output = String::new();
+    let mut failed = false;
     for check in report.checks {
+        if !check.ok {
+            failed = true;
+        }
         let marker = if check.ok { "ok" } else { "error" };
         output.push_str(&format!("[{marker}] {}: {}\n", check.name, check.detail));
     }
     if let Ok(observed) = runtime.observe().await {
         output.push_str(&StatusView::from_observed(observed).diagnostics());
     }
-    Ok(output)
+    if failed {
+        Ok(CommandOutcome::FailedText(output))
+    } else {
+        Ok(CommandOutcome::Text(output))
+    }
 }
 
 async fn stop(
@@ -1748,9 +1780,15 @@ fn logs(runtime: &LocalRuntime, arguments: LogsArgs) -> Result<String, CliError>
     if !output.is_empty() {
         output.push('\n');
     }
+    let filtered = filter.level.is_some()
+        || filter.component.is_some()
+        || filter.session.is_some()
+        || filter.since_ms.is_some();
     if output.is_empty() && arguments.lines > 0 {
         if arguments.json {
             eprintln!("No matching structured logs.");
+        } else if filtered {
+            output.push_str("No matching daemon logs.\n");
         } else {
             output.push_str("No daemon logs yet.\n");
         }

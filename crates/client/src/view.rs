@@ -813,6 +813,7 @@ async fn run_terminal_driver(
     let mut stop_after_pending = false;
     let mut commands_open = true;
     let mut local_takeover_pending = takeover;
+    let mut awaiting_snapshot_ack = false;
     let mut last_state = initial_state;
     let mut diagnostic_state = None;
 
@@ -842,6 +843,7 @@ async fn run_terminal_driver(
                         &mut pending,
                         route,
                         &mut local_takeover_pending,
+                        &mut awaiting_snapshot_ack,
                         &mut last_state,
                         &mut stop_after_pending,
                         &effects,
@@ -865,6 +867,7 @@ async fn run_terminal_driver(
                         &mut pending,
                         route,
                         &mut local_takeover_pending,
+                        &mut awaiting_snapshot_ack,
                         &mut last_state,
                         &effects,
                     ) {
@@ -899,6 +902,7 @@ async fn run_terminal_driver(
                     &mut pending,
                     route,
                     &mut local_takeover_pending,
+                    &mut awaiting_snapshot_ack,
                     &mut last_state,
                     &mut stop_after_pending,
                     &effects,
@@ -934,28 +938,31 @@ async fn apply_terminal_driver_command(
     pending: &mut std::collections::VecDeque<Result<TerminalViewEvent, DaemonError>>,
     route: TerminalViewRoute,
     local_takeover_pending: &mut bool,
+    awaiting_snapshot_ack: &mut bool,
     last_state: &mut TerminalViewTransportState,
     stop_after_pending: &mut bool,
     effects: &TerminalEffectSlot,
 ) -> bool {
     match handle_terminal_driver_command(command, client).await {
         TerminalDriverCommandResult::Continue => false,
-        TerminalDriverCommandResult::SnapshotApplied
+        TerminalDriverCommandResult::SnapshotApplied => {
+            *awaiting_snapshot_ack = false;
             if !client.reconnect_pending()
                 && !*local_takeover_pending
-                && *last_state != TerminalViewTransportState::Active =>
-        {
-            *last_state = TerminalViewTransportState::Active;
-            pending.push_back(Ok(TerminalViewEvent::TransportState(*last_state)));
+                && *last_state != TerminalViewTransportState::Active
+            {
+                *last_state = TerminalViewTransportState::Active;
+                pending.push_back(Ok(TerminalViewEvent::TransportState(*last_state)));
+            }
             false
         }
-        TerminalDriverCommandResult::SnapshotApplied => false,
         TerminalDriverCommandResult::CommandStreamClosed { response } => {
             correlate_terminal_command_closure(
                 client,
                 pending,
                 route,
                 local_takeover_pending,
+                awaiting_snapshot_ack,
                 last_state,
                 response,
                 effects,
@@ -969,11 +976,13 @@ async fn apply_terminal_driver_command(
 }
 
 #[cfg(any(unix, windows))]
+#[allow(clippy::too_many_arguments)]
 async fn correlate_terminal_command_closure(
     client: &mut SessionClient,
     pending: &mut std::collections::VecDeque<Result<TerminalViewEvent, DaemonError>>,
     route: TerminalViewRoute,
     local_takeover_pending: &mut bool,
+    awaiting_snapshot_ack: &mut bool,
     last_state: &mut TerminalViewTransportState,
     response: tokio::sync::oneshot::Sender<Result<(), DaemonError>>,
     effects: &TerminalEffectSlot,
@@ -993,6 +1002,7 @@ async fn correlate_terminal_command_closure(
             pending,
             route,
             local_takeover_pending,
+            awaiting_snapshot_ack,
             last_state,
             effects,
         ) {
@@ -1018,6 +1028,7 @@ fn queue_local_attachment_event(
     pending: &mut std::collections::VecDeque<Result<TerminalViewEvent, DaemonError>>,
     route: TerminalViewRoute,
     local_takeover_pending: &mut bool,
+    awaiting_snapshot_ack: &mut bool,
     last_state: &mut TerminalViewTransportState,
     effects: &TerminalEffectSlot,
 ) -> bool {
@@ -1032,8 +1043,10 @@ fn queue_local_attachment_event(
         }
         Ok(LocalAttachmentEvent::Takeover(_)) if *local_takeover_pending => {
             *local_takeover_pending = false;
-            *last_state = TerminalViewTransportState::Active;
-            pending.push_back(Ok(TerminalViewEvent::TransportState(*last_state)));
+            if !*awaiting_snapshot_ack {
+                *last_state = TerminalViewTransportState::Active;
+                pending.push_back(Ok(TerminalViewEvent::TransportState(*last_state)));
+            }
             false
         }
         Ok(LocalAttachmentEvent::Takeover(_)) => false,
@@ -1052,6 +1065,9 @@ fn queue_local_attachment_event(
                 }
                 Ok(state) if state == *last_state => false,
                 Ok(state) => {
+                    if state == TerminalViewTransportState::Active {
+                        *awaiting_snapshot_ack = false;
+                    }
                     *last_state = state;
                     pending.push_back(Ok(TerminalViewEvent::TransportState(state)));
                     false
@@ -1071,11 +1087,12 @@ fn queue_local_attachment_event(
             if terminal {
                 effects.clear();
             }
-            if local_event_requires_synchronizing(&event)
-                && *last_state != TerminalViewTransportState::Synchronizing
-            {
-                *last_state = TerminalViewTransportState::Synchronizing;
-                pending.push_back(Ok(TerminalViewEvent::TransportState(*last_state)));
+            if local_event_requires_synchronizing(&event) {
+                *awaiting_snapshot_ack = true;
+                if *last_state != TerminalViewTransportState::Synchronizing {
+                    *last_state = TerminalViewTransportState::Synchronizing;
+                    pending.push_back(Ok(TerminalViewEvent::TransportState(*last_state)));
+                }
             }
             match terminal_event_from_local(event, route) {
                 Ok(Some(event)) => pending.push_back(Ok(event)),
@@ -1582,6 +1599,7 @@ mod tests {
 
         let mut pending = VecDeque::new();
         let mut takeover_pending = false;
+        let mut awaiting_snapshot_ack = false;
         let mut last_state = TerminalViewTransportState::Active;
         let (effects, _effect_wakeup) = TerminalEffectSlot::new();
         let (response, received) = tokio::sync::oneshot::channel();
@@ -1590,6 +1608,7 @@ mod tests {
             &mut pending,
             TerminalViewRoute::Local,
             &mut takeover_pending,
+            &mut awaiting_snapshot_ack,
             &mut last_state,
             response,
             &effects,
@@ -1618,6 +1637,7 @@ mod tests {
             &mut eof_pending,
             TerminalViewRoute::Local,
             &mut takeover_pending,
+            &mut awaiting_snapshot_ack,
             &mut last_state,
             response,
             &effects,
@@ -1697,6 +1717,7 @@ mod tests {
         ));
         let mut pending = VecDeque::new();
         let mut takeover = false;
+        let mut awaiting_snapshot_ack = false;
         let mut state = TerminalViewTransportState::Active;
         queue_local_attachment_event(
             Ok(LocalAttachmentEvent::TransportState(
@@ -1708,6 +1729,7 @@ mod tests {
             &mut pending,
             TerminalViewRoute::Remote,
             &mut takeover,
+            &mut awaiting_snapshot_ack,
             &mut state,
             &effects,
         );
@@ -1730,6 +1752,7 @@ mod tests {
             ))
         }));
         let mut takeover_pending = false;
+        let mut awaiting_snapshot_ack = false;
         let mut last_state = TerminalViewTransportState::Active;
         let first =
             TerminalClipboardWrite::new("first".to_owned()).expect("valid first clipboard value");
@@ -1741,6 +1764,7 @@ mod tests {
             &mut pending,
             TerminalViewRoute::Local,
             &mut takeover_pending,
+            &mut awaiting_snapshot_ack,
             &mut last_state,
             &effects,
         ));
@@ -1749,6 +1773,7 @@ mod tests {
             &mut pending,
             TerminalViewRoute::Local,
             &mut takeover_pending,
+            &mut awaiting_snapshot_ack,
             &mut last_state,
             &effects,
         ));
@@ -1778,6 +1803,7 @@ mod tests {
             ));
             let mut pending = VecDeque::new();
             let mut takeover_pending = false;
+            let mut awaiting_snapshot_ack = false;
             let mut last_state = TerminalViewTransportState::Active;
 
             assert_eq!(
@@ -1791,6 +1817,7 @@ mod tests {
                     &mut pending,
                     TerminalViewRoute::Local,
                     &mut takeover_pending,
+                    &mut awaiting_snapshot_ack,
                     &mut last_state,
                     &effects,
                 ),
@@ -1971,6 +1998,7 @@ mod tests {
 
         let mut pending = VecDeque::new();
         let mut takeover_pending = false;
+        let mut awaiting_snapshot_ack = false;
         let mut last_state = TerminalViewTransportState::Active;
         let mut stop_after_pending = false;
         let (effects, _effect_wakeup) = TerminalEffectSlot::new();
@@ -1988,6 +2016,7 @@ mod tests {
                 &mut pending,
                 route,
                 &mut takeover_pending,
+                &mut awaiting_snapshot_ack,
                 &mut last_state,
                 &mut stop_after_pending,
                 &effects,
@@ -2316,6 +2345,7 @@ mod tests {
             ] {
                 let mut pending = VecDeque::new();
                 let mut takeover_pending = false;
+                let mut awaiting_snapshot_ack = false;
                 let mut state = initial;
                 let (effects, _wakeup) = TerminalEffectSlot::new();
                 for event in [
@@ -2327,6 +2357,7 @@ mod tests {
                         &mut pending,
                         route,
                         &mut takeover_pending,
+                        &mut awaiting_snapshot_ack,
                         &mut state,
                         &effects
                     ));
@@ -2369,6 +2400,7 @@ mod tests {
 
         let mut pending = VecDeque::new();
         let mut takeover_pending = false;
+        let mut awaiting_snapshot_ack = false;
         let mut last_state = TerminalViewTransportState::Synchronizing;
         let mut stop_after_pending = false;
         let (effects, _effect_wakeup) = TerminalEffectSlot::new();
@@ -2386,6 +2418,7 @@ mod tests {
                 &mut pending,
                 TerminalViewRoute::Remote,
                 &mut takeover_pending,
+                &mut awaiting_snapshot_ack,
                 &mut last_state,
                 &mut stop_after_pending,
                 &effects,
@@ -2775,5 +2808,65 @@ mod tests {
         assert_eq!(failure.kind(), DomainErrorKind::MalformedFrame);
         drop(writer);
         let _daemon = server.await.expect("receipt test server");
+    }
+
+    #[test]
+    fn takeover_reply_does_not_mark_active_while_a_new_snapshot_awaits_ack() {
+        let mut pending = std::collections::VecDeque::new();
+        let mut local_takeover_pending = true;
+        let mut awaiting_snapshot_ack = false;
+        let mut last_state = TerminalViewTransportState::Synchronizing;
+        let (effects, _wake) = TerminalEffectSlot::new();
+        let attachment_id = AttachmentId::from_array([0x51; 16]);
+        let session_id = SessionId::from_array([0x52; 16]);
+
+        assert!(!queue_local_attachment_event(
+            Ok(LocalAttachmentEvent::SyncRequired(
+                v2::TerminalSyncRequired {
+                    attachment_id: Some(attachment_id.into()),
+                    latest_revision: 5,
+                },
+            )),
+            &mut pending,
+            TerminalViewRoute::Local,
+            &mut local_takeover_pending,
+            &mut awaiting_snapshot_ack,
+            &mut last_state,
+            &effects,
+        ));
+        assert!(awaiting_snapshot_ack);
+        assert_eq!(last_state, TerminalViewTransportState::Synchronizing);
+
+        assert!(!queue_local_attachment_event(
+            Ok(LocalAttachmentEvent::Takeover(
+                crate::model::SessionSummary {
+                    session_id,
+                    name: voytty_core::SessionName::new("takeover").expect("name"),
+                    revision: Revision::new(5),
+                    has_controller: true,
+                    working_directory: std::path::PathBuf::from("/tmp"),
+                    viewport: TerminalSize::new(24, 80),
+                },
+            )),
+            &mut pending,
+            TerminalViewRoute::Local,
+            &mut local_takeover_pending,
+            &mut awaiting_snapshot_ack,
+            &mut last_state,
+            &effects,
+        ));
+        assert!(!local_takeover_pending);
+        assert!(awaiting_snapshot_ack);
+        assert_eq!(
+            last_state,
+            TerminalViewTransportState::Synchronizing,
+            "unconfirmed sync snapshot must keep the view synchronizing until SnapshotApplied"
+        );
+        assert!(!pending.iter().any(|event| matches!(
+            event,
+            Ok(TerminalViewEvent::TransportState(
+                TerminalViewTransportState::Active
+            ))
+        )));
     }
 }

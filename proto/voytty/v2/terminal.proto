@@ -64,12 +64,14 @@ message TerminalNotificationOsc777 {
 }
 
 message TerminalInput {
+  // Reserved for wire compatibility; stream ordering owns input delivery and the host ignores this field.
   OperationId operation_id = 1;
   AttachmentId attachment_id = 2;
   bytes bytes = 3;
 }
 
 message TerminalResize {
+  // Reserved for wire compatibility; resize is latest-wins per attachment stream and the host ignores this field.
   OperationId operation_id = 1;
   AttachmentId attachment_id = 2;
   uint32 rows = 3;

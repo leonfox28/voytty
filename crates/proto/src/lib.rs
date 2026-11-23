@@ -971,7 +971,7 @@ impl FrameDecoder {
                     if length > self.maximum_body_bytes {
                         return Err(ProtocolError::FrameTooLarge(length));
                     }
-                    self.body = Vec::with_capacity(length);
+                    self.body = Vec::with_capacity(length.min(INITIAL_FRAME_BODY_CAPACITY));
                     self.expected_body = Some(length);
                 } else if self.prefix_len == MAX_VARINT_BYTES {
                     return Err(ProtocolError::MalformedVarint);
@@ -1008,6 +1008,8 @@ impl FrameDecoder {
     }
 }
 
+const INITIAL_FRAME_BODY_CAPACITY: usize = 64 * 1024;
+
 /// Encodes one concrete protobuf message into the bounded stream format.
 pub fn encode_message<M: Message>(
     kind: WireKind,
@@ -1023,10 +1025,13 @@ pub fn encode_payload(
     kind: WireKind,
     request_id: u64,
     deadline_ms: u32,
-    payload: Vec<u8>,
+    mut payload: Vec<u8>,
 ) -> Result<Vec<u8>, ProtocolError> {
-    validate_payload_limit(kind, payload.len())?;
-    let wire = v2::WireFrame {
+    if let Err(error) = validate_payload_limit(kind, payload.len()) {
+        payload.zeroize();
+        return Err(error);
+    }
+    let mut wire = v2::WireFrame {
         payload_encoding: 0,
         wire_major: WIRE_MAJOR,
         kind: kind as u32,
@@ -1034,7 +1039,8 @@ pub fn encode_payload(
         request_id,
         deadline_ms,
     };
-    let body = wire.encode_to_vec();
+    let body = Zeroizing::new(wire.encode_to_vec());
+    wire.payload.zeroize();
     if body.len() > MAX_FRAME_BYTES {
         return Err(ProtocolError::FrameTooLarge(body.len()));
     }
@@ -1051,18 +1057,31 @@ fn decode_wire_frame(
 ) -> Result<DecodedFrame, ProtocolError> {
     let mut wire = v2::WireFrame::decode(body).map_err(ProtocolError::MalformedProtobuf)?;
     if wire.wire_major != WIRE_MAJOR {
+        wire.payload.zeroize();
         return Err(ProtocolError::WireMajorMismatch {
             expected: WIRE_MAJOR,
             actual: wire.wire_major,
         });
     }
-    let kind = WireKind::try_from(wire.kind)?;
+    let kind = match WireKind::try_from(wire.kind) {
+        Ok(kind) => kind,
+        Err(error) => {
+            wire.payload.zeroize();
+            return Err(error);
+        }
+    };
     if !allow_compression && wire.payload_encoding != 0 {
         wire.payload.zeroize();
         return Err(ProtocolError::InvalidPayloadEncoding);
     }
-    compression::decode_payload(&mut wire, kind, maximum_body_bytes)?;
-    validate_payload_limit(kind, wire.payload.len())?;
+    if let Err(error) = compression::decode_payload(&mut wire, kind, maximum_body_bytes) {
+        wire.payload.zeroize();
+        return Err(error);
+    }
+    if let Err(error) = validate_payload_limit(kind, wire.payload.len()) {
+        wire.payload.zeroize();
+        return Err(error);
+    }
     Ok(DecodedFrame {
         kind,
         request_id: wire.request_id,
@@ -3867,6 +3886,16 @@ mod tests {
             assert!(WireKind::try_from(kind).is_err());
             assert!(v2::MessageKind::try_from(kind as i32).is_err());
         }
+    }
+
+    #[test]
+    fn frame_decoder_caps_initial_body_allocation_before_bytes_arrive() {
+        let mut decoder = FrameDecoder::new();
+        let mut prefix = Vec::new();
+        encode_varint(MAX_FRAME_BYTES as u64, &mut prefix);
+        assert!(decoder.feed(&prefix).expect("valid prefix").is_empty());
+        assert_eq!(decoder.expected_body, Some(MAX_FRAME_BYTES));
+        assert!(decoder.body.capacity() <= INITIAL_FRAME_BODY_CAPACITY);
     }
 }
 

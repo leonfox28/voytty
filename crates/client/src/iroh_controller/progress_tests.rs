@@ -39,15 +39,18 @@ async fn stream_progress_distinguishes_partial_prefix_body_and_complete_frame() 
     .expect("in-memory QUIC fixture");
     let outgoing = outgoing.expect("in-memory QUIC fixture");
     let (send, recv) = outgoing.open_bi().await.expect("in-memory QUIC fixture");
+    let path_events = Some(outgoing.path_events());
     let mut stream = IrohSessionIo {
         diagnostic: voytty_diagnostics::Operation::default(),
         connection: outgoing,
+        path_events,
         last_stream_sample: None,
         read_bytes: 0,
         decoded_frames: 0,
         last_path: None,
         send,
         recv,
+        read_buffer: Zeroizing::new(vec![0_u8; 16 * 1024]),
         decoder: FrameDecoder::new(),
         queued: VecDeque::new(),
         _permit: Arc::new(Semaphore::new(1))
@@ -167,7 +170,90 @@ async fn stream_progress_distinguishes_partial_prefix_body_and_complete_frame() 
         total,
         "closed QUIC receive state cannot turn known consumed bytes into zero"
     );
+    assert!(
+        stream.read_buffer.iter().all(|&byte| byte == 0),
+        "reused read buffer must be zeroed immediately after decoding"
+    );
     drop(host_send);
+    drop(stream);
+    tokio::join!(client.close(), host.close());
+}
+
+#[tokio::test]
+async fn idle_stream_read_emits_initial_path_once_and_does_not_reemit_without_changes() {
+    let network = iroh::test_utils::test_transport::TestNetwork::new();
+    let builder = |key: SecretKey| {
+        Endpoint::builder(presets::Minimal)
+            .clear_ip_transports()
+            .clear_relay_transports()
+            .add_custom_transport(
+                network
+                    .create_transport(key.public())
+                    .expect("in-memory QUIC fixture"),
+            )
+            .address_lookup(network.address_lookup())
+            .secret_key(key)
+    };
+    let host = builder(SecretKey::generate())
+        .alpns(vec![b"idle-path".to_vec()])
+        .bind()
+        .await
+        .expect("in-memory QUIC fixture");
+    let client = builder(SecretKey::generate())
+        .bind()
+        .await
+        .expect("in-memory QUIC fixture");
+    let (outgoing, incoming) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(client.connect(host.id(), b"idle-path"), async {
+            host.accept()
+                .await
+                .expect("in-memory QUIC fixture")
+                .await
+                .expect("in-memory QUIC fixture")
+        })
+    })
+    .await
+    .expect("in-memory QUIC fixture");
+    let outgoing = outgoing.expect("in-memory QUIC fixture");
+    let (send, recv) = outgoing.open_bi().await.expect("in-memory QUIC fixture");
+    let path_events = Some(outgoing.path_events());
+    let mut stream = IrohSessionIo {
+        diagnostic: voytty_diagnostics::Operation::default(),
+        connection: outgoing,
+        path_events,
+        last_stream_sample: None,
+        read_bytes: 0,
+        decoded_frames: 0,
+        last_path: None,
+        send,
+        recv,
+        read_buffer: Zeroizing::new(vec![0_u8; 16 * 1024]),
+        decoder: FrameDecoder::new(),
+        queued: VecDeque::new(),
+        _permit: Arc::new(Semaphore::new(1))
+            .acquire_owned()
+            .await
+            .expect("in-memory QUIC fixture"),
+    };
+    stream.write(b"ping").await.expect("open stream");
+    let (_host_send, mut host_recv) = incoming.accept_bi().await.expect("accept stream");
+    let mut ping = [0_u8; 4];
+    host_recv.read_exact(&mut ping).await.expect("read ping");
+
+    let first = tokio::time::timeout(Duration::from_secs(2), stream.read())
+        .await
+        .expect("initial path item")
+        .expect("path item");
+    assert!(matches!(first, AttachmentTransportItem::Path(_)));
+
+    // Staying quiet for > 1 s with unchanged path/RTT must not spuriously emit path items.
+    let quiet = tokio::time::timeout(Duration::from_millis(1200), stream.read()).await;
+    assert!(
+        quiet.is_err(),
+        "quiet stream must not emit spurious path updates"
+    );
+
+    drop(_host_send);
     drop(stream);
     tokio::join!(client.close(), host.close());
 }

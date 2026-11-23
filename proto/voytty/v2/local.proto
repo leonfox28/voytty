@@ -53,6 +53,7 @@ message LocalValidateSetupResponse {
 
 message LocalStopRequest {
   bool force = 1;
+  // Reserved for wire compatibility; the local daemon currently ignores this field.
   OperationId operation_id = 2;
 }
 

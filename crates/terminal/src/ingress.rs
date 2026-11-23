@@ -728,7 +728,7 @@ impl TerminalIngressPolicy {
                 output.push_event(TerminalSideEvent::TitleChanged { title, truncated });
             }
             b"1" => {
-                let (icon_name, truncated) = bounded_text(payload);
+                let (icon_name, truncated) = bounded_application_title(payload);
                 output.push_event(TerminalSideEvent::IconNameChanged {
                     icon_name,
                     truncated,
@@ -883,12 +883,6 @@ fn bounded_application_title(bytes: &[u8]) -> (String, bool) {
     (title, false)
 }
 
-fn bounded_text(bytes: &[u8]) -> (String, bool) {
-    let truncated = bytes.len() > MAX_TITLE_BYTES;
-    let retained = bytes.get(..MAX_TITLE_BYTES).unwrap_or(bytes);
-    (String::from_utf8_lossy(retained).into_owned(), truncated)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -898,5 +892,30 @@ mod tests {
         assert_eq!(parse_parameters(b"?6"), (Some(b'?'), Some(vec![6])));
         assert_eq!(parse_parameters(b"8;24;80"), (None, Some(vec![8, 24, 80])));
         assert_eq!(parse_parameters(b"38:2:1:2:3"), (None, None));
+    }
+
+    #[test]
+    fn osc_1_filters_control_characters_and_truncates_on_utf8_boundaries() {
+        let mut model =
+            crate::TerminalModel::new(TerminalSize::new(4, 20), 16).expect("valid model");
+        let mut payload = Vec::from("\x1b]1;\x01ok\x7f");
+        payload.extend_from_slice("界".repeat(MAX_TITLE_BYTES / 3 + 2).as_bytes());
+        payload.push(0x07);
+        let update = model.ingest(&payload).expect("osc 1 ingests cleanly");
+        let Some(TerminalSideEvent::IconNameChanged {
+            icon_name,
+            truncated,
+        }) = update
+            .events
+            .into_iter()
+            .find(|event| matches!(event, TerminalSideEvent::IconNameChanged { .. }))
+        else {
+            panic!("expected IconNameChanged event");
+        };
+        assert!(truncated);
+        assert!(icon_name.len() <= MAX_TITLE_BYTES);
+        assert!(icon_name.starts_with("ok界"));
+        assert!(!icon_name.chars().any(char::is_control));
+        assert!(!icon_name.contains('\u{FFFD}'));
     }
 }

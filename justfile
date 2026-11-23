@@ -58,8 +58,9 @@ ci-policy:
     sh tests/release/candidate-fixture.sh
     PYTHONDONTWRITEBYTECODE=1 python3 tests/release/recover_draft_test.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/release/resume_signed_test.py
-    shellcheck -s sh install/install.sh tests/release/*.sh tests/ci/*.sh tests/secret-scan*.sh tests/terminal-dependency-policy.sh $(find tools/ci tools/release -type f -name '*.sh' -print)
-    sh tools/ci/check-python-syntax.sh tests/ci/*.py tools/ci/*.py tests/release/https_fixture.py tests/release/https_fixture_bind_test.py tests/release/installer_test.py tests/release/installer_download_test.py tools/release/recover-draft.py tests/release/recover_draft_test.py tools/release/resume-signed.py tests/release/resume_signed_test.py
+    shellcheck -s sh install/install.sh tests/release/*.sh tests/ci/*.sh tests/*.sh $(find tools/ci tools/release -type f -name '*.sh' -print)
+    shellcheck -s sh -x -P SCRIPTDIR deploy/relay/*.sh tests/relay/*.sh
+    sh tools/ci/check-python-syntax.sh tools/licensing.py tests/foundation/terminal-colors.py tests/ci/*.py tools/ci/*.py tests/release/https_fixture.py tests/release/https_fixture_bind_test.py tests/release/installer_test.py tests/release/installer_download_test.py tools/release/recover-draft.py tests/release/recover_draft_test.py tools/release/resume-signed.py tests/release/resume_signed_test.py
 
 # Bootstrap, platform selection, download bounds, and install-path regressions.
 installer-check:

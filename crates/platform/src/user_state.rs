@@ -54,8 +54,8 @@ impl UserPaths {
     pub fn for_account(account: &EffectiveAccount) -> Self {
         let state_root = account.home().join(".voytty");
         #[cfg(unix)]
-        let runtime_dir =
-            runtime_candidate(account.uid()).unwrap_or_else(|| runtime_fallback(account.uid()));
+        let runtime_dir = runtime_candidate(account.uid())
+            .unwrap_or_else(|| runtime_fallback(account.home(), account.uid()));
         #[cfg(not(unix))]
         let runtime_dir = account.home().join(".voytty-run");
         Self::from_roots(
@@ -915,6 +915,24 @@ fn atomic_write_inner(
     }
     drop(file);
 
+    #[cfg(unix)]
+    if !replace {
+        let linked = fs::hard_link(&temporary, path);
+        let _ = fs::remove_file(&temporary);
+        linked.map_err(|error| {
+            if error.kind() == io::ErrorKind::AlreadyExists {
+                PathError::Io {
+                    path: path.to_path_buf(),
+                    detail: "managed file already exists".to_owned(),
+                }
+            } else {
+                io_error(path, error)
+            }
+        })?;
+        return sync_directory(parent);
+    }
+
+    #[cfg(not(unix))]
     if !replace && fs::symlink_metadata(path).is_ok() {
         let _ = fs::remove_file(&temporary);
         return Err(PathError::Io {
@@ -1007,9 +1025,18 @@ fn create_new_executable(path: &Path) -> Result<File, PathError> {
             .mode(EXECUTABLE_MODE)
             .custom_flags(nix::libc::O_NOFOLLOW);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
     let file = options.open(path).map_err(|error| io_error(path, error))?;
     #[cfg(windows)]
-    crate::windows_security::protect_new_file(path).map_err(|error| io_error(path, error))?;
+    if let Err(error) = crate::windows_security::protect_new_file(path) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(io_error(path, error));
+    }
     Ok(file)
 }
 
@@ -1207,8 +1234,15 @@ fn runtime_candidate(uid: u32) -> Option<PathBuf> {
 }
 
 #[cfg(unix)]
-fn runtime_fallback(uid: u32) -> PathBuf {
-    PathBuf::from(format!("/tmp/voytty-{uid}"))
+fn runtime_fallback(home: &Path, uid: u32) -> PathBuf {
+    let private = home.join(".voytty-run");
+    if home.is_absolute()
+        && socket_path_bytes(&private.join("daemon.sock")) <= MAX_SOCKET_PATH_BYTES
+    {
+        private
+    } else {
+        PathBuf::from(format!("/tmp/voytty-{uid}"))
+    }
 }
 
 #[cfg(unix)]
@@ -1819,8 +1853,14 @@ mod tests {
 
         let temporary = tempfile::tempdir().expect("temporary root");
         let uid = Uid::effective().as_raw();
+        let short_home = PathBuf::from("/home/u");
         assert_eq!(
-            runtime_fallback(uid),
+            runtime_fallback(&short_home, uid),
+            short_home.join(".voytty-run")
+        );
+        let long_home = PathBuf::from(format!("/{}", "h".repeat(MAX_SOCKET_PATH_BYTES)));
+        assert_eq!(
+            runtime_fallback(&long_home, uid),
             PathBuf::from(format!("/tmp/voytty-{uid}"))
         );
 

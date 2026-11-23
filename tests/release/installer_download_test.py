@@ -53,6 +53,16 @@ keyUsage = critical,digitalSignature,keyEncipherment,keyCertSign
                 elif self.path == '/missing':
                     self.send_response(404)
                     body = b'not found'
+                elif self.path == '/chunked-oversize':
+                    self.send_response(200)
+                    self.send_header('Transfer-Encoding', 'chunked')
+                    self.end_headers()
+                    chunk = b'x' * 2048
+                    try:
+                        self.wfile.write(f'{len(chunk):x}\r\n'.encode('ascii') + chunk + b'\r\n0\r\n\r\n')
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                    return
                 elif self.path == '/retry' and cls.calls.count('/retry') == 1:
                     self.send_response(503)
                     body = b'failed attempt'
@@ -107,12 +117,36 @@ keyUsage = critical,digitalSignature,keyEncipherment,keyCertSign
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(output.read_bytes(), b'verified download')
                     self.assertEqual(len(self.calls), 2)
-            for endpoint in ('http', 'missing', 'oversize'):
+            for endpoint in ('http', 'missing', 'oversize', 'chunked-oversize'):
                 with self.subTest(stage=stage, endpoint=endpoint):
                     result, _ = self.execute(stage, endpoint)
                     self.assertNotEqual(result.returncode, 0)
                     self.assertEqual(self.calls, ['/' + endpoint])
                     self.assertIn('Download failed:', result.stderr)
+
+    def test_redirected_stderr_log_exceeding_ulimit_does_not_trigger_sigxfsz(self):
+        for stage in ('install.sh', 'versioned.sh.in'):
+            with self.subTest(stage=stage):
+                self.calls.clear()
+                source = (ROOT / 'install' / stage).read_text()
+                start = source.index('download() {')
+                end = source.index('\n}', start) + 2
+                script = source[start:end] + '\ndownload "$1" "$2" "$3"\n'
+                harness = self.root / f'download-{stage}.sh'
+                harness.write_text(script)
+                output = self.root / f'output-{stage}'
+                stderr_log = self.root / f'stderr-{stage}.log'
+                stderr_log.write_bytes(b'L' * 4096)
+                with stderr_log.open('ab') as log_file:
+                    result = subprocess.run(
+                        ['/bin/sh', '-eu', str(harness),
+                         f'https://127.0.0.1:{self.server.server_port}/missing',
+                         str(output), '64'],
+                        env=self.env, stdout=subprocess.PIPE, stderr=log_file, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                log_text = stderr_log.read_text(errors='replace')
+                self.assertIn('Download failed:', log_text)
+                self.assertIn('HTTP 404, curl status 22', log_text)
 
 
 if __name__ == '__main__':

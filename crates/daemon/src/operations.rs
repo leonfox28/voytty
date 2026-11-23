@@ -29,7 +29,7 @@ use crate::device_directory::ResolvedSessionTarget;
 use crate::error::DaemonError;
 #[cfg(any(unix, windows))]
 use crate::lifecycle::acquire_lifecycle_lock;
-use crate::lifecycle::{DaemonLauncher, probe_readiness};
+use crate::lifecycle::{DaemonLauncher, probe_readiness, run_blocking};
 use crate::pairing::PairTicketText;
 use crate::service::{DaemonReadiness, DaemonStatus, SessionImpact};
 
@@ -342,13 +342,13 @@ fn require_update_daemon_compatible(
     Ok(())
 }
 
-fn require_interruption_approval(
+async fn require_interruption_approval(
     impact: &SessionImpact,
     approved: &mut bool,
-    confirm: &mut impl FnMut(&SessionImpact) -> Result<(), DaemonError>,
+    confirm: &mut impl AsyncFnMut(&SessionImpact) -> Result<(), DaemonError>,
 ) -> Result<(), DaemonError> {
     if !*approved && (impact.interruption_required || impact.active_session_count > 0) {
-        confirm(impact)?;
+        confirm(impact).await?;
         *approved = true;
     }
     Ok(())
@@ -369,14 +369,14 @@ async fn finish_update_startup<
 >(
     observed: Result<ObservedState, DaemonError>,
     installed: &voytty_core::release::ReleaseManifest,
-    progress: &mut impl FnMut(LifecycleStage),
+    progress: &mut impl AsyncFnMut(LifecycleStage),
     ensure: impl FnOnce() -> F,
 ) -> Result<bool, DaemonError> {
     let result = async {
         match observed? {
             ObservedState::NotConfigured => Ok(false),
             ObservedState::Running(_) | ObservedState::ConfiguredStopped(_) => {
-                progress(LifecycleStage::Starting);
+                progress(LifecycleStage::Starting).await;
                 let ready = ensure().await?;
                 if ready.version != installed.version
                     || ready.protocol.wire_major != installed.wire_major
@@ -507,13 +507,23 @@ impl LocalRuntime {
     pub async fn autostart_enable(&self) -> Result<String, DaemonError> {
         #[cfg(any(unix, windows))]
         {
-            let owner = self.autostart_owner()?;
-            crate::bootstrap::validate_committed_setup(&self.paths)?;
+            let check_paths = self.paths.clone();
+            let owner = run_blocking(move || {
+                let owner = voytty_platform::autostart::Autostart::current(&check_paths).map_err(
+                    |detail| DaemonError::new(DomainErrorKind::UnsupportedPlatform, detail),
+                )?;
+                crate::bootstrap::validate_committed_setup(&check_paths)?;
+                Ok(owner)
+            })
+            .await?;
             let _lock = acquire_lifecycle_lock(&self.paths, Instant::now()).await?;
-            crate::bootstrap::validate_committed_setup(&self.paths)?;
-            owner
-                .enable(self.launcher.executable())
-                .map_err(autostart_error)?;
+            let paths = self.paths.clone();
+            let executable = self.launcher.executable().to_path_buf();
+            run_blocking(move || {
+                crate::bootstrap::validate_committed_setup(&paths)?;
+                owner.enable(&executable).map_err(autostart_error)
+            })
+            .await?;
             Ok(
                 "Daemon autostart enabled for future logins. The current daemon is unchanged.\n"
                     .into(),
@@ -527,14 +537,22 @@ impl LocalRuntime {
     pub async fn autostart_disable(&self) -> Result<String, DaemonError> {
         #[cfg(any(unix, windows))]
         {
-            let owner = self.autostart_owner()?;
-            // Do not create state on an unconfigured account merely to disable.
-            let _lock = if managed_root_exists(&self.paths)? {
+            let check_paths = self.paths.clone();
+            let (owner, root_exists) = run_blocking(move || {
+                let owner = voytty_platform::autostart::Autostart::current(&check_paths).map_err(
+                    |detail| DaemonError::new(DomainErrorKind::UnsupportedPlatform, detail),
+                )?;
+                // Do not create state on an unconfigured account merely to disable.
+                let root_exists = managed_root_exists(&check_paths)?;
+                Ok((owner, root_exists))
+            })
+            .await?;
+            let _lock = if root_exists {
                 Some(acquire_lifecycle_lock(&self.paths, Instant::now()).await?)
             } else {
                 None
             };
-            owner.disable().map_err(autostart_error)?;
+            run_blocking(move || owner.disable().map_err(autostart_error)).await?;
             Ok(
                 "Daemon autostart disabled. The current daemon and Sessions are unchanged.\n"
                     .into(),
@@ -565,15 +583,6 @@ impl LocalRuntime {
     fn autostart_owner(&self) -> Result<voytty_platform::autostart::Autostart, DaemonError> {
         voytty_platform::autostart::Autostart::current(&self.paths)
             .map_err(|detail| DaemonError::new(DomainErrorKind::UnsupportedPlatform, detail))
-    }
-
-    #[cfg(any(unix, windows))]
-    fn remove_autostart(&self) -> Result<(), DaemonError> {
-        // Unsupported hosts cannot have a native registration created by voytty.
-        if let Some(owner) = voytty_platform::autostart::Autostart::for_cleanup(&self.paths) {
-            owner.remove_after_stop().map_err(autostart_error)?;
-        }
-        Ok(())
     }
 
     /// Reads saved setup preferences without probing or starting a daemon or creating state.
@@ -612,17 +621,22 @@ impl LocalRuntime {
     ) -> Result<UpdateResult, DaemonError> {
         #[cfg(any(unix, windows))]
         {
-            let executable = self.launcher.executable();
-            crate::distribution::validate_managed_executable(executable, self.paths.uid())?;
+            let executable = self.launcher.executable().to_path_buf();
+            let uid = self.paths.uid();
+            run_blocking(move || {
+                crate::distribution::validate_managed_executable(&executable, uid)
+            })
+            .await?;
             crate::distribution::ReleaseSelection::parse(exact_tag)?;
             crate::handoff::update(
-                executable,
+                self.launcher.executable(),
                 &self.paths,
                 exact_tag,
                 approved,
                 confirm,
                 progress,
             )
+            .await
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -657,7 +671,7 @@ impl LocalRuntime {
         let running = self.running_impact().await?;
         self.hand_off_and_stop(running, approved, None, interaction)
             .await?;
-        interaction.progress(LifecycleStage::Starting);
+        interaction.progress(LifecycleStage::Starting).await;
         self.ensure().await
     }
 
@@ -668,9 +682,9 @@ impl LocalRuntime {
         approved: bool,
         interaction: &mut impl crate::handoff::HandoffInteraction,
     ) -> Result<UpdateResult, DaemonError> {
-        let executable = self.launcher.executable();
-        let _installation = self.lock_installation(DomainErrorKind::UpdateRejected)?;
-        crate::distribution::verify_updater_executable(executable)?;
+        let _installation = self
+            .lock_installation_and_verify_updater(DomainErrorKind::UpdateRejected)
+            .await?;
         let client = LocalClient::new(self.paths.socket());
         let running = match client.status().await {
             Ok(status) => {
@@ -689,7 +703,8 @@ impl LocalRuntime {
             .await?
             .map_or_else(Vec::new, |impact| impact.active_session_names);
 
-        let state_present = managed_root_exists(&self.paths)?;
+        let state_paths = self.paths.clone();
+        let state_present = run_blocking(move || managed_root_exists(&state_paths)).await?;
         let lifecycle = if state_present {
             let lock = acquire_lifecycle_lock(&self.paths, Instant::now()).await?;
             if probe_readiness(&self.paths).await?.is_some() {
@@ -698,63 +713,74 @@ impl LocalRuntime {
                     "daemon restarted while update was waiting for lifecycle ownership",
                 ));
             }
-            ensure_daemon_ownership_released(&self.paths)?;
+            let release_paths = self.paths.clone();
+            run_blocking(move || ensure_daemon_ownership_released(&release_paths)).await?;
             Some(lock)
         } else {
             None
         };
 
-        crate::distribution::verify_updater_executable(executable)?;
-        interaction.progress(LifecycleStage::Activating);
-        let mut source = fs::File::open(prepared.candidate()).map_err(|_| {
-            DaemonError::new(
-                DomainErrorKind::ReleaseArtifactInvalid,
-                "verified update candidate became unavailable before activation",
-            )
-        })?;
-        let activation = voytty_platform::user_state::activate_verified_executable(
-            executable,
-            self.paths.uid(),
-            |output| std::io::copy(&mut source, output).map(|_| ()),
-            |staged| {
-                crate::distribution::verify_update_candidate(staged, prepared.manifest())
-                    .map_err(std::io::Error::other)
-            },
-        )
-        .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?;
-
-        let post_activation =
-            crate::distribution::verify_update_candidate(executable, prepared.manifest()).and_then(
-                |()| {
-                    if state_present {
-                        crate::distribution::write_install_metadata(
-                            &self.paths,
-                            executable,
-                            Some(prepared.manifest()),
-                        )?;
-                    }
-                    Ok(())
-                },
-            );
-        if let Err(error) = post_activation {
-            activation.rollback().map_err(|rollback| {
+        let verify_executable = self.launcher.executable().to_path_buf();
+        run_blocking(move || crate::distribution::verify_updater_executable(&verify_executable))
+            .await?;
+        interaction.progress(LifecycleStage::Activating).await;
+        let activate_executable = self.launcher.executable().to_path_buf();
+        let activate_paths = self.paths.clone();
+        let candidate_path = prepared.candidate().to_path_buf();
+        let manifest = prepared.manifest().clone();
+        run_blocking(move || {
+            let mut source = fs::File::open(&candidate_path).map_err(|_| {
                 DaemonError::new(
-                    DomainErrorKind::PathUnsafe,
-                    format!("update activation failed and rollback could not complete: {rollback}"),
+                    DomainErrorKind::ReleaseArtifactInvalid,
+                    "verified update candidate became unavailable before activation",
                 )
             })?;
-            return Err(error);
-        }
-        activation
-            .commit()
+            let activation = voytty_platform::user_state::activate_verified_executable(
+                &activate_executable,
+                activate_paths.uid(),
+                |output| std::io::copy(&mut source, output).map(|_| ()),
+                |staged| {
+                    crate::distribution::verify_update_candidate(staged, &manifest)
+                        .map_err(std::io::Error::other)
+                },
+            )
             .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?;
+
+            let post_activation =
+                crate::distribution::verify_update_candidate(&activate_executable, &manifest)
+                    .and_then(|()| {
+                        if state_present {
+                            crate::distribution::write_install_metadata(
+                                &activate_paths,
+                                &activate_executable,
+                                Some(&manifest),
+                            )?;
+                        }
+                        Ok(())
+                    });
+            if let Err(error) = post_activation {
+                activation.rollback().map_err(|rollback| {
+                    DaemonError::new(
+                        DomainErrorKind::PathUnsafe,
+                        format!(
+                            "update activation failed and rollback could not complete: {rollback}"
+                        ),
+                    )
+                })?;
+                return Err(error);
+            }
+            activation
+                .commit()
+                .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))
+        })
+        .await?;
         drop(lifecycle);
-        interaction.committed();
+        interaction.committed().await;
 
         let daemon_started = finish_update_startup(
             self.observe().await,
             prepared.manifest(),
-            &mut |stage| interaction.progress(stage),
+            &mut async |stage| interaction.progress(stage).await,
             || self.ensure(),
         )
         .await?;
@@ -768,10 +794,10 @@ impl LocalRuntime {
 
     /// Observes uninstall impact without stopping, spawning, or deleting anything.
     pub async fn uninstall_preflight(&self) -> Result<UninstallPreflight, DaemonError> {
-        crate::distribution::validate_managed_executable(
-            self.launcher.executable(),
-            self.paths.uid(),
-        )?;
+        let executable = self.launcher.executable().to_path_buf();
+        let uid = self.paths.uid();
+        run_blocking(move || crate::distribution::validate_managed_executable(&executable, uid))
+            .await?;
         let build = voytty_core::BuildIdentity::current();
         Ok(UninstallPreflight {
             identity: self.identity_reset_preflight().await?,
@@ -813,13 +839,17 @@ impl LocalRuntime {
         match LocalClient::new(self.paths.socket()).status().await {
             Ok(status) => Ok(ObservedState::Running(status)),
             Err(error) if error.kind() == DomainErrorKind::DaemonStopped => {
-                match crate::bootstrap::validate_committed_setup(&self.paths) {
-                    Ok(setup) => Ok(ObservedState::ConfiguredStopped(setup)),
-                    Err(error) if error.kind() == DomainErrorKind::NotSetup => {
-                        Ok(ObservedState::NotConfigured)
-                    }
-                    Err(error) => Err(error),
-                }
+                let paths = self.paths.clone();
+                run_blocking(
+                    move || match crate::bootstrap::validate_committed_setup(&paths) {
+                        Ok(setup) => Ok(ObservedState::ConfiguredStopped(setup)),
+                        Err(error) if error.kind() == DomainErrorKind::NotSetup => {
+                            Ok(ObservedState::NotConfigured)
+                        }
+                        Err(error) => Err(error),
+                    },
+                )
+                .await
             }
             Err(error) => Err(error),
         }
@@ -1157,12 +1187,17 @@ impl LocalRuntime {
                 active_session_names: Vec::new(),
             }),
             ObservedState::NotConfigured => {
-                let state_present = managed_root_exists(&self.paths)?;
-                let identity = if state_present {
-                    partial_public_identity(&self.paths)?
-                } else {
-                    None
-                };
+                let paths = self.paths.clone();
+                let (state_present, identity) = run_blocking(move || {
+                    let state_present = managed_root_exists(&paths)?;
+                    let identity = if state_present {
+                        partial_public_identity(&paths)?
+                    } else {
+                        None
+                    };
+                    Ok((state_present, identity))
+                })
+                .await?;
                 Ok(IdentityResetPreflight {
                     state_present,
                     configured: false,
@@ -1204,10 +1239,12 @@ impl LocalRuntime {
         force: bool,
     ) -> Result<IdentityResetResult, DaemonError> {
         if operation == crate::handoff::Cleanup::Uninstall {
-            crate::distribution::validate_managed_executable(
-                self.launcher.executable(),
-                self.paths.uid(),
-            )?;
+            let executable = self.launcher.executable().to_path_buf();
+            let uid = self.paths.uid();
+            run_blocking(move || {
+                crate::distribution::validate_managed_executable(&executable, uid)
+            })
+            .await?;
         }
         if self.running_impact().await?.is_some() {
             return crate::handoff::cleanup(
@@ -1216,22 +1253,32 @@ impl LocalRuntime {
                 operation,
                 expected,
                 force,
-            );
+            )
+            .await;
         }
         self.apply_cleanup(operation, expected, force, None).await
     }
 
     #[cfg(any(unix, windows))]
-    fn lock_installation(
+    async fn lock_installation_and_verify_updater(
         &self,
         busy: DomainErrorKind,
     ) -> Result<voytty_platform::user_state::FileLock, DaemonError> {
-        voytty_platform::user_state::FileLock::try_lock_installation(
-            self.launcher.executable(),
-            &self.paths,
-        )
-        .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?
-        .ok_or_else(|| DaemonError::new(busy, "another operation already owns this installation"))
+        let executable = self.launcher.executable().to_path_buf();
+        let paths = self.paths.clone();
+        run_blocking(move || {
+            let lock =
+                voytty_platform::user_state::FileLock::try_lock_installation(&executable, &paths)
+                    .map_err(|error| {
+                        DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string())
+                    })?
+                    .ok_or_else(|| {
+                        DaemonError::new(busy, "another operation already owns this installation")
+                    })?;
+            crate::distribution::verify_updater_executable(&executable)?;
+            Ok(lock)
+        })
+        .await
     }
 
     #[cfg(any(unix, windows))]
@@ -1242,10 +1289,24 @@ impl LocalRuntime {
         force: bool,
         worker: Option<&mut dyn crate::handoff::HandoffInteraction>,
     ) -> Result<IdentityResetResult, DaemonError> {
-        let executable = self.launcher.executable();
         let _installation = if operation == crate::handoff::Cleanup::Uninstall {
-            crate::distribution::validate_managed_executable(executable, self.paths.uid())?;
-            Some(self.lock_installation(DomainErrorKind::Cancelled)?)
+            let executable = self.launcher.executable().to_path_buf();
+            let paths = self.paths.clone();
+            let lock = run_blocking(move || {
+                crate::distribution::validate_managed_executable(&executable, paths.uid())?;
+                voytty_platform::user_state::FileLock::try_lock_installation(&executable, &paths)
+                    .map_err(|error| {
+                        DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string())
+                    })?
+                    .ok_or_else(|| {
+                        DaemonError::new(
+                            DomainErrorKind::Cancelled,
+                            "another operation already owns this installation",
+                        )
+                    })
+            })
+            .await?;
+            Some(lock)
         } else {
             None
         };
@@ -1253,10 +1314,14 @@ impl LocalRuntime {
             .reset_identity_with_stop_timeout(expected, force, IDENTITY_RESET_STOP_TIMEOUT, worker)
             .await?;
         if operation == crate::handoff::Cleanup::Uninstall {
-            voytty_platform::user_state::remove_owned_executable(executable, self.paths.uid())
-                .map_err(|error| {
-                    DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string())
-                })?;
+            let executable = self.launcher.executable().to_path_buf();
+            let uid = self.paths.uid();
+            run_blocking(move || {
+                voytty_platform::user_state::remove_owned_executable(&executable, uid).map_err(
+                    |error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()),
+                )
+            })
+            .await?;
         }
         Ok(result)
     }
@@ -1289,14 +1354,16 @@ impl LocalRuntime {
             .map_err(|_| identity_reset_stop_timeout())??;
         }
         if !preflight.state_present {
-            self.remove_autostart()?;
+            let paths = self.paths.clone();
+            run_blocking(move || remove_autostart_at(&paths)).await?;
             return Ok(IdentityResetResult {
                 removed: false,
                 previous_device_id: None,
             });
         }
         wait_until_identity_reset_stop(&self.paths, stop_deadline).await?;
-        if !managed_root_exists(&self.paths)? {
+        let root_paths = self.paths.clone();
+        if !run_blocking(move || managed_root_exists(&root_paths)).await? {
             return Ok(IdentityResetResult {
                 removed: false,
                 previous_device_id: current_device_id,
@@ -1309,31 +1376,39 @@ impl LocalRuntime {
                 "daemon restarted while identity reset was waiting for lifecycle ownership",
             ));
         }
-        ensure_daemon_ownership_released(&self.paths)?;
-        let locked_identity = partial_public_identity(&self.paths)?;
-        if locked_identity
-            .as_ref()
-            .map(crate::identity::DeviceIdentity::device_id)
-            != current_device_id
-        {
-            return Err(DaemonError::new(
-                DomainErrorKind::IdentityStateMismatch,
-                "the committed identity changed after reset confirmation",
-            ));
-        }
-        if preflight.configured {
-            let committed = crate::bootstrap::validate_committed_setup(&self.paths)?;
-            if Some(committed.device_id) != current_device_id {
+        let remove_paths = self.paths.clone();
+        let configured = preflight.configured;
+        run_blocking(move || {
+            ensure_daemon_ownership_released(&remove_paths)?;
+            let locked_identity = partial_public_identity(&remove_paths)?;
+            if locked_identity
+                .as_ref()
+                .map(crate::identity::DeviceIdentity::device_id)
+                != current_device_id
+            {
                 return Err(DaemonError::new(
                     DomainErrorKind::IdentityStateMismatch,
                     "the committed identity changed after reset confirmation",
                 ));
             }
-        }
-        self.remove_autostart()?;
-        voytty_platform::user_state::remove_managed_state_root(&self.paths, &lifecycle)
-            .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?;
-        drop(lifecycle);
+            if configured {
+                let committed = crate::bootstrap::validate_committed_setup(&remove_paths)?;
+                if Some(committed.device_id) != current_device_id {
+                    return Err(DaemonError::new(
+                        DomainErrorKind::IdentityStateMismatch,
+                        "the committed identity changed after reset confirmation",
+                    ));
+                }
+            }
+            remove_autostart_at(&remove_paths)?;
+            voytty_platform::user_state::remove_managed_state_root(&remove_paths, &lifecycle)
+                .map_err(|error| {
+                    DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string())
+                })?;
+            drop(lifecycle);
+            Ok(())
+        })
+        .await?;
         Ok(IdentityResetResult {
             removed: true,
             previous_device_id: current_device_id,
@@ -1436,6 +1511,7 @@ impl LocalRuntime {
                 confirm,
                 progress,
             )
+            .await
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -1470,6 +1546,7 @@ impl LocalRuntime {
                 confirm,
                 progress,
             )
+            .await
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -1490,15 +1567,16 @@ impl LocalRuntime {
         interaction: &mut dyn crate::handoff::HandoffInteraction,
     ) -> Result<Option<SessionImpact>, DaemonError> {
         if let Some(impact) = &running {
-            require_interruption_approval(impact, &mut approved, &mut |impact| {
-                interaction.confirm(impact)
-            })?;
+            require_interruption_approval(impact, &mut approved, &mut async |impact| {
+                interaction.confirm(impact).await
+            })
+            .await?;
         }
-        interaction.handoff(release)?;
+        interaction.handoff(release).await?;
         if running.is_none() {
             return Ok(None);
         }
-        interaction.progress(LifecycleStage::Stopping);
+        interaction.progress(LifecycleStage::Stopping).await;
         let client = LocalClient::new(self.paths.socket());
         loop {
             let impact = match client.stop(approved).await {
@@ -1518,9 +1596,10 @@ impl LocalRuntime {
             }
             // The server found work admitted after the observation. No shutdown
             // began; display that impact before granting interruption authority.
-            require_interruption_approval(&impact, &mut approved, &mut |impact| {
-                interaction.confirm(impact)
-            })?;
+            require_interruption_approval(&impact, &mut approved, &mut async |impact| {
+                interaction.confirm(impact).await
+            })
+            .await?;
         }
     }
 
@@ -1650,10 +1729,24 @@ impl LocalRuntime {
             detail: lifecycle_limitation().to_owned(),
         });
         checks.push(network);
-        checks.push(inspect_account_home(&self.paths));
-        checks.push(inspect_login_shell(&self.paths));
-        checks.push(inspect_state_paths(&self.paths, setup_complete));
-        checks.push(inspect_local_ipc(&self.paths, daemon_running));
+        let inspect_paths = self.paths.clone();
+        let filesystem_checks = tokio::task::spawn_blocking(move || {
+            [
+                inspect_account_home(&inspect_paths),
+                inspect_login_shell(&inspect_paths),
+                inspect_state_paths(&inspect_paths, setup_complete),
+                inspect_local_ipc(&inspect_paths, daemon_running),
+            ]
+        })
+        .await;
+        match filesystem_checks {
+            Ok(local) => checks.extend(local),
+            Err(_) => checks.push(DoctorCheck {
+                name: "state_paths",
+                ok: false,
+                detail: "local filesystem inspection task terminated unexpectedly".to_owned(),
+            }),
+        }
         DoctorReport {
             healthy: checks.iter().all(|check| check.ok),
             checks,
@@ -1860,9 +1953,17 @@ async fn wait_until_identity_reset_stop(
             Ok(Err(error)) => return Err(error),
             Err(_) => return Err(identity_reset_stop_timeout()),
         };
-        let ownership_released = match ensure_daemon_ownership_released(paths) {
-            Ok(()) => true,
-            Err(error) if error.kind() == DomainErrorKind::Cancelled => false,
+        let check_paths = paths.clone();
+        let ownership_released = match run_blocking(move || match ensure_daemon_ownership_released(
+            &check_paths,
+        ) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == DomainErrorKind::Cancelled => Ok(false),
+            Err(error) => Err(error),
+        })
+        .await
+        {
+            Ok(released) => released,
             Err(error) => return Err(error),
         };
         if readiness_released && ownership_released {
@@ -2147,6 +2248,15 @@ fn saved_setup_config(paths: &UserPaths) -> Result<Option<ValidatedConfig>, Daem
     }
 }
 
+#[cfg(any(unix, windows))]
+fn remove_autostart_at(paths: &UserPaths) -> Result<(), DaemonError> {
+    // Unsupported hosts cannot have a native registration created by voytty.
+    if let Some(owner) = voytty_platform::autostart::Autostart::for_cleanup(paths) {
+        owner.remove_after_stop().map_err(autostart_error)?;
+    }
+    Ok(())
+}
+
 // Serialize all preference updates with initialization, reset, and other lifecycle
 // mutations. Reload the latest config under the lock so omitted values cannot be lost.
 async fn apply_setup(
@@ -2157,12 +2267,21 @@ async fn apply_setup(
 ) -> Result<SetupResult, DaemonError> {
     #[cfg(any(unix, windows))]
     {
-        paths
-            .prepare_state_directories()
-            .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?;
+        let prepare_paths = paths.clone();
+        run_blocking(move || {
+            prepare_paths
+                .prepare_state_directories()
+                .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))
+        })
+        .await?;
         let lifecycle = acquire_lifecycle_lock(paths, Instant::now()).await?;
-        if let Some(mut config) = saved_setup_config(paths)? {
-            if !config.same_setup(requested) {
+        let existing_paths = paths.clone();
+        let existing_requested = requested.clone();
+        if let Some(config) = run_blocking(move || {
+            let Some(mut config) = saved_setup_config(&existing_paths)? else {
+                return Ok(None);
+            };
+            if !config.same_setup(&existing_requested) {
                 return Err(DaemonError::new(
                     DomainErrorKind::AlreadyConfiguredConflict,
                     "requested device name or infrastructure differs from committed config.toml",
@@ -2171,24 +2290,40 @@ async fn apply_setup(
             let before = config.clone();
             preferences.apply(&mut config);
             if config != before {
-                crate::config::write_config(paths, &config)?;
+                crate::config::write_config(&existing_paths, &config)?;
             }
+            Ok(Some(config))
+        })
+        .await?
+        {
             return Ok(SetupResult::Configured(config));
         }
         // Partial-state recovery must not open SQLite beside a running daemon.
         let mut setup = if probe_readiness(paths).await?.is_some() {
             validate_running_setup(paths, requested).await?
         } else {
+            let init_paths = paths.clone();
             let mut initial = requested.clone();
             preferences.apply(&mut initial);
-            bootstrap_with_lock_held(paths, &initial)?
+            run_blocking(move || bootstrap_with_lock_held(&init_paths, &initial)).await?
         };
-        let before = setup.config.clone();
-        preferences.apply(&mut setup.config);
-        if setup.config != before {
-            crate::config::write_config(paths, &setup.config)?;
-        }
-        crate::distribution::write_install_metadata(paths, launcher.executable(), None)?;
+        let finalize_paths = paths.clone();
+        let finalize_executable = launcher.executable().to_path_buf();
+        setup.config = run_blocking(move || {
+            let mut config = setup.config;
+            let before = config.clone();
+            preferences.apply(&mut config);
+            if config != before {
+                crate::config::write_config(&finalize_paths, &config)?;
+            }
+            crate::distribution::write_install_metadata(
+                &finalize_paths,
+                &finalize_executable,
+                None,
+            )?;
+            Ok(config)
+        })
+        .await?;
         drop(lifecycle);
         launcher.ensure(paths).await?;
         Ok(SetupResult::Initialized(setup))
@@ -2208,10 +2343,12 @@ async fn validate_running_setup(
     let validated = LocalClient::new(paths.socket())
         .validate_setup(requested)
         .await?;
+    let load_paths = paths.clone();
+    let config = run_blocking(move || crate::config::load_config(&load_paths)).await?;
     Ok(BootstrapResult {
         device_id: validated.device_id,
         endpoint_id: validated.endpoint_id,
-        config: crate::config::load_config(paths)?,
+        config,
     })
 }
 
@@ -2219,10 +2356,16 @@ async fn wait_until_stopped(paths: &UserPaths) -> Result<(), DaemonError> {
     let started = Instant::now();
     loop {
         #[cfg(any(unix, windows))]
-        let ownership_released = match ensure_daemon_ownership_released(paths) {
-            Ok(()) => true,
-            Err(error) if error.kind() == DomainErrorKind::Cancelled => false,
-            Err(error) => return Err(error),
+        let ownership_released = {
+            let check_paths = paths.clone();
+            run_blocking(
+                move || match ensure_daemon_ownership_released(&check_paths) {
+                    Ok(()) => Ok(true),
+                    Err(error) if error.kind() == DomainErrorKind::Cancelled => Ok(false),
+                    Err(error) => Err(error),
+                },
+            )
+            .await?
         };
         #[cfg(not(any(unix, windows)))]
         let ownership_released = true;
@@ -2265,8 +2408,8 @@ mod tests {
     };
     use crate::service::ProtocolStatus;
     use voytty_core::{Capabilities, DeviceId};
-    #[test]
-    fn distribution_lifecycle_requires_force_for_active_sessions() {
+    #[tokio::test]
+    async fn distribution_lifecycle_requires_force_for_active_sessions() {
         #[cfg(any(unix, windows))]
         {
             let update_impact = SessionImpact {
@@ -2276,17 +2419,19 @@ mod tests {
                 interruption_required: true,
             };
             assert_eq!(
-                require_interruption_approval(
-                    &update_impact,
-                    &mut false,
-                    &mut confirmation_required
-                )
+                require_interruption_approval(&update_impact, &mut false, &mut async |impact| {
+                    confirmation_required(impact)
+                })
+                .await
                 .expect_err("update must refuse active Sessions without force")
                 .kind(),
                 DomainErrorKind::Cancelled
             );
-            require_interruption_approval(&update_impact, &mut true, &mut confirmation_required)
-                .expect("forced update may cross the already-rendered impact boundary");
+            require_interruption_approval(&update_impact, &mut true, &mut async |impact| {
+                confirmation_required(impact)
+            })
+            .await
+            .expect("forced update may cross the already-rendered impact boundary");
         }
 
         let uninstall_impact = IdentityResetPreflight {
@@ -2307,11 +2452,11 @@ mod tests {
             .expect("forced uninstall may cross the already-rendered impact boundary");
     }
 
-    #[test]
-    fn interruption_approval_reads_once_only_for_actual_impact() {
+    #[tokio::test]
+    async fn interruption_approval_reads_once_only_for_actual_impact() {
         let mut approved = false;
         let mut calls = 0;
-        let mut confirm = |impact: &SessionImpact| {
+        let mut confirm = async |impact: &SessionImpact| {
             calls += 1;
             assert_eq!(impact.active_session_names, ["main"]);
             Ok(())
@@ -2323,19 +2468,25 @@ mod tests {
             interruption_required: false,
         };
         require_interruption_approval(&impact, &mut approved, &mut confirm)
+            .await
             .expect("idle needs no approval");
         assert!(!approved);
         impact.active_session_count = 1;
         impact.active_session_names.push("main".to_owned());
         require_interruption_approval(&impact, &mut approved, &mut confirm)
+            .await
             .expect("newly admitted work asks");
         require_interruption_approval(&impact, &mut approved, &mut confirm)
+            .await
             .expect("approval covers this invocation");
         assert_eq!(calls, 1);
         let mut declined = false;
         assert!(
-            require_interruption_approval(&impact, &mut declined, &mut confirmation_required)
-                .is_err()
+            require_interruption_approval(&impact, &mut declined, &mut async |impact| {
+                confirmation_required(impact)
+            })
+            .await
+            .is_err()
         );
         assert!(!declined);
     }
@@ -2394,7 +2545,9 @@ mod tests {
                 finish_update_startup(
                     Ok(observed),
                     &installed,
-                    &mut |stage| stages.push(stage),
+                    &mut async |stage| {
+                        stages.push(stage);
+                    },
                     || {
                         starts += 1;
                         std::future::ready(Ok(ready.clone()))
@@ -2410,7 +2563,7 @@ mod tests {
             !finish_update_startup(
                 Ok(ObservedState::NotConfigured),
                 &installed,
-                &mut |_| panic!("no startup phase before setup"),
+                &mut async |_| panic!("no startup phase before setup"),
                 || -> std::future::Ready<Result<DaemonReadiness, DaemonError>> {
                     panic!("must not start or create identity")
                 }
@@ -2418,14 +2571,15 @@ mod tests {
             .await
             .expect("binary-only update")
         );
-        let failure = finish_update_startup(Ok(stopped.clone()), &installed, &mut |_| {}, || {
-            std::future::ready(Err(DaemonError::new(
-                DomainErrorKind::DaemonStartTimeout,
-                "fixture startup failure",
-            )))
-        })
-        .await
-        .expect_err("committed startup failure is partial completion");
+        let failure =
+            finish_update_startup(Ok(stopped.clone()), &installed, &mut async |_| {}, || {
+                std::future::ready(Err(DaemonError::new(
+                    DomainErrorKind::DaemonStartTimeout,
+                    "fixture startup failure",
+                )))
+            })
+            .await
+            .expect_err("committed startup failure is partial completion");
         assert!(
             failure.to_string().contains("Updated voytty to 9.1.0")
                 && failure.to_string().contains("voytty daemon restart")
@@ -2438,7 +2592,7 @@ mod tests {
                 _ => wrong.protocol.state_schema += 1,
             }
             assert!(
-                finish_update_startup(Ok(stopped.clone()), &installed, &mut |_| {}, || {
+                finish_update_startup(Ok(stopped.clone()), &installed, &mut async |_| {}, || {
                     std::future::ready(Ok(wrong))
                 })
                 .await

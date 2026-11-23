@@ -84,16 +84,27 @@ impl Drop for TerminalGuard {
 }
 
 pub(super) enum Signal {
-    Resize(tokio::time::Interval),
+    Resize {
+        receiver: watch::Receiver<u64>,
+        sender: watch::Sender<u64>,
+    },
     Interrupt(tokio::signal::windows::CtrlC),
     Break(tokio::signal::windows::CtrlBreak),
     Close(tokio::signal::windows::CtrlClose),
 }
 impl Signal {
+    pub(super) fn resize_notifier(&self) -> Option<watch::Sender<u64>> {
+        match self {
+            Self::Resize { sender, .. } => Some(sender.clone()),
+            _ => None,
+        }
+    }
+
     pub(super) async fn recv(&mut self) -> Option<()> {
         match self {
-            Self::Resize(timer) => {
-                timer.tick().await;
+            Self::Resize { receiver, .. } => {
+                receiver.changed().await.ok()?;
+                let _ = *receiver.borrow_and_update();
                 Some(())
             }
             Self::Interrupt(signal) => signal.recv().await,
@@ -104,8 +115,9 @@ impl Signal {
 }
 impl TerminalSignals {
     pub(super) fn install() -> Result<Self, CliError> {
+        let (sender, receiver) = watch::channel(0_u64);
         Ok(Self {
-            resize: Signal::Resize(tokio::time::interval(Duration::from_millis(100))),
+            resize: Signal::Resize { receiver, sender },
             interrupt: Signal::Interrupt(
                 tokio::signal::windows::ctrl_c()
                     .map_err(|e| terminal_io("listen for console interrupt", e))?,
@@ -126,13 +138,19 @@ pub(super) struct StdinPump {
     receiver: Option<mpsc::Receiver<StdinEvent>>,
     retained: VecDeque<StdinEvent>,
     stopped: Arc<std::sync::atomic::AtomicBool>,
+    resize_notifier: Option<watch::Sender<u64>>,
     handle: Option<JoinHandle<Result<Option<StdinEvent>, String>>>,
 }
 impl StdinPump {
-    pub(super) fn start(_: &impl AsFd, epoch: InputEpoch) -> Result<Self, CliError> {
+    pub(super) fn start_with_resize(
+        _: &impl AsFd,
+        epoch: InputEpoch,
+        resize_notifier: Option<watch::Sender<u64>>,
+    ) -> Result<Self, CliError> {
         let (sender, receiver) = mpsc::channel(STDIN_CHANNEL_CAPACITY);
         let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop = Arc::clone(&stopped);
+        let worker_resize = resize_notifier.clone();
         let handle = std::thread::Builder::new()
             .name("voytty-cli-console".into())
             .spawn(move || {
@@ -148,6 +166,12 @@ impl StdinPump {
                     });
                     let mut pending = match next {
                         Ok(None) => continue,
+                        Ok(Some(Event::Resize(_, _))) => {
+                            if let Some(notifier) = &worker_resize {
+                                notifier.send_modify(|count| *count = count.wrapping_add(1));
+                            }
+                            continue;
+                        }
                         Ok(Some(event)) => {
                             let bytes = console_event_bytes(event);
                             if bytes.is_empty() {
@@ -187,6 +211,7 @@ impl StdinPump {
             receiver: Some(receiver),
             retained: VecDeque::new(),
             stopped,
+            resize_notifier,
             handle: Some(handle),
         })
     }
@@ -212,9 +237,14 @@ impl StdinPump {
             })
             .sum::<usize>();
         while event::poll(Duration::ZERO).map_err(|e| terminal_io("drain console input", e))? {
-            let bytes = console_event_bytes(
-                event::read().map_err(|e| terminal_io("read inactive console input", e))?,
-            );
+            let next = event::read().map_err(|e| terminal_io("read inactive console input", e))?;
+            if matches!(next, Event::Resize(_, _)) {
+                if let Some(notifier) = &self.resize_notifier {
+                    notifier.send_modify(|count| *count = count.wrapping_add(1));
+                }
+                continue;
+            }
+            let bytes = console_event_bytes(next);
             length = length.saturating_add(bytes.len().max(1));
             if length > RESUME_INPUT_BOUND {
                 return Err(terminal_daemon_error(
@@ -232,7 +262,8 @@ impl StdinPump {
         }
         *current = epoch.advance();
         prefix.clear_pending();
-        let mut replacement = Self::start(input, epoch.clone())?;
+        let mut replacement =
+            Self::start_with_resize(input, epoch.clone(), self.resize_notifier.clone())?;
         replacement.retained = retained;
         *self = replacement;
         Ok(())

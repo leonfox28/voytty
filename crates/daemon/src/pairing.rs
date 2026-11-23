@@ -773,6 +773,29 @@ impl PairingManager {
             .expire_ready_locked(&mut state_lock(&self.inner.state), now)
     }
 
+    /// Shortest remaining duration before the next Ready offer expires, if any.
+    pub fn next_expiry_delay(&self) -> Result<Option<Duration>, PairingError> {
+        let now = self.inner.now()?;
+        let state = state_lock(&self.inner.state);
+        Ok(state
+            .offers
+            .values()
+            .filter(|record| matches!(record.state, LiveOfferState::Ready))
+            .map(|record| {
+                let monotonic = record
+                    .monotonic_deadline
+                    .saturating_duration_since(now.monotonic);
+                let wall = Duration::from_secs(
+                    record
+                        .fields
+                        .expires_at_unix()
+                        .saturating_sub(now.unix_seconds),
+                );
+                monotonic.min(wall)
+            })
+            .min())
+    }
+
     /// Returns bounded counts only; no ticket, verifier, route, or transcript.
     pub fn snapshot(&self) -> Result<PairingSnapshot, PairingError> {
         let now = self.inner.now()?;

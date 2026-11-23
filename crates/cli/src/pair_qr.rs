@@ -19,7 +19,15 @@ pub(crate) fn stdout_width() -> Option<Result<usize, CliError>> {
                 .map_err(|error| CliError::Io(format!("read QR terminal width: {error}"))),
         )
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        Some(
+            crossterm::terminal::size()
+                .map(|(columns, _)| usize::from(columns))
+                .map_err(|error| CliError::Io(format!("read QR terminal width: {error}"))),
+        )
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         Some(Err(CliError::Usage("terminal width is unavailable".into())))
     }

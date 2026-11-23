@@ -11,9 +11,10 @@ use std::future::Future;
 use std::io;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::FutureExt;
 use iroh::endpoint::{RecvStream, SendStream};
@@ -177,6 +178,7 @@ struct PairingServiceInner {
     limits: TransportLimits,
     accepts: Mutex<AcceptRegistry>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
+    pruner_active: AtomicBool,
     shutdown: watch::Sender<bool>,
     #[cfg(test)]
     authorize_faults: Mutex<VecDeque<AuthorizeFault>>,
@@ -248,6 +250,7 @@ impl PairingService {
                 limits,
                 accepts: Mutex::new(AcceptRegistry::default()),
                 tasks: Mutex::new(Vec::new()),
+                pruner_active: AtomicBool::new(false),
                 shutdown,
                 #[cfg(test)]
                 authorize_faults: Mutex::new(VecDeque::new()),
@@ -261,7 +264,14 @@ impl PairingService {
         input: LocalPairCreateInput,
         deadline: Instant,
     ) -> Result<PairOfferCreated, DaemonError> {
-        self.inner.create_until(input, deadline)
+        let created = self.inner.create_until(input, deadline)?;
+        self.inner.schedule_expiry_pruner();
+        Ok(created)
+    }
+
+    /// Explicitly prunes expired Ready pairing offers and zeroizes their secrets.
+    pub fn prune_expired(&self) -> Result<usize, crate::pairing::PairingError> {
+        self.inner.manager.prune_expired()
     }
 
     /// Starts or joins one bounded local pair-accept operation. The operation
@@ -315,6 +325,51 @@ impl PairingService {
 }
 
 impl PairingServiceInner {
+    fn schedule_expiry_pruner(self: &Arc<Self>) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let mut tasks = mutex_lock(&self.tasks);
+        if self.ensure_running().is_err() || self.pruner_active.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        tasks.retain(|task| !task.is_finished());
+        let inner = Arc::clone(self);
+        let mut shutdown = self.shutdown.subscribe();
+        tasks.push(handle.spawn(async move {
+            const MAX_PRUNE_INTERVAL: Duration = Duration::from_secs(30);
+            loop {
+                let delay = match inner.manager.next_expiry_delay() {
+                    Ok(Some(delay)) => delay,
+                    Ok(None) | Err(_) => {
+                        let _guard = mutex_lock(&inner.tasks);
+                        if !matches!(inner.manager.next_expiry_delay(), Ok(Some(_))) {
+                            inner.pruner_active.store(false, Ordering::Release);
+                            return;
+                        }
+                        continue;
+                    }
+                };
+                if delay.is_zero() {
+                    let _ = inner.manager.prune_expired();
+                    continue;
+                }
+                tokio::select! {
+                    biased;
+                    _ = shutdown.changed() => {
+                        let _ = inner.manager.prune_expired();
+                        let _guard = mutex_lock(&inner.tasks);
+                        inner.pruner_active.store(false, Ordering::Release);
+                        return;
+                    }
+                    () = tokio::time::sleep(delay.min(MAX_PRUNE_INTERVAL)) => {
+                        let _ = inner.manager.prune_expired();
+                    }
+                }
+            }
+        }));
+    }
+
     fn create_until(
         &self,
         input: LocalPairCreateInput,
@@ -2418,5 +2473,119 @@ mod tests {
             panic!("retired ID mismatch must not return a replay");
         };
         assert_eq!(error.kind(), DomainErrorKind::PairOutcomeUnknown);
+    }
+
+    #[tokio::test]
+    async fn create_offer_schedules_background_pruner_that_retires_expired_offers_on_time() {
+        let local = device_id(0x41);
+        let temporary = tempfile::tempdir().expect("temporary state root");
+        let home = temporary.path().join("home");
+        fs::create_dir(&home).expect("test home");
+        let paths = UserPaths::for_test(
+            nix::unistd::Uid::effective().as_raw(),
+            home.clone(),
+            home.join(".voytty"),
+            temporary.path().join("run"),
+        );
+        paths
+            .prepare_state_directories()
+            .expect("state directories");
+        let actor =
+            StoreActor::start(StateStore::open(&paths).expect("state store")).expect("store actor");
+        let store = actor.handle();
+        let authorization = AuthorizationRegistry::new();
+        let directory = DeviceDirectory::new(store.clone());
+        let limits = TransportLimits::default();
+        let clock = Arc::new(AtomicClock::new(1_700_000_000));
+        let manager =
+            PairingManager::with_dependencies(local, limits, clock.clone(), Arc::new(FixedEntropy))
+                .expect("pairing manager");
+        let identity = ConnectionIdentity::new(
+            local,
+            "host",
+            "test-build",
+            "test-platform",
+            Capabilities::from_bits_retain(0),
+        )
+        .expect("connection identity");
+        let network = Arc::new(StaticNetwork::new(local));
+        let mut online = NetworkObservation::disabled(local);
+        online.state = NetworkState::Online;
+        online.endpoint_bound = true;
+        online.home_relay = Some("https://relay.example.test".to_owned());
+        network.set(online);
+        let service = PairingService::with_dependencies(
+            manager,
+            store,
+            authorization,
+            directory,
+            Arc::new(BlockingTransport::new()),
+            network,
+            identity,
+            limits,
+        )
+        .expect("pairing service");
+
+        let ttl = voytty_core::MIN_PAIR_TTL_SECONDS;
+        let created = service
+            .create_until(
+                LocalPairCreateInput {
+                    operation_id: EphemeralOperationId::from_array([0x99; 16]),
+                    fingerprint: PairFingerprint::for_create(ttl),
+                    requested_ttl_seconds: ttl,
+                },
+                Instant::now() + Duration::from_secs(5),
+            )
+            .expect("create offer");
+        let offer_id = created.fields().offer_id();
+        assert!(service.inner.pruner_active.load(Ordering::Acquire));
+
+        // Advance the injected clock past TTL and verify explicit prune retires the secret.
+        clock.advance(Duration::from_secs(ttl + 1));
+        assert_eq!(service.prune_expired().expect("prune expired"), 1);
+        assert_eq!(
+            service
+                .inner
+                .manager
+                .offer_state(offer_id)
+                .expect("offer state"),
+            crate::pairing::PairOfferState::Expired
+        );
+        service
+            .shutdown_until(Instant::now() + Duration::from_secs(2))
+            .await
+            .expect("shutdown joins background pruner cleanly");
+        assert!(!service.inner.pruner_active.load(Ordering::Acquire));
+    }
+
+    struct AtomicClock {
+        base_unix: u64,
+        base_mono: Instant,
+        offset_secs: std::sync::atomic::AtomicU64,
+    }
+
+    impl AtomicClock {
+        fn new(base_unix: u64) -> Self {
+            Self {
+                base_unix,
+                base_mono: Instant::now(),
+                offset_secs: std::sync::atomic::AtomicU64::new(0),
+            }
+        }
+
+        fn advance(&self, delta: Duration) {
+            self.offset_secs
+                .fetch_add(delta.as_secs(), Ordering::AcqRel);
+        }
+    }
+
+    impl crate::pairing::PairingClock for AtomicClock {
+        fn now(&self) -> Result<PairingNow, PairingClockError> {
+            let offset = self.offset_secs.load(Ordering::Acquire);
+            Ok(PairingNow::new(
+                self.base_unix + offset,
+                self.base_mono + Duration::from_secs(offset),
+            ))
+        }
     }
 }

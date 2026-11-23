@@ -47,9 +47,23 @@ const HOST_ACCEPTED_DOMAIN: &[u8] = b"voytty-pair-host-accepted-v1\0";
 const CREATE_FINGERPRINT_DOMAIN: &[u8] = b"voytty-local-pair-create-fingerprint-v1\0";
 const ACCEPT_FINGERPRINT_DOMAIN: &[u8] = b"voytty-local-pair-accept-fingerprint-v1\0";
 
+fn constant_time_eq(left: &[u8; PAIR_SECRET_BYTES], right: &[u8; PAIR_SECRET_BYTES]) -> bool {
+    let mut diff = 0_u8;
+    for (&a, &b) in left.iter().zip(right.iter()) {
+        diff |= a ^ b;
+    }
+    std::hint::black_box(diff) == 0
+}
+
 /// Redacted, zeroizing bearer secret from a pairing ticket.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq)]
 pub struct PairSecret(Zeroizing<[u8; PAIR_SECRET_BYTES]>);
+
+impl PartialEq for PairSecret {
+    fn eq(&self, other: &Self) -> bool {
+        constant_time_eq(self.as_bytes(), other.as_bytes())
+    }
+}
 
 impl PairSecret {
     /// Constructs a secret from its exact 32 bytes.
@@ -730,7 +744,7 @@ impl Clone for PairProof {
 
 impl PartialEq for PairProof {
     fn eq(&self, other: &Self) -> bool {
-        self.as_bytes() == other.as_bytes()
+        constant_time_eq(self.as_bytes(), other.as_bytes())
     }
 }
 
@@ -815,7 +829,10 @@ impl Clone for PairAccepted {
 impl PartialEq for PairAccepted {
     fn eq(&self, other: &Self) -> bool {
         self.authorization_generation == other.authorization_generation
-            && self.host_confirmation_proof.as_ref() == other.host_confirmation_proof.as_ref()
+            && constant_time_eq(
+                &self.host_confirmation_proof,
+                &other.host_confirmation_proof,
+            )
             && self.host_diagnostic_version == other.host_diagnostic_version
     }
 }

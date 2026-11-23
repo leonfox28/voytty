@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 
 fail() {
     echo "workspace version check failed: $*" >&2
@@ -11,14 +11,16 @@ fail() {
 cargo +1.98.0 metadata --locked --no-deps --format-version 1 \
     --manifest-path "$repo_root/Cargo.toml" >/dev/null
 
-for required_crate in cli core daemon platform proto; do
+for required_crate in cli client core daemon diagnostics platform proto terminal; do
     [ -f "$repo_root/crates/$required_crate/Cargo.toml" ] \
         || fail "required product crate is missing: $required_crate"
 done
+[ -f "$repo_root/tools/release/Cargo.toml" ] \
+    || fail "required workspace release tool manifest is missing: tools/release"
 
 product_version=
 product_count=0
-for manifest in "$repo_root"/crates/*/Cargo.toml; do
+for manifest in "$repo_root"/crates/*/Cargo.toml "$repo_root/tools/release/Cargo.toml"; do
     [ -f "$manifest" ] || fail "no product crate manifests found"
     product_count=$((product_count + 1))
 

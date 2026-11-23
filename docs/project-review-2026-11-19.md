@@ -149,6 +149,44 @@ macOS 上，平台和终端模块的 Clippy 通过，模块测试 119 项通过�
 
 上轮清单中，M13、M19、M20 仍待修复。M21 的 Linux 目录权限已修复，Windows 自动启动程序校验和交互终端的崩溃日志仍待处理。
 
+## 剩余中危项后续修复
+
+2026-11-23，分支 `fix/project-review-remaining-medium` 接续终端配色与日志读写修复，完成清单中最后四项中危问题（M13、M19、M20 及 M21 剩余两子项）。
+
+| 编号 | 修复与回归验证 |
+| --- | --- |
+| M13 | 守护进程生命周期启动目录准备、进程拉起、文件锁、安装校验、激活/回滚、重置清理与本机诊断巡检统一迁至 `spawn_blocking`；CLI 的日志控制/导出/读取与自动启动状态检查亦不再阻塞单线程 Tokio 运行时。`handoff` 控制通道在 Unix 上改用原生异步 `tokio::net::UnixStream`、在 Windows 上经 `spawn_blocking` 隔离，并将 `Worker::log` 的 2 秒日志刷盘与 `handoff` 预检卸载到阻塞线程。单线程运行时回归测试验证了接收超时取消与慢速刷盘期间定时任务持续推进。[生命周期](../crates/daemon/src/lifecycle.rs) · [交接控制](../crates/daemon/src/handoff.rs) · [运维命令](../crates/daemon/src/operations.rs) |
+| M19 | `IrohController::admitted_stream` 在 `open_bi` 失败且 `close_reason()` 仍为 `None` 时主动退役当前缓存连接，并对重复失败启用 20 ms→500 ms 指数退避（响应取消与截止时间）。`IrohSessionIo` 复用单个堆分配 `Zeroizing<Vec<u8>>` 读缓冲并在解码后立即清零已读切片，改用 `Connection::path_events()` 事件驱动唤醒（仅在开启详细诊断时保留 1 秒采样定时器），并对同路径 RTT 引入 `max(5 ms, 10%)` 滞回阈值。回归测试覆盖退避、滞回、缓冲区清零与静默连接无误报。[移动端控制器](../crates/client/src/iroh_controller.rs) · [流进度测试](../crates/client/src/iroh_controller/progress_tests.rs) |
+| M20 | `upload_inner` 与 `IrohController::open_upload` 改用 `startup_budget(target)`，远端冷启动上传获得 15 秒预算，本地保持 5 秒。上传传输追踪写入帧边界：若取消发生在分块或结束帧写入中途，直接丢弃流而不再追加 `Cancel` 帧或阻塞；若停在帧边界，则以 200 ms 短超时尽力发送 `Cancel`。测试覆盖远端 6 秒慢握手、冷启动超时边界、写入中途取消零等待与帧边界取消。[上传客户端](../crates/client/src/upload.rs) · [缓存与冷启动测试](../crates/client/src/iroh_controller/cache_tests.rs) |
+| M21 | 补齐两项遗留子项：`ScopedPanicHook::suppress` 抑制原始终端 stderr 输出的同时，向 `voytty_diagnostics` 记录并限时 250 ms 刷盘脱敏的 `ProcessPanicked` 错误事件，隔离进程测试确认不泄漏原始 panic 载荷且退出后恢复原钩子；Windows `Autostart` 接入 `validate_owned_executable`，在启用与状态检查时校验属主、私密 ACL、重解析点，并拒绝控制字符、引号、尾随反斜杠及 `..` 路径穿越。[桌面终端](../crates/cli/src/terminal_ui/desktop.rs) · [Windows 自动启动](../crates/platform/src/autostart_windows.rs) |
+
+本轮在 macOS 上通过工作区 Clippy（零警告）、`RUSTDOCFLAGS="-D warnings" cargo doc`（零警告）、`just ci-policy`、`just ci-noq`（441 项）、`just relay-static`、`just mobile-core-check android` 与 `just mobile-core-check ios`，工作区测试 887 项通过、17 项按原有标记忽略。Windows x64 通过全工作区及测试目标的 `cargo xwin clippy --locked --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings`（零警告）。
+
+同步说明两项外部/既有基线观测：（1）`just ci-dependencies` 的 `bans`/`licenses`/`sources` 均通过，但上游新发布的 `RUSTSEC-2026-0592` 命中既有锁定的 `url 2.5.8`（与本轮改动无关，未越权改动 `Cargo.lock`）；（2）未改动的 `vendor/iroh` 中 `endpoint::direct_path_tests::voytty_direct_path_request_keeps_an_existing_direct_connection` 在本机环境下返回 `2 != 1`（其余 164 项通过）。Windows 原生运行验证与 `voytty-app` 私有端集成测试仍待相应环境执行。
+
+至此，审查报告中的全部 High（19/19）与全部 Medium（23/23）均已在修复分支完成，Critical 仅余按维护者要求跳过的 C1。
+
+## 低危与信息性发现修复记录
+
+同日于同一工作区接续补齐第五节剩余的全部可操作低危与信息性发现（第 2–11 项及第 13 项；第 1 项与第 12 项已分别在 P2、P3 完成）：
+
+| 编号 | 修复与回归验证 |
+| --- | --- |
+| L2 | Unix 回退运行目录在满足套接字路径长度限制时优先使用用户家目录下的 `~/.voytty-run`，仅在超长时退回 `/tmp/voytty-{uid}`。Unix 上传根目录在 `/tmp/voytty-upload-{uid}` 被他用户抢注或类型/权限异常时，自动回退到同目录随机命名的 `0700` 私有目录 `/tmp/voytty-upload-{uid}-<nonce>`，兼容移动端与旧 CLI 的路径校验契约并纳入过期清理。[用户路径](../crates/platform/src/user_state.rs) · [上传暂存](../crates/platform/src/upload.rs) |
+| L3 | Unix `atomic_create` 改为原子 `fs::hard_link` 后删临时文件，确保并发创建具备严格无覆盖语义。[用户状态](../crates/platform/src/user_state.rs) |
+| L4 | 为 `PairingManager` 增加最近过期时延查询，为 `PairingService` 增加 `prune_expired()` 并在创建配对票据时登记单一后台清理任务（随 `shutdown_until` 回收），票据到期即主动清理并零化 `offer_key`。[配对管理](../crates/daemon/src/pairing.rs) · [配对服务](../crates/daemon/src/pairing_service.rs) |
+| L5 | `DeviceIdentity::load`/`create` 临时私钥字节、`FrameDecoder`/`encode_payload`/`decode_wire_frame` 临时与错误路径载荷，以及 `remote_tunnel` 转发缓冲与载荷均统一接入 `Zeroizing`/`zeroize`。[设备身份](../crates/daemon/src/identity.rs) · [线缆帧](../crates/proto/src/lib.rs) · [远端隧道](../crates/daemon/src/remote_tunnel.rs) |
+| L6 | Windows `create_new_executable` 补齐 `FILE_FLAG_OPEN_REPARSE_POINT` 与 ACL 保护失败时的临时文件回滚删除；`remove_retired_executable` 延迟删除循环在删除前复查属性，拒绝重解析点与目录。[可执行创建](../crates/platform/src/user_state.rs) · [Windows 安全](../crates/platform/src/windows_security.rs) |
+| L7 | `FrameDecoder` 按 64 KiB 上限渐进预分配帧体缓冲，防止单帧头触发 8 MiB 立即分配；`finish_unary` 检查残留缓冲并单字节探测 EOF，收到任何非 EOF 尾部字节立即拒绝。[帧解码](../crates/proto/src/lib.rs) · [单次请求收尾](../crates/daemon/src/session_wire.rs) |
+| L8 | 附着流上并发历史窗口超限、历史读取超时与陈旧配色序号（`stale color observation sequence`）仅返回对应 `ServiceErrorResponse` 而不撕毁活跃附着流；`SessionAttachment::detach()` 立即唤醒 `SessionActor` 回收控制权。[附着流读写](../crates/daemon/src/session_wire/attachment_io.rs) · [会话附着](../crates/daemon/src/session.rs) |
+| L9 | 补齐全部跨平台与终端细节：Windows `pair create` 接入 `crossterm::terminal::size()` 渲染二维码；非折行选区复制裁剪行尾空白格同时保留行内空格、软折行与纯空白单行选区；`OSC 1` 复用控制字符过滤与 UTF-8 字符边界截断；`voytty_diagnostics::export` 仅统计已选中快照的 `truncated_bytes`；Windows 登录 Shell 清理外层终端/复用器环境变量并改用 `build_identity().version`；`voytty doctor` 在存在 `[error]` 项时以非零退出码结束（`CommandOutcome::FailedText`）；`voytty logs` 带过滤条件无匹配时提示 `"No matching daemon logs."`；Unix `TerminalSignals` 接入 `SIGTSTP` 经由完整终端恢复路径退出；Windows 控制台改为消费 `Event::Resize` 事件驱动通知，移除 100 ms 定时轮询；`view.rs` 追踪 `awaiting_snapshot_ack`，防止 `Takeover` 回包覆盖尚未确认的同步态。[二维码](../crates/cli/src/pair_qr.rs) · [选区复制](../crates/core/src/terminal_selection.rs) · [终端入口](../crates/terminal/src/ingress.rs) · [日志导出](../crates/diagnostics/src/reader.rs) · [PTY](../crates/platform/src/pty.rs) · [CLI](../crates/cli/src/lib.rs) · [桌面终端](../crates/cli/src/terminal_ui/desktop.rs) · [Windows 控制台](../crates/cli/src/terminal_ui/windows_console.rs) · [客户端视图](../crates/client/src/view.rs) |
+| L10 | POSIX 安装脚本（`install.sh` 与 `versioned.sh.in`）在 `ulimit -f` 子壳内将 `curl` stderr 经管道送出至无文件大小限制的外层循环输出，避免重定向到 >512 字节日志文件时触发 `SIGXFSZ`，同时保留 `ulimit -f` 对下载产物的内核级限长与回归验证。[安装引导](../install/install.sh) · [版本化安装器](../install/versioned.sh.in) · [下载夹具](../tests/release/installer_download_test.py) |
+| L11 | 移除 `Cargo.toml` 中未使用的 `reqwest` `"blocking"` 特性（`Cargo.lock` 仅移除 `reqwest -> futures-channel` 1 条边），`distribution.rs` 复用现有 Tokio 运行时句柄；工作流中的 `actions/upload-artifact` 全部升级并 SHA 锁定至 Node 24 的 `v7.0.2`；`just ci-policy` 补齐 `shellcheck`（含 `source-policy.sh`、`workspace-version.sh`、`deploy/relay/*.sh`、`tests/relay/*.sh`）与 Python 语法检查（含 `tools/licensing.py`、`tests/foundation/terminal-colors.py`）；`tests/workspace-version.sh` 覆盖全部 9 个工作区包；`tests/secret-scan.sh` 与夹具补齐 `github_pat_` 及 `ENCRYPTED`/`PGP PRIVATE KEY` 检测。（注：`Cargo.lock` 中 27 组传递依赖多版本属上游生态现状，未做越权大版本升级。）[根清单](../Cargo.toml) · [更新器](../crates/daemon/src/distribution.rs) · [策略门禁](../justfile) · [密钥扫描](../tests/secret-scan.sh) |
+| L13 | `attachment_writer` 在写出 `TerminalHostEffect` 前通过 `request_context.run_effect` 过授权闸门；`PairSecret`、`PairProof`、`PairAccepted` 的 `PartialEq` 改为常量时间逐字节比较；Linux `autostart` 仅从受信任的根属主绝对路径（`/usr/bin/systemctl`、`/bin/systemctl`）调用 `systemctl`；在 `local.proto` 与 `terminal.proto` 中明确标注保留兼容的未使用 `operation_id` 字段。[附着写入](../crates/daemon/src/session_wire/attachment_io.rs) · [配对类型](../crates/core/src/pairing.rs) · [自动启动](../crates/platform/src/autostart.rs) · [协议定义](../proto/voytty/v2/terminal.proto) |
+| H16 补遗 | CI 路径分类器将 `release/` 改动（含 `voytty-core` 嵌入的 `release/public-key.hex` 与 `release/android-certificate.sha256`）联动触发 `mobile=True`（与 `rust`、`native` 并行），并补齐两条回归用例。[路径分类器](../tools/ci/workflow-policy.py) · [分类器测试](../tests/ci/workflow_policy_test.py) |
+
+本轮补充验证在 macOS 上通过 `sh tests/source-policy.sh`、`just ci-policy`（含扩展后的 `shellcheck`、`actionlint`、`secret-scan`、全部安装器/发布夹具与 2 项新增下载日志/分块限长回归）、`just relay-static`、`RUSTDOCFLAGS="-D warnings" cargo doc`（零警告）、全工作区 Clippy（零警告）、全工作区测试 **898 项通过 / 17 项忽略**、`just mobile-core-check android`、`just mobile-core-check ios`、`cargo deny check bans licenses sources`，以及 Windows x64 全工作区 `cargo xwin clippy --locked --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings`（零警告）。Windows 原生运行验证、`voytty-app` 私有端集成测试，以及既有的上游 `url 2.5.8`（`RUSTSEC-2026-0592`）基线通告仍待相应环境/后续决策处理。
+
 ---
 
 ## 一、总体评估与本地基线验证
@@ -400,6 +438,7 @@ macOS 上，平台和终端模块的 Clippy 通过，模块测试 119 项通过�
 - **说明**：重放等待无界调用 `Condvar::wait`；`close_inner` 丢弃传入 `deadline` 并硬编码等待 5 秒。
 
 #### M13. `async fn` 中直接调用阻塞同步 I/O（`UnixStream` / `FileLock` / `diagnostics.flush`）
+- **当前状态**　已修复。[剩余中危项后续修复](#剩余中危项后续修复)
 - **位置**：[`crates/daemon/src/lifecycle.rs`](../crates/daemon/src/lifecycle.rs#L128-L130) / [`lifecycle.rs#L635`](../crates/daemon/src/lifecycle.rs#L635)、[`crates/daemon/src/operations.rs`](../crates/daemon/src/operations.rs#L618) / [`operations.rs#L1208-L1461`](../crates/daemon/src/operations.rs#L1208-L1461)、[`crates/daemon/src/handoff.rs`](../crates/daemon/src/handoff.rs#L351-L519)
 - **说明**：在单线程 Tokio 运行时中直接执行同步 `UnixStream` 读写、文件锁和最长 2 秒的日志刷盘，阻塞超时器与取消响应。
 
@@ -428,16 +467,18 @@ macOS 上，平台和终端模块的 Clippy 通过，模块测试 119 项通过�
 - **说明**　`open_read` 可能因此无法读取属主只读（`0o400`）的文件。`Store::append` 每写一条日志就对 4 个文件执行 `normalize()`，增加了每次写入的系统调用次数。
 
 #### M19. 移动端 `IrohController` 存在 `open_bi` 零退避忙旋与 1 秒周期唤醒/分配及 1 ms RTT 抖动重绘
+- **当前状态**　已修复。[剩余中危项后续修复](#剩余中危项后续修复)
 - **位置**：[`crates/client/src/iroh_controller.rs`](../crates/client/src/iroh_controller.rs#L583-L605) / [`iroh_controller.rs#L992-L1068`](../crates/client/src/iroh_controller.rs#L992-L1068)
 - **说明**：`open_bi()` 失败但 `close_reason()` 仍为 `None` 时无退避死循环至 15 s；`IrohSessionIo::read` 空闲时每秒唤醒一次并反复堆/栈分配并零化 16 KiB 缓冲，且 RTT 波动 1 ms 即触发状态事件与状态栏重绘。
 
 #### M20. 上传取消可能截断正在写入的帧或阻塞 5 秒，且 `open_upload` 仅给 5 秒超时
+- **当前状态**　已修复。[剩余中危项后续修复](#剩余中危项后续修复)
 - **位置**：[`crates/client/src/upload.rs`](../crates/client/src/upload.rs#L185) / [`upload.rs#L219-L236`](../crates/client/src/upload.rs#L219-L236)、[`crates/client/src/iroh_controller.rs`](../crates/client/src/iroh_controller.rs#L953)
 - **说明**：`select!` 中途取消 `transfer` 后向同一流写入 `Cancel` 可能污染半帧或在断链时卡满 5 秒；冷启动远端上传应使用 15 s `REMOTE_STARTUP_DEADLINE`。
 
 #### M21. `ScopedPanicHook::suppress` 吞掉交互期间所有 `voytty_diagnostics` panic 记录；自动启动权限校验跨平台不均
 
-- **部分修复**　P0 已修复 Linux 目录权限误拒。下列 panic 日志和 Windows 校验问题仍待处理。[P0 修复记录](#p0-修复记录)
+- **当前状态**　已修复。P0 修复了 Linux 目录权限误拒；本轮补齐交互终端 panic 诊断记录与 Windows 自动启动可执行文件安全校验，Windows 原生运行仍待托管 CI 验证。[P0 修复记录](#p0-修复记录) · [剩余中危项后续修复](#剩余中危项后续修复)
 - **位置**：[`crates/cli/src/terminal_ui.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/cli/src/terminal_ui.rs#L260-L273) / [`terminal_ui.rs#L1059-L1079`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/cli/src/terminal_ui.rs#L1059-L1079)、[`crates/platform/src/autostart.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/platform/src/autostart.rs#L364-L370)、[`crates/platform/src/autostart_windows.rs`](https://github.com/leonfox28/voytty/blob/9ad6b81fbc301633fbe72c718c75f0f11739ae68/crates/platform/src/autostart_windows.rs#L34-L49)
 - **说明**：
   - `ScopedPanicHook` 将全局 panic hook 替换为 `|_| {}`，使交互式终端内所有崩溃完全丢失诊断记录。

@@ -104,6 +104,12 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Ok(voytty_cli::CommandOutcome::FailedText(output)) => {
+            if let Err(error) = write_output(&mut io::stdout().lock(), output.as_bytes()) {
+                eprintln!("Error: Unable to write command output: {error}");
+            }
+            ExitCode::FAILURE
+        }
         Ok(voytty_cli::CommandOutcome::PairTicket(output)) => {
             let result = {
                 let stdout = io::stdout();

@@ -106,7 +106,20 @@ async fn help_version_status_doctor_logs_and_stop_never_spawn() {
     let human = run(&runtime, ["voytty", "status"]).await;
     assert!(human.contains("Setup:           Not configured"));
     assert!(human.contains("Sessions:        0"));
-    let doctor = run(&runtime, ["voytty", "doctor"]).await;
+    let doctor_outcome = execute(
+        Cli::try_parse_from(["voytty", "doctor"]).expect("doctor parses"),
+        &runtime,
+        InteractionMode::NonInteractive,
+    )
+    .await
+    .expect("doctor inspection completes");
+    assert!(
+        !doctor_outcome.is_success(),
+        "doctor with failing checks must signal a non-zero exit status"
+    );
+    let doctor = doctor_outcome
+        .into_text()
+        .expect("doctor returns ordinary text");
     assert!(doctor.contains("[ok] autostart:"));
     assert!(doctor.contains("[ok] network:") && doctor.contains("not attempted"));
     assert!(doctor.contains("[error] state_paths:"));
@@ -117,6 +130,12 @@ async fn help_version_status_doctor_logs_and_stop_never_spawn() {
     assert_eq!(stop, "Daemon already stopped.\n");
     let logs = run(&runtime, ["voytty", "logs", "--lines", "10"]).await;
     assert_eq!(logs, "No daemon logs yet.\n");
+    let filtered_logs = run(
+        &runtime,
+        ["voytty", "logs", "--level", "error", "--lines", "10"],
+    )
+    .await;
+    assert_eq!(filtered_logs, "No matching daemon logs.\n");
     for action in ["on", "off", "status"] {
         let error = execute(
             Cli::try_parse_from(["voytty", "logs", "debug", action]).expect("control parses"),

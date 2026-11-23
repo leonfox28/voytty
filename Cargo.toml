@@ -53,7 +53,7 @@ protoc-bin-vendored = "=3.2.0"
 qrcode = { version = "=0.14.1", default-features = false }
 png = "=0.18.1"
 ring = "=0.17.14"
-reqwest = { version = "=0.13.4", default-features = false, features = ["blocking", "rustls-no-provider"] }
+reqwest = { version = "=0.13.4", default-features = false, features = ["rustls-no-provider"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std"] }
 rusqlite = { version = "=0.41.0", default-features = false, features = ["bundled"] }
 semver = "=1.0.28"

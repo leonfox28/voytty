@@ -48,10 +48,39 @@ impl InputStop {
     }
 }
 
-#[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
+#[cfg(any(
+    windows,
+    all(unix, not(any(target_os = "android", target_os = "redox")))
+))]
 const HOSTED_TERM: &str = "xterm-256color";
-#[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
+#[cfg(any(
+    windows,
+    all(unix, not(any(target_os = "android", target_os = "redox")))
+))]
 const HOSTED_COLORTERM: &str = "truecolor";
+#[cfg(any(windows, test))]
+const WINDOWS_STRIPPED_TERMINAL_VARIABLES: &[&str] = &[
+    "TMUX",
+    "TMUX_PANE",
+    "STY",
+    "WT_SESSION",
+    "WT_PROFILE_ID",
+    "TERM_SESSION_ID",
+    "ITERM_SESSION_ID",
+    "ITERM_PROFILE",
+    "WEZTERM_PANE",
+    "WEZTERM_EXECUTABLE",
+    "KITTY_WINDOW_ID",
+    "KITTY_PID",
+    "ALACRITTY_SOCKET",
+    "ALACRITTY_LOG",
+    "ALACRITTY_WINDOW_ID",
+    "KONSOLE_VERSION",
+    "VTE_VERSION",
+    "GHOSTTY_RESOURCES_DIR",
+    "ConEmuPID",
+    "ANSICON",
+];
 
 #[cfg(windows)]
 type NativeMaster = Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>;
@@ -450,13 +479,7 @@ impl PtyHost {
                 .map_err(|error| operation_error(PtyOperation::Spawn, error))?;
             let directory = working_directory.unwrap_or(account.home());
             validate_directory(directory, PtyPathKind::WorkingDirectory)?;
-            let mut builder = CommandBuilder::new(account.shell());
-            builder.arg("-NoLogo");
-            builder.cwd(directory);
-            builder.env("TERM", "xterm-256color");
-            builder.env("COLORTERM", "truecolor");
-            builder.env("TERM_PROGRAM", identity.as_str());
-            builder.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+            let builder = windows_login_shell_builder(account.shell(), directory, identity);
             self.spawn_builder(builder, size)
         }
         #[cfg(not(any(
@@ -931,6 +954,25 @@ fn account_error(error: AccountError) -> PtyError {
     }
 }
 
+#[cfg(any(windows, test))]
+fn windows_login_shell_builder(
+    shell: &Path,
+    directory: &Path,
+    identity: TerminalIdentity,
+) -> CommandBuilder {
+    let mut builder = CommandBuilder::new(shell);
+    builder.arg("-NoLogo");
+    builder.cwd(directory);
+    for variable in WINDOWS_STRIPPED_TERMINAL_VARIABLES {
+        builder.env_remove(variable);
+    }
+    builder.env("TERM", HOSTED_TERM);
+    builder.env("COLORTERM", HOSTED_COLORTERM);
+    builder.env("TERM_PROGRAM", identity.as_str());
+    builder.env("TERM_PROGRAM_VERSION", crate::build_identity().version);
+    builder
+}
+
 #[cfg(all(unix, not(any(target_os = "android", target_os = "redox"))))]
 fn login_shell_builder(
     account: &EffectiveAccount,
@@ -1244,5 +1286,33 @@ mod tests {
             })
         );
         Ok(())
+    }
+
+    #[test]
+    fn windows_login_builder_strips_outer_terminal_vars_and_uses_build_version() {
+        let builder = windows_login_shell_builder(
+            Path::new("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
+            Path::new("C:/Users/example"),
+            TerminalIdentity::default(),
+        );
+        for stripped in ["TMUX", "TMUX_PANE", "WT_SESSION", "KITTY_WINDOW_ID"] {
+            assert_eq!(
+                builder.get_env(stripped),
+                None,
+                "{stripped} must not leak into Windows hosted shells"
+            );
+        }
+        assert_eq!(
+            builder.get_env("TERM"),
+            Some(std::ffi::OsStr::new(HOSTED_TERM))
+        );
+        assert_eq!(
+            builder.get_env("COLORTERM"),
+            Some(std::ffi::OsStr::new(HOSTED_COLORTERM))
+        );
+        assert_eq!(
+            builder.get_env("TERM_PROGRAM_VERSION"),
+            Some(std::ffi::OsStr::new(crate::build_identity().version))
+        );
     }
 }

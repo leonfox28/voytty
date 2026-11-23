@@ -37,6 +37,8 @@ class ClassificationTests(unittest.TestCase):
             (["deploy/relay/Dockerfile", "docs/relay.md"], {"relay"}),
             (["tools/release/build-native.sh"], {"rust", "native"}),
             (["install/versioned.sh.in"], {"rust", "native"}),
+            (["release/public-key.hex"], {"rust", "mobile", "native"}),
+            (["release/android-certificate.sha256"], {"rust", "mobile", "native"}),
             (["crates/cli/src/main.rs", "docs/relay.md"], {"rust", "relay"}),
         ]
         for paths, expected in cases:

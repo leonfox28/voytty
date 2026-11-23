@@ -42,7 +42,9 @@ def path_plan(paths: list[str]) -> dict[str, bool]:
             continue
         if path.startswith(("deploy/relay/", "tests/relay/")) or path == "docs/relay.md":
             plan["relay"] = True
-        elif path.startswith(("tools/release/", "tests/release/", "install/", "release/")):
+        elif path.startswith("release/"):
+            plan.update(rust=True, mobile=True, native=True)
+        elif path.startswith(("tools/release/", "tests/release/", "install/")):
             plan.update(rust=True, native=True)
         elif path.startswith(("crates/", "proto/")):
             plan["rust"] = True

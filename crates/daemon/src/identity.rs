@@ -7,6 +7,7 @@ use std::io::Write;
 use iroh::SecretKey;
 use voytty_core::{DeviceId, DomainErrorKind};
 use voytty_platform::user_state::{UserPaths, atomic_create, validate_regular_file};
+use zeroize::Zeroizing;
 
 use crate::error::DaemonError;
 
@@ -20,18 +21,20 @@ impl DeviceIdentity {
     pub fn load(paths: &UserPaths) -> Result<Self, DaemonError> {
         validate_regular_file(paths.identity(), paths.uid())
             .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?;
-        let bytes = fs::read(paths.identity()).map_err(|error| {
+        let raw = Zeroizing::new(fs::read(paths.identity()).map_err(|error| {
             DaemonError::new(DomainErrorKind::IdentityInvalid, error.to_string())
-        })?;
-        let bytes: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
-            DaemonError::new(
+        })?);
+        if raw.len() != 32 {
+            return Err(DaemonError::new(
                 DomainErrorKind::IdentityInvalid,
                 format!(
                     "identity.key must contain exactly 32 bytes, got {}",
-                    bytes.len()
+                    raw.len()
                 ),
-            )
-        })?;
+            ));
+        }
+        let mut bytes = Zeroizing::new([0_u8; 32]);
+        bytes.copy_from_slice(&raw);
         Ok(Self {
             secret_key: SecretKey::from_bytes(&bytes),
         })
@@ -42,9 +45,11 @@ impl DeviceIdentity {
         let identity = Self {
             secret_key: SecretKey::generate(),
         };
-        let bytes = identity.secret_key.to_bytes();
-        atomic_create(paths.identity(), paths.uid(), |file| file.write_all(&bytes))
-            .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?;
+        let bytes = Zeroizing::new(identity.secret_key.to_bytes());
+        atomic_create(paths.identity(), paths.uid(), |file| {
+            file.write_all(bytes.as_slice())
+        })
+        .map_err(|error| DaemonError::new(DomainErrorKind::PathUnsafe, error.to_string()))?;
         Ok(identity)
     }
 

@@ -534,3 +534,36 @@ fn merged_tail_orders_rfc3339_fractional_seconds_by_time_not_text() {
         ]
     );
 }
+
+#[test]
+fn export_excludes_filtered_debug_snapshot_bytes_from_truncated_bytes() {
+    use std::io::Write;
+    let mut normal = tempfile::tempfile().expect("normal snapshot");
+    let mut debug = tempfile::tempfile().expect("debug snapshot");
+    let record = Record::new(Event::new(Kind::ConnectionStarted), "abc-123", 1)
+        .encode()
+        .expect("record");
+    normal.write_all(&record).expect("write normal");
+    debug.write_all(&record).expect("write debug");
+    let mut snapshots = vec![
+        Snapshot {
+            file: normal,
+            start: 10,
+            length: record.len() as u64,
+            detail: false,
+        },
+        Snapshot {
+            file: debug,
+            start: 500,
+            length: record.len() as u64,
+            detail: true,
+        },
+    ];
+    let mut out = Vec::new();
+    let without_debug = export(&mut snapshots, &mut out, false, 0).expect("export without debug");
+    assert_eq!(without_debug.truncated_bytes, 10);
+
+    out.clear();
+    let with_debug = export(&mut snapshots, &mut out, true, 0).expect("export with debug");
+    assert_eq!(with_debug.truncated_bytes, 510);
+}

@@ -3943,7 +3943,12 @@ fn signals_restore_termios_and_ui_before_the_normal_mode_diagnostic() {
     if std::env::var_os("VOYTTY_TERMINAL_SIGNAL_CHILD").is_some() {
         return;
     }
-    for signal in [NixSignal::SIGINT, NixSignal::SIGTERM, NixSignal::SIGHUP] {
+    for signal in [
+        NixSignal::SIGINT,
+        NixSignal::SIGTERM,
+        NixSignal::SIGHUP,
+        NixSignal::SIGTSTP,
+    ] {
         assert_signal_restoration(signal);
     }
 }
@@ -4062,6 +4067,7 @@ fn signal_restore_child() {
             mut interrupt,
             mut terminate,
             mut hangup,
+            mut suspend,
         } = TerminalSignals::install()?;
         let stdin = io::stdin();
         let stdout = io::stdout();
@@ -4075,6 +4081,7 @@ fn signal_restore_child() {
             &mut interrupt,
             &mut terminate,
             &mut hangup,
+            &mut suspend,
             cancellation_sender,
         )
         .await;
@@ -4198,4 +4205,75 @@ fn panic_hook_child() {
     let custom = std::panic::take_hook();
     drop(custom);
     std::panic::set_hook(process_hook);
+}
+
+#[test]
+fn suppressed_panic_hook_records_process_panicked_diagnostics_without_payload() {
+    if std::env::var_os("VOYTTY_PANIC_DIAGNOSTICS_CHILD").is_some() {
+        return;
+    }
+    let output = Command::new(std::env::current_exe().expect("current test binary"))
+        .arg("--exact")
+        .arg("terminal_ui::desktop::tests::panic_diagnostics_child")
+        .arg("--ignored")
+        .env("VOYTTY_PANIC_DIAGNOSTICS_CHILD", "1")
+        .output()
+        .expect("run isolated panic-diagnostics child");
+    assert!(
+        output.status.success(),
+        "isolated panic-diagnostics child failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "isolated panic-diagnostics helper"]
+fn panic_diagnostics_child() {
+    if std::env::var_os("VOYTTY_PANIC_DIAGNOSTICS_CHILD").is_none() {
+        return;
+    }
+    struct CaptureSink(Mutex<Vec<String>>);
+    impl voytty_diagnostics::Sink for CaptureSink {
+        fn append(&self, detail: bool, bytes: &[u8]) -> io::Result<()> {
+            assert!(!detail, "ProcessPanicked must record on the primary lane");
+            self.0
+                .lock()
+                .expect("capture sink")
+                .push(String::from_utf8_lossy(bytes).into_owned());
+            Ok(())
+        }
+        fn control(&self) -> io::Result<voytty_diagnostics::Control> {
+            Ok(voytty_diagnostics::Control::disabled())
+        }
+    }
+
+    let captured = Arc::new(CaptureSink(Mutex::new(Vec::new())));
+    let recorder =
+        voytty_diagnostics::Recorder::new(captured.clone()).expect("diagnostic recorder");
+    assert!(
+        voytty_diagnostics::install(recorder),
+        "isolated child owns global diagnostic installation"
+    );
+    static PREVIOUS_CALLS: AtomicUsize = AtomicUsize::new(0);
+    let process_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {
+        PREVIOUS_CALLS.fetch_add(1, Ordering::SeqCst);
+    }));
+    {
+        let _suppressed = ScopedPanicHook::suppress();
+        let result = std::panic::catch_unwind(|| panic!("TOP_SECRET_TERMINAL_PANIC_PAYLOAD"));
+        assert!(result.is_err());
+    }
+    let custom = std::panic::take_hook();
+    drop(custom);
+    std::panic::set_hook(process_hook);
+    assert_eq!(PREVIOUS_CALLS.load(Ordering::SeqCst), 0);
+    let records = captured.0.lock().expect("capture sink");
+    assert_eq!(records.len(), 1, "expected one ProcessPanicked record");
+    let decoded =
+        voytty_diagnostics::Record::decode(records[0].as_bytes()).expect("valid diagnostic JSON");
+    assert_eq!(decoded.event, voytty_diagnostics::Kind::ProcessPanicked);
+    assert_eq!(decoded.level, voytty_diagnostics::Level::Error);
+    assert!(!records[0].contains("TOP_SECRET_TERMINAL_PANIC_PAYLOAD"));
 }

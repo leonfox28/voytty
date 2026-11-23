@@ -3147,3 +3147,60 @@ fn unix_fixture_service(
 fn process_exists(process_id: i32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(process_id), None).is_ok()
 }
+
+#[cfg(unix)]
+#[test]
+fn detach_wakes_session_actor_promptly_without_waiting_for_monitor_tick() {
+    let temporary = tempfile::tempdir().expect("detach wake fixture");
+    let own = DeviceId::from_array([0x61; 32]);
+    let service = unix_fixture_service(own, temporary.path().to_path_buf(), "sleep 30");
+    let principal = service.local_principal(AttachmentId::from_array([0x62; 16]));
+    let lease = service.issue_operation_lease(principal).expect("lease");
+    let summary = service
+        .create(
+            principal,
+            OperationId { lease, sequence: 1 },
+            SessionName::new("detach-wake").expect("name"),
+            None,
+            None,
+        )
+        .expect("create");
+    let prepared = service
+        .prepare_attach(
+            principal,
+            Some(SessionSelector::Id(summary.session_id)),
+            false,
+            false,
+            None,
+        )
+        .expect("attach");
+    assert!(
+        service
+            .list()
+            .expect("list")
+            .iter()
+            .any(|s| s.session_id == summary.session_id && s.has_controller)
+    );
+    prepared.attachment.detach();
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        if service
+            .list()
+            .expect("list")
+            .iter()
+            .any(|s| s.session_id == summary.session_id && !s.has_controller)
+        {
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        service
+            .list()
+            .expect("list")
+            .iter()
+            .any(|s| s.session_id == summary.session_id && !s.has_controller),
+        "detach must wake the session actor promptly"
+    );
+    service.shutdown().expect("shutdown");
+}
