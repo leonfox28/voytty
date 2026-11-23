@@ -192,7 +192,7 @@ fn fallible_adapters_take_zeroizing_ownership_before_validation() {
     assert!(zeroizing < length_check && zeroizing < decode);
     assert!(constructor.contains("Ok(Self(text))"));
 
-    let proto_source = include_str!("../../proto/src/lib.rs");
+    let proto_source = include_str!("../../proto/src/pairing.rs");
     let proof_start = proto_source
         .find("impl TryFrom<v2::PairProof> for PairProof")
         .expect("PairProof adapter");

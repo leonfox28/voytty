@@ -187,6 +187,18 @@ macOS 上，平台和终端模块的 Clippy 通过，模块测试 119 项通过�
 
 本轮补充验证在 macOS 上通过 `sh tests/source-policy.sh`、`just ci-policy`（含扩展后的 `shellcheck`、`actionlint`、`secret-scan`、全部安装器/发布夹具与 2 项新增下载日志/分块限长回归）、`just relay-static`、`RUSTDOCFLAGS="-D warnings" cargo doc`（零警告）、全工作区 Clippy（零警告）、全工作区测试 **898 项通过 / 17 项忽略**、`just mobile-core-check android`、`just mobile-core-check ios`、`cargo deny check bans licenses sources`，以及 Windows x64 全工作区 `cargo xwin clippy --locked --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings`（零警告）。Windows 原生运行验证、`voytty-app` 私有端集成测试，以及既有的上游 `url 2.5.8`（`RUSTSEC-2026-0592`）基线通告仍待相应环境/后续决策处理。
 
+## 架构减债后续重构
+
+2026-11-23，在 `301bcf6` 之后独立完成第六节剩余的可本地落地的结构重构（保持全部公开 API 与行为不变）：
+
+| 范围 | 重构结果 |
+| --- | --- |
+| `voytty-proto` 模块化 | 将 3,903 行的 `crates/proto/src/lib.rs` 拆分为 41 行根模块与 `redacted_debug.rs`、`frame.rs`、`terminal.rs`、`pairing.rs`、`tests.rs`，全部原有 `pub use` 导出保持不变，并同步更新 `pairing_secrets.rs` 的源码审计路径。[协议根模块](../crates/proto/src/lib.rs) · [线缆帧](../crates/proto/src/frame.rs) · [终端编解码](../crates/proto/src/terminal.rs) · [配对编解码](../crates/proto/src/pairing.rs) |
+| `voytty-client` 会话与测试拆分 | 将 4,984 行的 `crates/client/src/session.rs` 拆为 1,185 行主模块 + `session/connect.rs`（264 行）+ `session/reconnect.rs`（309 行）+ `session/tests.rs`（3,248 行）；同步将 `view.rs`（2,872 → 1,339 行）与 `iroh_controller.rs`（2,083 → 1,278 行）的内联测试抽至独立 `tests.rs`。[客户端会话](../crates/client/src/session.rs) · [视图驱动](../crates/client/src/view.rs) · [移动端控制器](../crates/client/src/iroh_controller.rs) |
+| 超时工具收敛 | 在 `voytty_client::protocol::timeout_until` 统一绝对截止时间等待语义；`daemon` 与 `client` 的 7 处重复实现全部改为复用该入口，同时保留 `voytty_client::remote_unary::timeout_until` 公开签名兼容。[共享协议辅助](../crates/client/src/protocol.rs) |
+
+重构后在 macOS 上通过 `cargo +1.98.0 fmt --all -- --check`、全工作区 Clippy（零警告）、`RUSTDOCFLAGS="-D warnings" cargo +1.98.0 doc --workspace --no-deps`（零警告）、全工作区测试 **898 项通过 / 0 失败 / 17 项忽略**、`just mobile-core-check android`、`just mobile-core-check ios`、`sh tests/source-policy.sh`、`just ci-policy`，以及 Windows x64 全工作区 `cargo +1.98.0 xwin clippy --locked --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings`（零警告）。三个本地 vendored 补丁分叉仍按长期上游合入节奏跟进；`voytty-app` 私有端联调与 Windows 原生运行仍待对应环境验证。
+
 ---
 
 ## 一、总体评估与本地基线验证

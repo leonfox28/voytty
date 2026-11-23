@@ -588,21 +588,7 @@ async fn write_service_error_best_effort<Writer>(
     .await;
 }
 
-async fn timeout_at<F>(
-    deadline: Instant,
-    future: F,
-    detail: &'static str,
-) -> Result<F::Output, DaemonError>
-where
-    F: Future,
-{
-    if Instant::now() >= deadline {
-        return Err(DaemonError::new(DomainErrorKind::DeadlineExceeded, detail));
-    }
-    tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), future)
-        .await
-        .map_err(|_| DaemonError::new(DomainErrorKind::DeadlineExceeded, detail))
-}
+use voytty_client::protocol::timeout_until as timeout_at;
 
 async fn timeout_after<F>(timeout: Duration, future: F) -> Result<F::Output, DaemonError>
 where

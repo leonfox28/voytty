@@ -1178,21 +1178,7 @@ where
 }
 
 #[cfg(any(unix, windows))]
-async fn timeout_at<F>(
-    deadline: Instant,
-    future: F,
-    detail: &'static str,
-) -> Result<F::Output, DaemonError>
-where
-    F: std::future::Future,
-{
-    if Instant::now() >= deadline {
-        return Err(DaemonError::new(DomainErrorKind::DeadlineExceeded, detail));
-    }
-    tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), future)
-        .await
-        .map_err(|_| DaemonError::new(DomainErrorKind::DeadlineExceeded, detail))
-}
+use voytty_client::protocol::timeout_until as timeout_at;
 
 #[cfg(any(unix, windows))]
 async fn write_error_best_effort<Writer>(

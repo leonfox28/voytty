@@ -680,19 +680,12 @@ pub async fn timeout_until<T>(
     deadline: Instant,
     future: impl Future<Output = T>,
 ) -> Result<T, DaemonError> {
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
-        return Err(DaemonError::new(
-            DomainErrorKind::DeadlineExceeded,
-            "remote Session unary deadline elapsed",
-        ));
-    }
-    tokio::time::timeout(remaining, future).await.map_err(|_| {
-        DaemonError::new(
-            DomainErrorKind::DeadlineExceeded,
-            "remote Session unary exceeded its absolute deadline",
-        )
-    })
+    crate::protocol::timeout_until(
+        deadline,
+        future,
+        "remote Session unary exceeded its absolute deadline",
+    )
+    .await
 }
 
 fn outcome_unknown() -> DaemonError {

@@ -843,9 +843,10 @@ impl PairingServiceInner {
         io: &mut Box<dyn PairProtocolIo>,
         deadline: Instant,
     ) -> Result<(), DaemonError> {
-        let mut guard = match timeout_until(
+        let mut guard = match voytty_client::protocol::timeout_until(
             deadline,
             self.authorization.authorize_guard(controller_device_id),
+            "pairing transport deadline elapsed",
         )
         .await
         {
@@ -1313,16 +1314,6 @@ fn ensure_deadline(deadline: Instant, detail: &'static str) -> Result<(), Daemon
     } else {
         Ok(())
     }
-}
-
-async fn timeout_until<F>(deadline: Instant, future: F) -> Result<F::Output, DaemonError>
-where
-    F: Future,
-{
-    ensure_deadline(deadline, "pairing transport deadline elapsed")?;
-    tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), future)
-        .await
-        .map_err(|_| deadline_exceeded("pairing transport deadline elapsed"))
 }
 
 #[cfg(all(test, unix))]

@@ -1178,7 +1178,13 @@ async fn route_incoming(
     let Ok(mut accepting) = incoming.accept() else {
         return;
     };
-    let alpn = match timeout_at(normal_deadline, accepting.alpn()).await {
+    let alpn = match voytty_client::protocol::timeout_until(
+        normal_deadline,
+        accepting.alpn(),
+        "network handshake deadline elapsed",
+    )
+    .await
+    {
         Ok(Ok(alpn)) => alpn,
         Ok(Err(_)) => {
             failed(
@@ -1200,7 +1206,13 @@ async fn route_incoming(
             };
             // Awaiting Accepting completes mutual TLS authentication. The
             // completed Connection type cannot be produced by Iroh's 0-RTT API.
-            let connection = match timeout_at(normal_deadline, accepting).await {
+            let connection = match voytty_client::protocol::timeout_until(
+                normal_deadline,
+                accepting,
+                "network handshake deadline elapsed",
+            )
+            .await
+            {
                 Ok(Ok(connection)) => connection,
                 Ok(Err(_)) => {
                     failed(
@@ -1308,18 +1320,6 @@ fn supervisor_retry_delay(
         )
     };
     scaled.saturating_add(jitter).min(cap)
-}
-
-async fn timeout_at<F>(deadline: Instant, future: F) -> Result<F::Output, DaemonError>
-where
-    F: Future,
-{
-    if Instant::now() >= deadline {
-        return Err(deadline_exceeded("network handshake deadline elapsed"));
-    }
-    tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), future)
-        .await
-        .map_err(|_| deadline_exceeded("network handshake deadline elapsed"))
 }
 
 async fn timeout_or_pair_shutdown<F>(

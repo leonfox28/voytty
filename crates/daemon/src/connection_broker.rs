@@ -2737,12 +2737,8 @@ async fn timeout_until<F>(deadline: Instant, future: F) -> Result<F::Output, Dae
 where
     F: std::future::Future,
 {
-    if Instant::now() >= deadline {
-        return Err(deadline_exceeded("transport operation deadline elapsed"));
-    }
-    tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), future)
+    voytty_client::protocol::timeout_until(deadline, future, "transport operation deadline elapsed")
         .await
-        .map_err(|_| deadline_exceeded("transport operation deadline elapsed"))
 }
 
 async fn timeout_or_pair_shutdown<F>(

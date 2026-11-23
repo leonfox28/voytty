@@ -429,18 +429,7 @@ async fn timeout_until<F>(deadline: Instant, future: F) -> Result<F::Output, Dae
 where
     F: std::future::Future,
 {
-    if Instant::now() >= deadline {
-        return Err(deadline_exceeded());
-    }
-    tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), future)
-        .await
-        .map_err(|_| deadline_exceeded())
-}
-fn deadline_exceeded() -> DaemonError {
-    DaemonError::new(
-        DomainErrorKind::DeadlineExceeded,
-        "transport operation deadline elapsed",
-    )
+    crate::protocol::timeout_until(deadline, future, "transport operation deadline elapsed").await
 }
 fn transport_unavailable(detail: &'static str) -> DaemonError {
     DaemonError::new(DomainErrorKind::TransportUnavailable, detail)

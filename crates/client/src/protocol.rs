@@ -124,6 +124,23 @@ pub fn control_deadline() -> tokio::time::Instant {
     tokio::time::Instant::now() + DEFAULT_DEADLINE
 }
 
+/// Awaits `future` up to `deadline`, failing immediately if it already elapsed.
+pub async fn timeout_until<F>(
+    deadline: std::time::Instant,
+    future: F,
+    detail: &'static str,
+) -> Result<F::Output, ClientError>
+where
+    F: std::future::Future,
+{
+    if std::time::Instant::now() >= deadline {
+        return Err(ClientError::new(DomainErrorKind::DeadlineExceeded, detail));
+    }
+    tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), future)
+        .await
+        .map_err(|_| ClientError::new(DomainErrorKind::DeadlineExceeded, detail))
+}
+
 /// Returns the stable timeout diagnostic.
 pub fn control_timeout() -> ClientError {
     ClientError::new(
