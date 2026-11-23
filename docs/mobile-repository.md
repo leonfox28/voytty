@@ -15,7 +15,7 @@ from a dependency workspace.
 
 For shared-input changes and explicit full validation, public CI compiles `voytty-client` for Android, iOS devices and iOS
 simulators. Full validation retains all desktop, dependency, Relay and exact-SHA native
-candidate checks; ordinary PRs select the affected owners. App CI owns Kotlin/Swift builds, bridge tests, Android lint/unit
+candidate checks; ordinary `main` pushes and optional PRs select the affected owners. App CI owns Kotlin/Swift builds, bridge tests, Android lint/unit
 tests and iOS simulator runtime. A shared change needs both layers of evidence:
 the public build alone does not prove mobile app compatibility.
 

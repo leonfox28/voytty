@@ -125,14 +125,19 @@ just check-changes <base-commit>   # explicit comparison base
 just check                         # optional full current-host checkpoint
 ```
 
-Start substantive work from current `origin/main` (either directly on `main` or
-on a short-lived local branch fast-forwarded into `main`), run targeted checks
-while editing, then use `just check-changes` before pushing. This command uses
-the same classifier and recipes as CI. It always runs policy/dependency checks
-and selects native workspace or Relay checks from the complete diff, including
-uncommitted/untracked files. It does not require another full `just check` or
-mobile build after those selected checks pass. Hosted CI owns other OS/CPU,
-Android/iOS cross targets, Docker and the glibc/macOS packaging floors.
+Standard solo-maintainer workflow:
+
+1. Start from current `origin/main` (directly on `main`, or on a short-lived local branch fast-forwarded into `main`).
+2. While editing, run targeted `cargo clippy` / `cargo test` for the affected crate; before pushing, run `just check-changes` against `origin/main` (and integrate/test in `voytty-app` if shared crates changed).
+3. Push directly with `git push origin main` — no PR or waiting is required. GitHub Actions asynchronously runs the affected cross-platform checks in the background.
+4. When ready to cut a release, run `just release-prepare VERSION` on clean `main` followed by `just release-publish VERSION` (which runs or rejoins an exact-SHA `just full-check`, tags `vVERSION`, and triggers protected signing).
+
+`just check-changes` uses the same classifier and recipes as CI. It always runs
+policy/dependency checks and selects native workspace or Relay checks from the
+complete diff, including uncommitted/untracked files. It does not require
+another full `just check` or mobile build after those selected checks pass.
+Hosted CI owns other OS/CPU, Android/iOS cross targets, Docker and the
+glibc/macOS packaging floors.
 
 | Changed inputs | Hosted CI checks in addition to policy/dependencies |
 | --- | --- |
@@ -223,10 +228,11 @@ not mutate them:
    fast-forward pushes (publication remains gated by exact-SHA `full-check` and
    the protected `release` Environment).
 
-Apply protection only after `CI gate` exists on the default branch. Review critical path, cache hit rate, flaky failures and unique platform catches
-after enough scoped PR/full runs to measure steady-state behavior. Weekly `dependencies.yml` also runs both
-dependency-policy owners to detect new advisories while the project is idle.
-This is early detection; PR/main dependency failures remain blocking.
+Review critical path, cache hit rate, flaky failures and unique platform catches
+after enough scoped push/PR/full runs to measure steady-state behavior. Weekly
+`dependencies.yml` also runs both dependency-policy owners to detect new
+advisories while the project is idle. This is early detection; dependency
+failures fail CI and block releases.
 
 For a failed job, use the matching recipe printed in its step summary. Runner
 queue delay is separate from job execution time; job timeouts prevent hangs

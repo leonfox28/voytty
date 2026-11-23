@@ -262,7 +262,7 @@ assets are never replaced.
 
 The x86-64/ARM64 jobs build on matching Windows hosts through `just windows-build`,
 check the PE machine type and embedded source SHA, and run the candidate CLI.
-They use no compiled dependency cache. PR binaries stay on the runner; only the
+They use no compiled dependency cache. Non-candidate push/PR binaries stay on the runner; only the
 explicit exact-main full run uploads candidates. Ubuntu assembles deterministic
 `.tar.gz` archives containing exactly `voytty.exe`; the manifest and signed
 checksum inventory include both new targets and `voytty-install.ps1`.
