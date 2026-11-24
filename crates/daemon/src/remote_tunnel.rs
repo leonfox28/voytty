@@ -23,8 +23,9 @@ use crate::connection_broker::{
     AuthenticatedBiStream, ConnectionBroker, SelectedPathObservation, StreamPurpose,
 };
 use crate::error::DaemonError;
+use crate::local_ipc::reject_local_request;
 use crate::network::PathKind;
-use crate::service::{ServiceReply, protocol_error};
+use crate::service::protocol_error;
 use crate::session_wire::{FirstFrame, SessionWireLimits};
 
 const PATH_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -64,7 +65,7 @@ where
     let (demand, remote) = match opened {
         Ok(opened) => opened,
         Err(error) => {
-            write_service_error_best_effort(&mut local_stream, request_id, &error, deadline).await;
+            reject_local_request(&mut local_stream, request_id, &error, deadline).await;
             return Err(error);
         }
     };
@@ -561,29 +562,6 @@ async fn write_closed_best_effort<Writer>(
             reason: reason as i32,
         },
         timeout,
-    )
-    .await;
-}
-
-async fn write_service_error_best_effort<Writer>(
-    writer: &mut Writer,
-    request_id: u64,
-    error: &DaemonError,
-    deadline: Instant,
-) where
-    Writer: AsyncWrite + Unpin,
-{
-    let bytes = ServiceReply::error(request_id, error).bytes;
-    let _ = timeout_at(
-        deadline,
-        writer.write_all(&bytes),
-        "local tunnel error write timed out",
-    )
-    .await;
-    let _ = timeout_at(
-        deadline,
-        writer.flush(),
-        "local tunnel error flush timed out",
     )
     .await;
 }

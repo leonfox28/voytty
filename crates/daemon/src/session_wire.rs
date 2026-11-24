@@ -53,6 +53,8 @@ use crate::connection_broker::{
 #[cfg(any(unix, windows))]
 use crate::error::DaemonError;
 #[cfg(any(unix, windows))]
+use crate::local_ipc::reject_local_request;
+#[cfg(any(unix, windows))]
 use crate::service::{ServiceReply, protocol_error};
 #[cfg(any(unix, windows))]
 use crate::session::{
@@ -609,8 +611,12 @@ impl SessionWireServer {
         {
             Ok(prepared) => prepared,
             Err(error) => {
-                write_error_best_effort(&mut stream, first.frame.request_id, &error, deadline)
-                    .await;
+                let request_id = first.frame.request_id;
+                if context.is_remote() {
+                    write_error_best_effort(&mut stream, request_id, &error, deadline).await;
+                } else {
+                    reject_local_request(&mut stream, request_id, &error, deadline).await;
+                }
                 return Err(error);
             }
         };

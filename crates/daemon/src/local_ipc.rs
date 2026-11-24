@@ -20,7 +20,7 @@ use std::{
 };
 #[cfg(any(unix, windows))]
 use tokio::{
-    io::{AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     sync::{Semaphore, mpsc},
     task::{AbortHandle, JoinSet},
 };
@@ -386,7 +386,7 @@ async fn handle_connection(
         match tokio::time::timeout_at(initial_deadline.into(), read_first(&mut stream)).await {
             Ok(Ok(first)) => first,
             Ok(Err(error)) => {
-                write_error(&mut stream, 0, &error, initial_deadline).await;
+                reject_local_request(&mut stream, 0, &error, initial_deadline).await;
                 return;
             }
             Err(_) => {
@@ -394,7 +394,7 @@ async fn handle_connection(
                     DomainErrorKind::DeadlineExceeded,
                     "local request frame read exceeded its deadline",
                 );
-                write_error(&mut stream, 0, &error, initial_deadline).await;
+                reject_local_request(&mut stream, 0, &error, initial_deadline).await;
                 return;
             }
         };
@@ -418,7 +418,7 @@ async fn handle_connection(
                     DomainErrorKind::TransportUnavailable,
                     "remote Session transport is not composed into this daemon",
                 );
-                write_error(&mut stream, request_id, &error, absolute_deadline).await;
+                reject_local_request(&mut stream, request_id, &error, absolute_deadline).await;
                 Err(error)
             }
         };
@@ -443,7 +443,7 @@ async fn handle_connection(
         let target = match terminal_attach_target(&first.frame) {
             Ok(target) => target,
             Err(error) => {
-                write_error(&mut stream, request_id, &error, absolute_deadline).await;
+                reject_local_request(&mut stream, request_id, &error, absolute_deadline).await;
                 return;
             }
         };
@@ -452,7 +452,7 @@ async fn handle_connection(
             let error = malformed(
                 "remote terminal attachment requires a local Session tunnel Open request",
             );
-            write_error(&mut stream, request_id, &error, absolute_deadline).await;
+            reject_local_request(&mut stream, request_id, &error, absolute_deadline).await;
             return;
         }
         local_attachment.store(true, Ordering::Release);
@@ -492,7 +492,7 @@ async fn handle_connection(
     }) {
         Ok(frame) => frame,
         Err(error) => {
-            write_error(&mut stream, request_id, &error, absolute_deadline).await;
+            reject_local_request(&mut stream, request_id, &error, absolute_deadline).await;
             return;
         }
     };
@@ -542,7 +542,8 @@ async fn handle_connection(
     )
     .await;
     if let Ok(mut stream) = output {
-        write_reply_until(&mut stream, &reply, absolute_deadline).await;
+        let _ = tokio::time::timeout_at(absolute_deadline.into(), write_reply(&mut stream, &reply))
+            .await;
     }
     if reply.stop_committed {
         let _ = stop_sender.send(());
@@ -574,26 +575,36 @@ fn terminal_attach_target(frame: &DecodedFrame) -> Result<Option<DeviceId>, Daem
 }
 
 #[cfg(any(unix, windows))]
-async fn write_error(
-    stream: &mut (impl AsyncWrite + Unpin),
+pub(crate) async fn reject_local_request(
+    stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
     request_id: u64,
     error: &DaemonError,
     deadline: Instant,
 ) {
-    write_reply_until(stream, &ServiceReply::error(request_id, error), deadline).await;
+    let reply = ServiceReply::error(request_id, error);
+    let _ = tokio::time::timeout_at(deadline.into(), async {
+        write_reply(stream, &reply).await?;
+        #[cfg(unix)]
+        {
+            // Linux resets the peer on close if request bytes are still queued.
+            // Send the reply and its EOF first, then discard raw input until the
+            // peer finishes or the original request deadline expires.
+            use tokio::io::AsyncReadExt;
+            let mut discard = zeroize::Zeroizing::new([0_u8; 4096]);
+            while stream.read(&mut *discard).await? != 0 {}
+        }
+        std::io::Result::Ok(())
+    })
+    .await;
 }
 
 #[cfg(any(unix, windows))]
-async fn write_reply_until(
+async fn write_reply(
     stream: &mut (impl AsyncWrite + Unpin),
     reply: &ServiceReply,
-    deadline: Instant,
-) {
-    let _ = tokio::time::timeout_at(deadline.into(), async {
-        stream.write_all(&reply.bytes).await?;
-        stream.shutdown().await
-    })
-    .await;
+) -> std::io::Result<()> {
+    stream.write_all(&reply.bytes).await?;
+    stream.shutdown().await
 }
 
 #[cfg(any(unix, windows))]
@@ -637,7 +648,7 @@ mod tests {
         // A full error frame cannot fit until this peer starts reading.
         tokio::time::timeout(
             budget * 2,
-            write_error(&mut writer, 0, &error, deadline.into_std()),
+            reject_local_request(&mut writer, 0, &error, deadline.into_std()),
         )
         .await
         .expect("early error write is bounded");
@@ -648,6 +659,101 @@ mod tests {
             .await
             .expect("read error prefix");
         assert_eq!(received.len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rejection_delivers_eof_before_waiting_for_an_open_peer() {
+        use tokio::io::AsyncReadExt;
+
+        let (mut server, mut client) = tokio::io::duplex(4096);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let error = malformed("invalid local request");
+        let expected = ServiceReply::error(7, &error).bytes;
+        let handler = tokio::spawn(async move {
+            reject_local_request(&mut server, 7, &error, deadline.into_std()).await;
+        });
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut bytes))
+            .await
+            .expect("reply precedes the drain deadline")
+            .expect("response EOF");
+        assert_eq!(bytes, expected.as_slice());
+        // Keep the client's write side open. It cannot extend the drain deadline.
+        tokio::time::timeout_at(deadline + Duration::from_millis(1), handler)
+            .await
+            .expect("bounded rejection")
+            .expect("handler completed");
+    }
+
+    #[tokio::test]
+    async fn early_rejections_deliver_one_error_and_eof_with_a_large_unread_body() {
+        use tokio::io::AsyncReadExt;
+
+        let service = Arc::new(DaemonService::with_started_at(stop_setup(), 1));
+        let unary = encode_message(
+            WireKind::LocalStatusRequest,
+            7,
+            0,
+            &v2::LocalStatusRequest {},
+        )
+        .expect("status request");
+        let attach = encode_message(
+            WireKind::TerminalAttachRequest,
+            8,
+            0,
+            &v2::TerminalAttachRequest {
+                target: Some(v2::TargetSelector {
+                    target: Some(v2::target_selector::Target::Local(true)),
+                }),
+                ..Default::default() // missing session selector
+            },
+        )
+        .expect("local attachment request");
+        let tunnel = encode_message(
+            WireKind::LocalSessionTunnelOpenRequest,
+            9,
+            0,
+            &v2::LocalSessionTunnelOpenRequest::default(),
+        )
+        .expect("tunnel request");
+        let mut oversized = Vec::new();
+        prost::encoding::encode_varint(voytty_proto::MAX_FRAME_BYTES as u64 + 1, &mut oversized);
+        for (mut request, request_id, code) in [
+            (unary, 7, "malformed_frame"),
+            (attach, 8, "malformed_frame"),
+            (tunnel, 9, "transport_unavailable"),
+            (oversized, 0, "frame_too_large"),
+        ] {
+            // A partial following frame spans multiple ingress reads. For an
+            // oversized first prefix, these same bytes are its rejected body.
+            prost::encoding::encode_varint(512 * 1024, &mut request);
+            request.resize(request.len() + 256 * 1024, 0);
+            let (mut client, server) = LocalStream::pair().expect("Unix socket pair");
+            let (stop, _stops) = mpsc::unbounded_channel();
+            let handler = tokio::spawn(handle_connection(
+                server,
+                nix::unistd::Uid::effective().as_raw(),
+                Arc::clone(&service),
+                stop,
+                LocalIpcLimits::default(),
+                Arc::new(AtomicBool::new(false)),
+            ));
+            client.write_all(&request).await.expect("submit request");
+            client.shutdown().await.expect("finish request");
+            handler.await.expect("server closed the socket");
+
+            let mut bytes = Vec::new();
+            client.read_to_end(&mut bytes).await.expect("clean EOF");
+            let mut decoder = FrameDecoder::new();
+            let frames = decoder.feed(&bytes).expect("decode error response");
+            decoder.finish().expect("complete response");
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].request_id, request_id);
+            let error: v2::ServiceError = frames[0]
+                .decode_message(WireKind::ServiceErrorResponse)
+                .expect("service error");
+            assert_eq!(error.code, code);
+        }
     }
 
     #[tokio::test]

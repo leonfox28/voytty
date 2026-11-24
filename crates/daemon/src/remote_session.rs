@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use voytty_client::progress::ProgressObserver;
 
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 #[cfg(test)]
 use voytty_client::model::session_summary_from_wire;
 use voytty_core::{DeviceId, DomainErrorKind};
@@ -23,6 +23,7 @@ use voytty_proto::v2;
 use crate::connection_broker::{ConnectionBroker, ConnectionDemand, StreamPurpose};
 use crate::device_directory::{DeviceDirectory, ResolvedSessionTarget};
 use crate::error::DaemonError;
+use crate::local_ipc::reject_local_request;
 use crate::remote_tunnel::{decode_tunnel_open, serve_remote_session_tunnel};
 use crate::session_wire::{FirstFrame, SessionWireLimits};
 
@@ -144,8 +145,7 @@ impl RemoteSessionService {
         let target = match decode_tunnel_open(&first) {
             Ok(target) => target,
             Err(error) => {
-                write_local_attachment_error_best_effort(&mut stream, request_id, &error, deadline)
-                    .await;
+                reject_local_request(&mut stream, request_id, &error, deadline).await;
                 return Err(error);
             }
         };
@@ -164,8 +164,7 @@ impl RemoteSessionService {
             .await
         };
         if let Err(error) = validation {
-            write_local_attachment_error_best_effort(&mut stream, request_id, &error, deadline)
-                .await;
+            reject_local_request(&mut stream, request_id, &error, deadline).await;
             return Err(error);
         }
         let Some(broker) = self.tunnel_broker.as_ref() else {
@@ -173,8 +172,7 @@ impl RemoteSessionService {
                 DomainErrorKind::TransportUnavailable,
                 "remote Session tunnel transport is unavailable in this local-only daemon",
             );
-            write_local_attachment_error_best_effort(&mut stream, request_id, &error, deadline)
-                .await;
+            reject_local_request(&mut stream, request_id, &error, deadline).await;
             return Err(error);
         };
         serve_remote_session_tunnel(broker, target, stream, first, limits, deadline).await
@@ -311,23 +309,6 @@ where
 }
 
 use voytty_client::remote_unary::timeout_until;
-
-async fn write_local_attachment_error_best_effort<Writer>(
-    writer: &mut Writer,
-    request_id: u64,
-    error: &DaemonError,
-    deadline: Instant,
-) where
-    Writer: AsyncWrite + Unpin,
-{
-    let bytes = crate::service::ServiceReply::error(request_id, error).bytes;
-    let write = async {
-        writer.write_all(&bytes).await?;
-        writer.flush().await?;
-        writer.shutdown().await
-    };
-    let _ = timeout_until(deadline, write).await;
-}
 
 fn transport_unavailable(detail: &'static str) -> DaemonError {
     DaemonError::new(DomainErrorKind::TransportUnavailable, detail)
@@ -647,7 +628,7 @@ mod tests {
         let error = transport_unavailable("injected unavailable attachment transport");
         tokio::time::timeout(
             Duration::from_secs(1),
-            write_local_attachment_error_best_effort(
+            reject_local_request(
                 &mut stream,
                 17,
                 &error,
