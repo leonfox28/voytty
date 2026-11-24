@@ -68,7 +68,7 @@ public static class VoyttyInstallerPlatform {
         int digits = 0;
         while (index < end && block[index] >= (byte)'0' && block[index] <= (byte)'7') {
             if (value > (long.MaxValue >> 3)) throw new InvalidDataException("Invalid native archive inventory");
-            value = (value << 3) | (long)(block[index] - (byte)'0');
+            value = (value * 8L) + (block[index] - (byte)'0');
             digits++;
             index++;
         }
