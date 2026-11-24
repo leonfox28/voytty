@@ -24,7 +24,10 @@ if ([Environment]::OSVersion.Version.Build -lt 17763) { throw 'Windows 10 versio
 if (-not ('VoyttyInstallerPlatform' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
+using System.IO;
+using System.IO.Compression;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class VoyttyInstallerPlatform {
     [StructLayout(LayoutKind.Sequential)]
     struct SecurityAttributes { public int Length; public IntPtr Descriptor; public int Inherit; }
@@ -46,6 +49,92 @@ public static class VoyttyInstallerPlatform {
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool IsWow64Process2(IntPtr process, out ushort processMachine, out ushort nativeMachine);
+
+    static int ReadFully(Stream stream, byte[] buffer, int count) {
+        int total = 0;
+        while (total < count) {
+            int read = stream.Read(buffer, total, count - total);
+            if (read == 0) break;
+            total += read;
+        }
+        return total;
+    }
+
+    static long ParseOctal(byte[] block, int offset, int length) {
+        int index = offset;
+        int end = offset + length;
+        while (index < end && (block[index] == 0x20 || block[index] == 0x00)) index++;
+        long value = 0;
+        int digits = 0;
+        while (index < end && block[index] >= (byte)'0' && block[index] <= (byte)'7') {
+            if (value > (long.MaxValue >> 3)) throw new InvalidDataException("Invalid native archive inventory");
+            value = (value << 3) | (long)(block[index] - (byte)'0');
+            digits++;
+            index++;
+        }
+        if (digits == 0) throw new InvalidDataException("Invalid native archive inventory");
+        while (index < end) {
+            if (block[index] != 0x20 && block[index] != 0x00) throw new InvalidDataException("Invalid native archive inventory");
+            index++;
+        }
+        return value;
+    }
+
+    // Extract using Win32 UTF-16 file APIs; Windows tar.exe mangles non-ACP Unicode paths.
+    public static void ExtractSingleFileTarGz(string archivePath, string expectedName, string outputPath, long maxBytes) {
+        using (var input = new FileStream(archivePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (var gzip = new GZipStream(input, CompressionMode.Decompress)) {
+            byte[] header = new byte[512];
+            if (ReadFully(gzip, header, 512) != 512) throw new InvalidDataException("Invalid native archive inventory");
+            long expectedChecksum = ParseOctal(header, 148, 8);
+            long actualChecksum = 0;
+            for (int i = 0; i < 512; i++) actualChecksum += (i >= 148 && i < 156) ? 0x20 : header[i];
+            if (actualChecksum != expectedChecksum) throw new InvalidDataException("Invalid native archive inventory");
+            byte typeFlag = header[156];
+            if (typeFlag != (byte)'0' && typeFlag != 0) throw new InvalidDataException("Invalid native archive inventory");
+            int nameLength = 0;
+            while (nameLength < 100 && header[nameLength] != 0) nameLength++;
+            string entryName = Encoding.UTF8.GetString(header, 0, nameLength);
+            bool isUstar = header[257] == (byte)'u' && header[258] == (byte)'s' && header[259] == (byte)'t'
+                && header[260] == (byte)'a' && header[261] == (byte)'r' && header[262] == 0;
+            if (isUstar && header[345] != 0) throw new InvalidDataException("Invalid native archive inventory");
+            if (!string.Equals(entryName, expectedName, StringComparison.Ordinal)) throw new InvalidDataException("Invalid native archive inventory");
+            long size = ParseOctal(header, 124, 12);
+            if (size <= 0 || size > maxBytes) throw new InvalidDataException("Invalid native archive inventory");
+            bool created = false;
+            try {
+                using (var output = new FileStream(outputPath, FileMode.CreateNew, FileAccess.Write, FileShare.None)) {
+                    created = true;
+                    byte[] buffer = new byte[81920];
+                    long remaining = size;
+                    while (remaining > 0) {
+                        int want = remaining > buffer.Length ? buffer.Length : (int)remaining;
+                        int read = gzip.Read(buffer, 0, want);
+                        if (read == 0) throw new InvalidDataException("Unable to extract native archive");
+                        output.Write(buffer, 0, read);
+                        remaining -= read;
+                    }
+                    output.Flush(true);
+                }
+                int padding = (int)((512L - (size % 512L)) % 512L);
+                if (padding > 0 && ReadFully(gzip, header, padding) != padding) throw new InvalidDataException("Unable to extract native archive");
+                int zeroBlocks = 0;
+                while (true) {
+                    int tail = ReadFully(gzip, header, 512);
+                    if (tail == 0) break;
+                    if (tail != 512) throw new InvalidDataException("Invalid native archive inventory");
+                    for (int i = 0; i < 512; i++) {
+                        if (header[i] != 0) throw new InvalidDataException("Invalid native archive inventory");
+                    }
+                    zeroBlocks++;
+                }
+                if (zeroBlocks < 2) throw new InvalidDataException("Invalid native archive inventory");
+            } catch {
+                if (created && File.Exists(outputPath)) File.Delete(outputPath);
+                throw;
+            }
+        }
+    }
 }
 '@
 }
@@ -144,11 +233,8 @@ try {
     $length = Get-BoundedAsset $artifact.filename $artifact.length
     $archive = Join-Path $temporary $artifact.filename
     if ($length -ne $artifact.length -or (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $artifact.sha256) { throw 'Archive authentication failed' }
-    $entries = @(& tar.exe -tzf $archive)
-    if ($LASTEXITCODE -ne 0 -or $entries.Count -ne 1 -or $entries[0] -cne 'voytty.exe') { throw 'Invalid native archive inventory' }
-    & tar.exe -xzf $archive -C $temporary
-    if ($LASTEXITCODE -ne 0) { throw 'Unable to extract native archive' }
     $candidate = Join-Path $temporary 'voytty.exe'
+    [VoyttyInstallerPlatform]::ExtractSingleFileTarGz($archive, 'voytty.exe', $candidate, 268435456L)
     $attributes = [IO.File]::GetAttributes($candidate)
     if ($attributes -band ([IO.FileAttributes]::ReparsePoint -bor [IO.FileAttributes]::Directory)) { throw 'Expected a regular candidate executable' }
     $identity = & $candidate --internal-release-self-check | ConvertFrom-Json

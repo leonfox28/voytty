@@ -100,8 +100,8 @@ voytty setup
 ## Windows
 
 The Windows bootstrap selects the operating system's native architecture, including
-ARM64 when invoked from an emulated x64 shell. It requires PowerShell 5.1 or newer,
-Windows `tar.exe`, and ConPTY (Windows 10 version 1809 or newer). Native CI runs on
+ARM64 when invoked from an emulated x64 shell. It requires PowerShell 5.1 or newer
+and ConPTY (Windows 10 version 1809 or newer). Native CI runs on
 Windows Server 2025 x64 and Windows 11 ARM64; it does not establish runtime evidence
 for every older Windows build. See [Windows support](../docs/windows.md).
 
