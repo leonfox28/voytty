@@ -4759,7 +4759,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "voytty-cli"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "arboard",
  "base64",
@@ -4785,7 +4785,7 @@ dependencies = [
 
 [[package]]
 name = "voytty-client"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "futures-util",
  "iroh",
@@ -4804,7 +4804,7 @@ dependencies = [
 
 [[package]]
 name = "voytty-core"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "ring",
  "semver",
@@ -4816,7 +4816,7 @@ dependencies = [
 
 [[package]]
 name = "voytty-daemon"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -4852,7 +4852,7 @@ dependencies = [
 
 [[package]]
 name = "voytty-diagnostics"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "semver",
  "serde",
@@ -4866,7 +4866,7 @@ dependencies = [
 
 [[package]]
 name = "voytty-platform"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "dirs",
  "filedescriptor",
@@ -4889,7 +4889,7 @@ dependencies = [
 
 [[package]]
 name = "voytty-proto"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "base64",
  "flate2",
@@ -4902,7 +4902,7 @@ dependencies = [
 
 [[package]]
 name = "voytty-release-tool"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "flate2",
@@ -4917,7 +4917,7 @@ dependencies = [
 
 [[package]]
 name = "voytty-terminal"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "alacritty_terminal",
  "base64",
