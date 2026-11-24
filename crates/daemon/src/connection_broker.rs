@@ -1320,7 +1320,7 @@ impl ConnectionBroker {
         let dial_routes = timeout_or_pair_shutdown(
             deadline,
             self.inner.pairing.subscribe(),
-            self.dial_routes(&endpoint, remote, &routes, deadline),
+            self.dial_routes(&endpoint, remote, &routes, false, deadline),
         )
         .await??;
         let mut last_error = None;

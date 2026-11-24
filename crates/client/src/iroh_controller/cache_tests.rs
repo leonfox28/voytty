@@ -349,6 +349,7 @@ async fn startup_budget_transport_change_preserves_pairing_attempt_limit() {
             fixture.remote,
             routes,
             Vec::new(),
+            RouteRefresh::UseCached,
             VOYTTY_PAIR_ALPN,
             started + crate::protocol::REMOTE_STARTUP_DEADLINE,
         )

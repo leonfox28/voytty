@@ -3,7 +3,7 @@
 use std::fmt;
 use std::time::Instant;
 
-use iroh::Endpoint;
+use iroh::{Endpoint, EndpointId};
 use voytty_core::{DeviceId, DomainErrorKind, RelayHint, TransportLimits};
 
 use crate::error::DaemonError;
@@ -12,7 +12,9 @@ use crate::store::{KnownDevice, RouteCacheDiagnostic, StoreHandle};
 #[cfg(test)]
 use voytty_client::route::merge_relay_sources;
 pub use voytty_client::route::{RouteCandidate, RouteSource};
-use voytty_client::route::{build_relay_candidates, resolve_relay_candidates};
+use voytty_client::route::{
+    build_relay_candidates, refresh_relay_candidates, resolve_relay_candidates,
+};
 pub(crate) use voytty_client::route::{device_from_endpoint_id, endpoint_id_from_device};
 
 /// Resolves ordered fresh/cache/ticket relay candidates for the broker.
@@ -47,11 +49,8 @@ impl RouteResolver {
         Ok(Self { store, limits })
     }
 
-    /// Resolves relay-only candidates without inserting routes into the endpoint.
-    ///
-    /// Cold cached/ticket routes can dial immediately, with Iroh's concurrent
-    /// signed lookup. Previously used remotes explicitly refresh routes within
-    /// the configured budget because Iroh can retain a selected old path.
+    /// Uses cached or ticket relays immediately, with Iroh discovering routes
+    /// alongside the dial. Waits for bounded signed lookup when both are empty.
     pub async fn candidates(
         &self,
         endpoint: &Endpoint,
@@ -59,6 +58,44 @@ impl RouteResolver {
         transient_ticket_routes: &[RelayHint],
         deadline: Instant,
     ) -> Result<Vec<RouteCandidate>, DaemonError> {
+        let (endpoint_id, cache) = self.cached_routes(remote, deadline).await?;
+        resolve_relay_candidates(
+            self.limits,
+            endpoint,
+            endpoint_id,
+            cache,
+            transient_ticket_routes.to_vec(),
+            deadline,
+        )
+        .await
+    }
+
+    /// Tries an independent bounded signed lookup before cached and ticket
+    /// relays, allowing a racing dial to discover a newly published route.
+    pub async fn refreshed_candidates(
+        &self,
+        endpoint: &Endpoint,
+        remote: DeviceId,
+        transient_ticket_routes: &[RelayHint],
+        deadline: Instant,
+    ) -> Result<Vec<RouteCandidate>, DaemonError> {
+        let (endpoint_id, cache) = self.cached_routes(remote, deadline).await?;
+        refresh_relay_candidates(
+            self.limits,
+            endpoint,
+            endpoint_id,
+            cache,
+            transient_ticket_routes.to_vec(),
+            deadline,
+        )
+        .await
+    }
+
+    async fn cached_routes(
+        &self,
+        remote: DeviceId,
+        deadline: Instant,
+    ) -> Result<(EndpointId, Vec<RelayHint>), DaemonError> {
         if Instant::now() >= deadline {
             return Err(deadline_exceeded("route resolution deadline elapsed"));
         }
@@ -69,20 +106,7 @@ impl RouteResolver {
                 store.known_device(remote, deadline)
             })
             .await?;
-        let CachedRouteFallback {
-            relay_hints: cache,
-            diagnostic: _cache_diagnostic,
-        } = cached_route_fallback(known);
-
-        resolve_relay_candidates(
-            self.limits,
-            endpoint,
-            endpoint_id,
-            cache,
-            transient_ticket_routes.to_vec(),
-            deadline,
-        )
-        .await
+        Ok((endpoint_id, cached_route_fallback(known).relay_hints))
     }
 }
 
@@ -102,8 +126,7 @@ fn cached_route_fallback(known: Option<KnownDevice>) -> CachedRouteFallback {
 }
 
 /// Plans the exact fresh/cache/transient fallback sequence for socket-free
-/// named integration gates. Production resolution reaches the same helper only
-/// after its bounded signed lookup and StoreActor cache read.
+/// named integration gates. Production resolution uses the same ordering.
 #[doc(hidden)]
 pub fn plan_relay_candidates_for_test(
     remote: DeviceId,

@@ -36,12 +36,12 @@ impl iroh::address_lookup::AddressLookup for MovableLookup {
             Result<iroh::address_lookup::Item, iroh::address_lookup::Error>,
         >,
     > {
-        self.resolves.fetch_add(1, Ordering::SeqCst);
         let relay = self
             .relay
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
+        self.resolves.fetch_add(1, Ordering::SeqCst);
         let item = iroh::address_lookup::Item::new(
             iroh::EndpointAddr::new(remote).with_relay_url(relay).into(),
             "movable-route-fixture",
@@ -479,12 +479,20 @@ async fn first_query_recovers_when_its_replacement_dial_saw_only_a_stale_route()
     )
     .await;
 
-    // The controller's route lookup and Iroh's own lookup for the replacement
-    // both still see the old Relay; the host publishes before the window ends.
+    // The replacement starts only Iroh's lookup. Keep its stream open after
+    // it sees the old Relay, so the racing dial needs an independent lookup
+    // to see the host's publication before the request deadline.
+    client
+        .controller
+        .inner
+        .endpoint
+        .address_lookup()
+        .expect("lookup services")
+        .add(crate::route::StalledLookup::default());
     let before = client.resolves.load(Ordering::SeqCst);
     let publish = async {
         let waited = Instant::now();
-        while client.resolves.load(Ordering::SeqCst) < before + 2 {
+        while client.resolves.load(Ordering::SeqCst) < before + 1 {
             assert!(
                 waited.elapsed() < Duration::from_secs(5),
                 "no replacement lookup"

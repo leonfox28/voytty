@@ -167,6 +167,7 @@ async fn route_fallback_fixture(verified_cache: bool, fresh: FreshRoute) -> std:
             } else {
                 vec![known_hint]
             },
+            RouteRefresh::UseCached,
             alpn,
             started + crate::protocol::DEFAULT_DEADLINE,
         )
@@ -349,6 +350,7 @@ async fn moved_host_fixture(old_connection_open: bool, stale_lookup_first: bool)
             remote,
             vec![verified.clone()],
             Vec::new(),
+            RouteRefresh::UseCached,
             VOYTTY_ALPN,
             Instant::now() + crate::protocol::REMOTE_STARTUP_DEADLINE,
         )
@@ -378,6 +380,7 @@ async fn moved_host_fixture(old_connection_open: bool, stale_lookup_first: bool)
             remote,
             vec![verified],
             Vec::new(),
+            RouteRefresh::UseCached,
             VOYTTY_ALPN,
             started + crate::protocol::REMOTE_STARTUP_DEADLINE,
         )

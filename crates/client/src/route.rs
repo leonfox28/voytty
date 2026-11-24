@@ -81,10 +81,9 @@ impl RouteCandidate {
     }
 }
 
-/// Resolves relay candidates without holding a cold cached/ticket route behind
-/// discovery. Iroh starts signed lookup concurrently with its first dial for a
-/// remote. A previously used remote can retain a selected path, which suppresses
-/// that lookup, so warm recovery still explicitly refreshes its routes.
+/// Uses cached or ticket routes immediately. Iroh runs signed lookup alongside
+/// the dial, including for a previously used remote. With no hints, waits for
+/// a relay within the lookup budget so the dial has an initial candidate.
 pub async fn resolve_relay_candidates(
     limits: TransportLimits,
     endpoint: &Endpoint,
@@ -93,31 +92,60 @@ pub async fn resolve_relay_candidates(
     transient: Vec<RelayHint>,
     deadline: Instant,
 ) -> Result<Vec<RouteCandidate>, DaemonError> {
-    if Instant::now() >= deadline {
-        return Err(deadline_exceeded("route resolution deadline elapsed"));
-    }
-    let has_known_route = !cache.is_empty() || !transient.is_empty();
-    let cold = has_known_route
-        && tokio::time::timeout_at(deadline.into(), endpoint.remote_info(remote))
-            .await
-            .map_err(|_| deadline_exceeded("route resolution deadline elapsed"))?
-            .is_none();
-    let fresh = if cold {
-        Vec::new()
-    } else {
-        fresh_relay_hints(limits, endpoint, remote, deadline)
-            .await
-            .unwrap_or_default()
-    };
-    let candidates =
-        build_relay_candidates(remote, fresh, cache, transient, limits.max_relay_hints)?;
-    if candidates.is_empty() {
-        Err(DaemonError::new(
-            DomainErrorKind::AddressUnavailable,
-            "no relay route is available for the target device",
-        ))
-    } else {
-        Ok(candidates)
+    RouteRefresh::UseCached
+        .candidates(limits, endpoint, remote, cache, transient, deadline)
+        .await
+}
+
+/// Starts an independent bounded signed lookup and places its relays ahead of
+/// cached and ticket routes. Those routes remain usable if discovery fails.
+pub async fn refresh_relay_candidates(
+    limits: TransportLimits,
+    endpoint: &Endpoint,
+    remote: EndpointId,
+    cache: Vec<RelayHint>,
+    transient: Vec<RelayHint>,
+    deadline: Instant,
+) -> Result<Vec<RouteCandidate>, DaemonError> {
+    RouteRefresh::Refresh
+        .candidates(limits, endpoint, remote, cache, transient, deadline)
+        .await
+}
+
+pub(crate) enum RouteRefresh {
+    UseCached,
+    Refresh,
+}
+
+impl RouteRefresh {
+    pub(crate) async fn candidates(
+        self,
+        limits: TransportLimits,
+        endpoint: &Endpoint,
+        remote: EndpointId,
+        cache: Vec<RelayHint>,
+        transient: Vec<RelayHint>,
+        deadline: Instant,
+    ) -> Result<Vec<RouteCandidate>, DaemonError> {
+        if Instant::now() >= deadline {
+            return Err(deadline_exceeded("route resolution deadline elapsed"));
+        }
+        let fresh = match self {
+            Self::UseCached if !cache.is_empty() || !transient.is_empty() => Vec::new(),
+            _ => fresh_relay_hints(limits, endpoint, remote, deadline)
+                .await
+                .unwrap_or_default(),
+        };
+        let candidates =
+            build_relay_candidates(remote, fresh, cache, transient, limits.max_relay_hints)?;
+        if candidates.is_empty() {
+            Err(DaemonError::new(
+                DomainErrorKind::AddressUnavailable,
+                "no relay route is available for the target device",
+            ))
+        } else {
+            Ok(candidates)
+        }
     }
 }
 
@@ -288,11 +316,32 @@ fn deadline_exceeded(detail: &'static str) -> DaemonError {
 }
 
 #[cfg(test)]
+pub(crate) use tests::StalledLookup;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::FutureExt;
     use futures_util::stream::{self, BoxStream};
     use iroh::address_lookup::{AddressLookup, Error, Item};
-    use std::{net::Ipv4Addr, time::Duration};
+    use std::{
+        net::Ipv4Addr,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
+    #[derive(Clone, Debug, Default)]
+    pub(crate) struct StalledLookup(Arc<AtomicUsize>);
+
+    impl AddressLookup for StalledLookup {
+        fn resolve(&self, _: EndpointId) -> Option<BoxStream<'static, Result<Item, Error>>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Some(stream::pending().boxed())
+        }
+    }
 
     #[derive(Debug)]
     struct PartialLookup {
@@ -317,13 +366,13 @@ mod tests {
         }
     }
 
-    async fn lookup_fixture(reported: Option<EndpointId>) -> Endpoint {
+    async fn lookup_fixture(lookup: impl AddressLookup + 'static) -> Endpoint {
         Endpoint::builder(iroh::endpoint::presets::Minimal)
             .relay_mode(iroh::RelayMode::Disabled)
             .clear_ip_transports()
             .bind_addr((Ipv4Addr::LOCALHOST, 0))
             .expect("loopback fixture")
-            .address_lookup(PartialLookup { reported })
+            .address_lookup(lookup)
             .bind()
             .await
             .expect("isolated lookup endpoint")
@@ -331,7 +380,7 @@ mod tests {
 
     #[tokio::test]
     async fn fresh_relay_lookup_preserves_results_when_another_source_never_finishes() {
-        let endpoint = lookup_fixture(None).await;
+        let endpoint = lookup_fixture(PartialLookup { reported: None }).await;
         let remote = iroh::SecretKey::from_bytes(&[0x71; 32]).public();
         let limits = TransportLimits {
             address_lookup_budget: Duration::from_millis(30),
@@ -353,7 +402,7 @@ mod tests {
 
     #[tokio::test]
     async fn usable_route_does_not_wait_for_a_stalled_lookup_source() {
-        let endpoint = lookup_fixture(None).await;
+        let endpoint = lookup_fixture(PartialLookup { reported: None }).await;
         let remote = iroh::SecretKey::from_bytes(&[0x71; 32]).public();
         // Discovery has already produced an authenticated route. A second
         // provider that never finishes must not consume the rest of startup.
@@ -378,8 +427,10 @@ mod tests {
 
     #[tokio::test]
     async fn fresh_relay_lookup_never_retains_a_different_peers_result_at_timeout() {
-        let endpoint =
-            lookup_fixture(Some(iroh::SecretKey::from_bytes(&[0x72; 32]).public())).await;
+        let endpoint = lookup_fixture(PartialLookup {
+            reported: Some(iroh::SecretKey::from_bytes(&[0x72; 32]).public()),
+        })
+        .await;
         let remote = iroh::SecretKey::from_bytes(&[0x71; 32]).public();
         let limits = TransportLimits {
             address_lookup_budget: Duration::from_millis(30),
@@ -397,6 +448,134 @@ mod tests {
             result.expect_err("no valid route for this peer").kind(),
             DomainErrorKind::AddressUnavailable
         );
+    }
+
+    #[tokio::test]
+    async fn warm_cached_and_ticket_routes_are_ready_without_another_lookup() {
+        let lookup = StalledLookup::default();
+        let endpoint = lookup_fixture(lookup.clone()).await;
+        let remote = iroh::SecretKey::generate().public();
+        // Starting a loopback dial registers the remote and its pending Iroh lookup.
+        let socket = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("loopback");
+        let address =
+            EndpointAddr::new(remote).with_ip_addr(socket.local_addr().expect("bound socket"));
+        let _connecting = endpoint
+            .connect_with_opts(address, b"route-test", Default::default())
+            .await
+            .expect("start dial");
+        assert!(endpoint.remote_info(remote).await.is_some());
+        assert_eq!(lookup.0.load(Ordering::SeqCst), 1);
+
+        let hint = relay("https://known.example");
+        for (cache, ticket, source) in [
+            (vec![hint.clone()], vec![], RouteSource::VerifiedCache),
+            (vec![], vec![hint.clone()], RouteSource::TransientTicket),
+        ] {
+            let candidates = resolve_relay_candidates(
+                TransportLimits::default(),
+                &endpoint,
+                remote,
+                cache,
+                ticket,
+                Instant::now() + Duration::from_secs(1),
+            )
+            .now_or_never()
+            .expect("a known route is ready on the first poll")
+            .expect("known route");
+            assert_eq!(route_sources(&candidates), [source]);
+            assert_eq!(candidates[0].relay_hint(), &hint);
+        }
+        assert_eq!(lookup.0.load(Ordering::SeqCst), 1);
+        endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn zero_hints_require_discovery_and_refresh_prefers_its_result() {
+        let endpoint = lookup_fixture(PartialLookup { reported: None }).await;
+        let remote = iroh::SecretKey::generate().public();
+        let limits = TransportLimits::default();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let discovered =
+            resolve_relay_candidates(limits, &endpoint, remote, vec![], vec![], deadline)
+                .await
+                .expect("zero-hint lookup");
+        assert_eq!(route_sources(&discovered), [RouteSource::FreshLookup]);
+        assert_eq!(discovered[0].relay_hint(), &relay("https://fresh.example/"));
+        let refreshed = refresh_relay_candidates(
+            limits,
+            &endpoint,
+            remote,
+            vec![relay("https://cached.example")],
+            vec![relay("https://ticket.example")],
+            deadline,
+        )
+        .await
+        .expect("fresh and fallback routes");
+        assert_eq!(
+            route_sources(&refreshed),
+            [
+                RouteSource::FreshLookup,
+                RouteSource::VerifiedCache,
+                RouteSource::TransientTicket
+            ]
+        );
+        endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn stalled_lookup_uses_its_budget_then_returns_only_available_fallbacks() {
+        let lookup = StalledLookup::default();
+        let endpoint = lookup_fixture(lookup.clone()).await;
+        let remote = iroh::SecretKey::generate().public();
+        let budget = Duration::from_millis(30);
+        let limits = TransportLimits {
+            address_lookup_budget: budget,
+            ..TransportLimits::default()
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        tokio::time::pause();
+        let started = tokio::time::Instant::now();
+        let missing = tokio::time::timeout(
+            budget * 2,
+            resolve_relay_candidates(limits, &endpoint, remote, vec![], vec![], deadline),
+        )
+        .await
+        .expect("zero-hint discovery respects the lookup budget");
+        assert!(started.elapsed() >= budget);
+        assert_eq!(
+            missing.expect_err("no routes available").kind(),
+            DomainErrorKind::AddressUnavailable
+        );
+        assert_eq!(lookup.0.load(Ordering::SeqCst), 1);
+
+        let started = tokio::time::Instant::now();
+        let fallback = tokio::time::timeout(
+            budget * 2,
+            refresh_relay_candidates(
+                limits,
+                &endpoint,
+                remote,
+                vec![relay("https://cached.example")],
+                vec![relay("https://ticket.example")],
+                deadline,
+            ),
+        )
+        .await
+        .expect("refresh respects the lookup budget")
+        .expect("fallback routes");
+        assert!(started.elapsed() >= budget);
+        assert_eq!(
+            route_sources(&fallback),
+            [RouteSource::VerifiedCache, RouteSource::TransientTicket]
+        );
+        assert_eq!(lookup.0.load(Ordering::SeqCst), 2);
+        endpoint.close().await;
+    }
+
+    fn route_sources(candidates: &[RouteCandidate]) -> Vec<RouteSource> {
+        candidates.iter().map(RouteCandidate::source).collect()
     }
 
     fn relay(url: &str) -> RelayHint {

@@ -140,7 +140,13 @@ impl ConnectionBroker {
             slot.report_progress(ConnectionStage::LookingUpAddress)
                 .await;
             let routes = self
-                .dial_routes(&endpoint, slot.remote, &transient_routes, deadline)
+                .dial_routes(
+                    &endpoint,
+                    slot.remote,
+                    &transient_routes,
+                    has_replacement,
+                    deadline,
+                )
                 .await?;
             let mut last_error = None;
             for route in routes {
@@ -223,20 +229,25 @@ impl ConnectionBroker {
         endpoint: &Endpoint,
         remote: DeviceId,
         transient: &[RelayHint],
+        refresh_routes: bool,
         deadline: Instant,
     ) -> Result<Vec<DialRoute>, DaemonError> {
         if let Some(address) = mutex_lock(&self.inner.test_routes).get(&remote).cloned() {
             return Ok(vec![DialRoute { address }]);
         }
-        self.inner
-            .resolver
-            .candidates(endpoint, remote, transient, deadline)
-            .await
-            .and_then(|candidates| {
-                Ok(vec![DialRoute {
-                    address: combined_relay_address(endpoint_id_from_device(remote)?, &candidates)?,
-                }])
-            })
+        let resolver = &self.inner.resolver;
+        let candidates = if refresh_routes {
+            resolver
+                .refreshed_candidates(endpoint, remote, transient, deadline)
+                .await?
+        } else {
+            resolver
+                .candidates(endpoint, remote, transient, deadline)
+                .await?
+        };
+        Ok(vec![DialRoute {
+            address: combined_relay_address(endpoint_id_from_device(remote)?, &candidates)?,
+        }])
     }
 
     async fn run_outbound_handshake(

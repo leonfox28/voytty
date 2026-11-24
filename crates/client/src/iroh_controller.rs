@@ -19,8 +19,8 @@ use crate::{
         read_acknowledged_response, timeout_until,
     },
     route::{
-        combined_relay_address, device_from_endpoint_id, endpoint_id_from_device,
-        resolve_relay_candidates, selected_relay,
+        RouteRefresh, combined_relay_address, device_from_endpoint_id, endpoint_id_from_device,
+        selected_relay,
     },
     transport::{
         AttachmentConnector, AttachmentIo, AttachmentTransport, AttachmentTransportItem,
@@ -388,6 +388,7 @@ impl IrohController {
         remote: DeviceId,
         cache: Vec<RelayHint>,
         ticket: Vec<RelayHint>,
+        route_refresh: RouteRefresh,
         alpn: &[u8],
         deadline: Instant,
     ) -> Result<(Connection, Option<RelayHint>), ClientError> {
@@ -397,15 +398,16 @@ impl IrohController {
             .map_err(|_| attachment_cancelled())?;
         let endpoint_id = endpoint_id_from_device(remote)?;
         record_connection_stage(&operation, ConnectionStage::LookingUpAddress);
-        let routes = resolve_relay_candidates(
-            self.inner.limits,
-            &self.inner.endpoint,
-            endpoint_id,
-            cache,
-            ticket,
-            deadline,
-        )
-        .await?;
+        let routes = route_refresh
+            .candidates(
+                self.inner.limits,
+                &self.inner.endpoint,
+                endpoint_id,
+                cache,
+                ticket,
+                deadline,
+            )
+            .await?;
         let address = combined_relay_address(endpoint_id, &routes)?;
         // Normal startup already has one caller-owned deadline spanning route
         // lookup, transport and Hello/Welcome. A shorter pairing-attempt cap
@@ -452,10 +454,12 @@ impl IrohController {
                 }
                 let routes = peer.routes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
                 let replacement = peer.replacement.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-                let dial = async { Ok(self.dial(remote, routes, Vec::new(), VOYTTY_ALPN, deadline).await?.0) };
+                let dial = |route_refresh| async move {
+                    Ok(self.dial(remote, routes, Vec::new(), route_refresh, VOYTTY_ALPN, deadline).await?.0)
+                };
                 let connection = match replacement {
-                    Some(replacement) => replacement.race(dial).await?,
-                    None => dial.await?,
+                    Some(replacement) => replacement.race(dial(RouteRefresh::Refresh)).await?,
+                    None => dial(RouteRefresh::UseCached).await?,
                 };
                 let relay = selected_relay(&connection);
                 let mut guard = UnconfirmedConnection(Some(connection));
@@ -517,7 +521,14 @@ impl IrohController {
             .clone();
         ReplacementTransport::dial(until, async move {
             let (connection, _) = controller
-                .dial(remote, routes, Vec::new(), VOYTTY_ALPN, until)
+                .dial(
+                    remote,
+                    routes,
+                    Vec::new(),
+                    RouteRefresh::UseCached,
+                    VOYTTY_ALPN,
+                    until,
+                )
                 .await?;
             Ok(connection)
         })
@@ -700,7 +711,14 @@ impl IrohController {
         };
         let peer = Arc::new(Peer::new(routes.clone(), self.inner.limits));
         let attempt = match self
-            .dial(remote, Vec::new(), routes, VOYTTY_PAIR_ALPN, deadline)
+            .dial(
+                remote,
+                Vec::new(),
+                routes,
+                RouteRefresh::UseCached,
+                VOYTTY_PAIR_ALPN,
+                deadline,
+            )
             .await
         {
             Err(error) => ControllerPairAttempt::failed(error, false),

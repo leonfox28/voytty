@@ -19,7 +19,7 @@ impl ConnectionDemand {
                     let _dial_permit = broker.dial_permit()?;
                     let endpoint = broker.bound_endpoint()?;
                     let routes = broker
-                        .dial_routes(&endpoint, slot.remote, &slot.demand.routes(), until)
+                        .dial_routes(&endpoint, slot.remote, &slot.demand.routes(), false, until)
                         .await?;
                     let mut last_error = None;
                     for route in routes {
