@@ -160,7 +160,7 @@ Evidence: `target/verification/multi-device/checks/ordered-fixes/fresh-route-ini
 
 ## New connections beside another connection's selected path
 
-The remote actor keeps one selected path per peer. Upstream sent every
+The remote actor keeps a preferred path for each peer. Upstream sent every
 mixed-address datagram, which carries only a new outgoing connection's
 handshake, to that path alone. It also skipped address lookup and the Initial
 fanout above while a path was selected. If the peer restarted on another relay
@@ -187,6 +187,27 @@ stale-lookup-first variants previously failed at 15.0 seconds and now succeed
 in about 0.31 to 0.33 seconds. The closed-connection control succeeded in about
 0.33 seconds both before and after. These tests establish the pinning defect,
 not which historical R02 timeouts it caused.
+
+## Path selection during handover
+
+After a restarted peer completes its handshake, the old connection can still
+hold the preferred direct path. A connection that lacks that path now runs the
+same selector over its own established paths. The client makes the replacement
+available before pruning redundant IP paths and keeps one live IP path when it
+selects a relay or custom transport. Closing paths are excluded from selection.
+When the old connection closes, the actor selects again. Each connection's
+path watcher reports its selected path by ID and wakes when the selection clears.
+
+This backports [upstream PR #4717](https://github.com/n0-computer/iroh/pull/4717)
+(`3a09947`) for the established-connection handover reported in
+[#4695](https://github.com/n0-computer/iroh/issues/4695), related to the
+handshake issue [#4600](https://github.com/n0-computer/iroh/issues/4600).
+Five actor regressions cover continued IP traffic, reselection after close,
+an empty selection, duplicate IP paths and a custom transport with an IP
+backup. A sixth uses a real relay and verifies that the server selects the
+restarted peer's new direct port while its old connection remains open.
+Remove this backport when the pinned Iroh release includes an equivalent fix
+and passes all six regressions.
 
 ## Hedged relay dial
 

@@ -139,8 +139,20 @@ async fn voytty_direct_path_request_keeps_an_existing_direct_connection() {
     let client = builder().bind().await.unwrap();
     let address = EndpointAddr::new(host.id()).with_ip_addr(host.bound_sockets()[0]);
     let (outgoing, incoming) = tokio::time::timeout(Duration::from_secs(5), async {
+        // Start the QUIC handshake, but let the client's initial NAT round finish
+        // before registering the host connection and advertising its IP address.
         tokio::join!(client.connect(address, b"upgrade-test"), async {
-            host.accept().await.unwrap().await.unwrap()
+            let accepting = host.accept().await.unwrap().accept().unwrap();
+            while rounds.count() == 0 {
+                tokio::task::yield_now().await;
+            }
+            let before_advertisement = rounds.count();
+            let incoming = accepting.await.unwrap();
+            // The advertisement itself triggers a round, independently of the request.
+            while rounds.count() == before_advertisement {
+                tokio::task::yield_now().await;
+            }
+            incoming
         })
     })
     .await

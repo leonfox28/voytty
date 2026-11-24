@@ -8,7 +8,6 @@ use crate::{
     Endpoint, EndpointAddr, EndpointId, SecretKey, TransportAddr,
     address_lookup::{AddressLookup, EndpointInfo, Error, Item},
     endpoint::presets,
-    test_utils::test_transport::{TestNetwork, to_custom_addr},
 };
 
 #[derive(Debug)]
@@ -28,8 +27,11 @@ impl AddressLookup for DelayedLookup {
     }
 }
 
+#[cfg(feature = "unstable-custom-transports")]
 #[tokio::test]
 async fn voytty_fresh_discovery_does_not_wait_for_initial_retransmission() {
+    use crate::test_utils::test_transport::{TestNetwork, to_custom_addr};
+
     let network = TestNetwork::new();
     let host_key = SecretKey::generate();
     let client_key = SecretKey::generate();
